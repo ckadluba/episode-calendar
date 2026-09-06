@@ -6,6 +6,8 @@ Alembic, httpx, pytest, uv, and Docker Compose.
 
 - Keep provider HTTP/payload details inside `src/episode_calendar/providers`; adapters return
   the normalized models defined in `providers/base.py`.
+- Joyn Austria's verified-vs-assumed API contract is documented in `docs/providers/joyn.md`; keep
+  its headers, GraphQL details, and API key handling inside the Joyn adapter.
 - Never fetch provider data from an API request. Imports are a separate workflow and must be
   idempotent.
 - Preserve external IDs under provider-scoped uniqueness. Do not move release data onto

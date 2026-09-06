@@ -13,10 +13,11 @@ Provider identifiers are stored within provider-scoped unique constraints, which
 import code stable upsert keys without assuming identifiers are globally unique.
 
 Provider adapters implement `ProviderAdapter` and return the normalized, immutable structures
-in `providers/base.py`. Future modules such as `providers/joyn.py` and `providers/rtlplus.py`
-will contain all provider-specific HTTP and payload details. A separate importer will call an
-adapter, normalize its result, and persist it idempotently; API requests will never fetch from
-providers directly.
+in `providers/base.py`. Joyn Austria is implemented in `providers/joyn.py`; its current API
+contract and known fragility are documented in [docs/providers/joyn.md](docs/providers/joyn.md).
+A future RTL+ adapter will follow the same boundary. A separate importer will call an adapter,
+normalize its result, and persist it idempotently; API requests will never fetch from providers
+directly.
 
 ## Local development
 
@@ -34,6 +35,9 @@ The API is then available at <http://localhost:8000>; `GET /health` reports its 
 example environment file uses disposable local credentials. Choose different secrets outside
 local development. `DATABASE_URL` must use SQLAlchemy's async PostgreSQL driver form:
 `postgresql+asyncpg://user:password@host:5432/database`.
+
+To use the Joyn provider, set `JOYN_API_KEY` to the public key used by the Joyn Austria web
+application. It is runtime client configuration, not a user password; do not commit the value.
 
 To build and run both the database and application in containers instead:
 

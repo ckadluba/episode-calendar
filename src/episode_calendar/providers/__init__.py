@@ -7,6 +7,13 @@ from episode_calendar.providers.base import (
     NormalizedSeries,
     ProviderAdapter,
 )
+from episode_calendar.providers.joyn import (
+    JoynGraphQLError,
+    JoynHTTPError,
+    JoynMalformedResponseError,
+    JoynProvider,
+    JoynProviderError,
+)
 
 __all__ = [
     "NormalizedEpisode",
@@ -14,4 +21,9 @@ __all__ = [
     "NormalizedSeason",
     "NormalizedSeries",
     "ProviderAdapter",
+    "JoynGraphQLError",
+    "JoynHTTPError",
+    "JoynMalformedResponseError",
+    "JoynProvider",
+    "JoynProviderError",
 ]

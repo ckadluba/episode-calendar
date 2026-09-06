@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     database_url: str
     app_name: str = "episode-calendar"
     debug: bool = False
+    joyn_api_key: str | None = None
+    joyn_graphql_url: str = "https://api.joyn.de/graphql"
+    joyn_timeout_seconds: float = 10.0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
