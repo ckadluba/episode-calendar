@@ -8,6 +8,8 @@ Alembic, httpx, pytest, uv, and Docker Compose.
   the normalized models defined in `providers/base.py`.
 - Joyn Austria's verified-vs-assumed API contract is documented in `docs/providers/joyn.md`; keep
   its headers, GraphQL details, and API key handling inside the Joyn adapter.
+- The initial Joyn import list is the comma-separated `JOYN_SERIES` setting. Import with
+  `uv run python -m episode_calendar.importer joyn`; imports must remain idempotent.
 - Never fetch provider data from an API request. Imports are a separate workflow and must be
   idempotent.
 - Preserve external IDs under provider-scoped uniqueness. Do not move release data onto

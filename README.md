@@ -38,6 +38,19 @@ local development. `DATABASE_URL` must use SQLAlchemy's async PostgreSQL driver 
 
 To use the Joyn provider, set `JOYN_API_KEY` to the public key used by the Joyn Austria web
 application. It is runtime client configuration, not a user password; do not commit the value.
+Set `JOYN_SERIES` to a comma-separated list of Joyn Austria slugs or paths for the initial import,
+for example `villa-der-versuchung,so-denkt-oesterreich`. Run the manual importer after the
+database is available:
+
+```shell
+uv run python -m episode_calendar.importer joyn
+```
+
+The same command can be run in the application container with:
+
+```shell
+docker compose run --rm app uv run --no-sync python -m episode_calendar.importer joyn
+```
 
 To build and run both the database and application in containers instead:
 
