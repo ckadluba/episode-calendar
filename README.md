@@ -83,6 +83,48 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
+## Development
+
+The current development workflow uses a temporary, configuration-based list of Joyn Austria
+series. This will later be replaced by a more complete catalog/import workflow.
+
+1. Copy `.env.example` to `.env` and set the local `JOYN_API_KEY`.
+2. Set `JOYN_SERIES` to comma-separated Joyn series slugs or paths, for example:
+
+   ```dotenv
+   JOYN_SERIES=villa-der-versuchung,so-denkt-oesterreich
+   ```
+
+3. Start PostgreSQL and the application:
+
+   ```shell
+   docker compose up --build -d
+   ```
+
+4. Import the configured series manually:
+
+   ```shell
+   docker compose run --rm app \
+     uv run --no-sync python -m episode_calendar.importer joyn
+   ```
+
+   The importer fetches complete series trees, normalizes them, and performs idempotent
+   provider-scoped upserts into PostgreSQL.
+
+5. Query the database-backed API. The API does not contact Joyn during a request:
+
+   ```http
+   GET http://localhost:8000/api/v1/series
+   GET http://localhost:8000/api/v1/series/{id}
+   GET http://localhost:8000/api/v1/episodes?from=2026-09-06T00:00:00Z&to=2026-09-13T23:59:59Z
+   ```
+
+   The `{id}` value is the internal database UUID returned by the series list endpoint. Episode
+   results are ordered by release time; `from`, `to`, and `series` are optional filters.
+
+The same endpoints can be called from Bruno. Use `GET`, set the URL above, and send no request
+body. All date-time query parameters should include an explicit timezone such as `Z` or `+02:00`.
+
 ## Planned work
 
 Later increments can add provider adapters and an idempotent import service, followed by the
