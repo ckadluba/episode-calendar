@@ -1,0 +1,14 @@
+services:
+  devcontainer:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    command: sleep infinity
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      UV_PROJECT_ENVIRONMENT: /home/vscode/.venvs/episode-calendar
+    volumes:
+      - .:/workspaces/episode-calendar:cached
+    depends_on:
+      db:
+        condition: service_healthy

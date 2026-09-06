@@ -42,6 +42,20 @@ cp .env.example .env
 docker compose up --build
 ```
 
+### Dev Container
+
+The repository also includes an optional Dev Container for compatible editors. Open the
+repository in the container to start PostgreSQL and install the locked development dependencies
+automatically. If `.env` does not exist, the container setup copies `.env.example` first.
+
+The development virtual environment is kept inside the container, separate from any host
+`.venv`. Apply migrations and start the API from the container terminal:
+
+```shell
+uv run alembic upgrade head
+uv run uvicorn episode_calendar.main:app --reload --host 0.0.0.0
+```
+
 ## Tests and checks
 
 Tests use an isolated in-memory SQLite database and never contact a streaming provider.

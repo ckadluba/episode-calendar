@@ -19,3 +19,6 @@ Run `uv run pytest`, `uv run ruff check .`, and `uv run ruff format --check .` b
 Run locally with `uv run uvicorn episode_calendar.main:app --reload`; copy `.env.example` to
 `.env`, start PostgreSQL with `docker compose up -d db`, and migrate with
 `uv run alembic upgrade head`.
+
+The optional `.devcontainer` setup starts only its development service and PostgreSQL. It keeps
+its uv environment under `/home/vscode/.venvs` to avoid replacing a host `.venv`.
