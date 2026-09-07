@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -135,16 +137,29 @@ async def import_series(
     )
 
 
-def configured_joyn_series() -> tuple[str, ...]:
-    """Return non-empty Joyn identifiers from the comma-separated environment setting."""
+def configured_series(provider: str) -> tuple[str, ...]:
+    """Load non-empty series identifiers for a provider from the JSON config file."""
 
-    return tuple(item.strip() for item in get_settings().joyn_series.split(",") if item.strip())
+    path = Path(get_settings().series_config_path)
+    try:
+        with path.open(encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not read series configuration {path}") from exc
+    if not isinstance(config, dict):
+        raise RuntimeError(f"Series configuration {path} must contain a JSON object")
+    identifiers = config.get(provider, [])
+    if not isinstance(identifiers, list) or not all(
+        isinstance(identifier, str) for identifier in identifiers
+    ):
+        raise RuntimeError(f"Series configuration entry {provider!r} must be a list of strings")
+    return tuple(identifier.strip() for identifier in identifiers if identifier.strip())
 
 
 async def import_configured_joyn() -> None:
-    identifiers = configured_joyn_series()
+    identifiers = configured_series("joyn")
     if not identifiers:
-        raise RuntimeError("JOYN_SERIES is empty; configure one or more Joyn series slugs")
+        raise RuntimeError("No Joyn series configured in the series JSON file")
     async with get_session_factory()() as session:
         for identifier in identifiers:
             result = await import_series(

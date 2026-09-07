@@ -1,11 +1,12 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.domain import ReleaseType
-from episode_calendar.importer import import_series
+from episode_calendar.importer import configured_series, import_series
 from episode_calendar.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
@@ -63,3 +64,14 @@ async def test_import_updates_existing_metadata(db_session: AsyncSession) -> Non
     assert persisted is not None
     assert persisted.title == "Demo"
     assert persisted.provider.slug == "joyn"
+
+
+def test_configured_series_reads_provider_lists(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "series.json"
+    config_path.write_text('{"joyn": [" demo ", "", "second"], "rtlplus": []}', encoding="utf-8")
+    monkeypatch.setattr(
+        "episode_calendar.importer.get_settings",
+        lambda: SimpleNamespace(series_config_path=str(config_path)),
+    )
+
+    assert configured_series("joyn") == ("demo", "second")

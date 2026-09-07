@@ -38,9 +38,14 @@ local development. `DATABASE_URL` must use SQLAlchemy's async PostgreSQL driver 
 
 To use the Joyn provider, set `JOYN_API_KEY` to the public key used by the Joyn Austria web
 application. It is runtime client configuration, not a user password; do not commit the value.
-Set `JOYN_SERIES` to a comma-separated list of Joyn Austria slugs or paths for the initial import,
-for example `villa-der-versuchung,so-denkt-oesterreich`. Run the manual importer after the
-database is available:
+Maintain the initial provider lists in `config/series.json` (the path can be overridden with
+`SERIES_CONFIG_PATH`), for example:
+
+```json
+{"joyn": ["villa-der-versuchung", "so-denkt-oesterreich"], "rtlplus": []}
+```
+
+Run the manual importer after the database is available:
 
 ```shell
 uv run python -m episode_calendar.importer joyn
@@ -85,14 +90,14 @@ uv run ruff format --check .
 
 ## Development
 
-The current development workflow uses a temporary, configuration-based list of Joyn Austria
+The current development workflow uses a temporary, JSON-based list of provider series
 series. This will later be replaced by a more complete catalog/import workflow.
 
 1. Copy `.env.example` to `.env` and set the local `JOYN_API_KEY`.
-2. Set `JOYN_SERIES` to comma-separated Joyn series slugs or paths, for example:
+2. Maintain `config/series.json` with one list per provider, for example:
 
-   ```dotenv
-   JOYN_SERIES=villa-der-versuchung,so-denkt-oesterreich
+   ```json
+   {"joyn": ["villa-der-versuchung", "so-denkt-oesterreich"], "rtlplus": []}
    ```
 
 3. Start PostgreSQL and the application:

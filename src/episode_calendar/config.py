@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     joyn_api_key: str | None = None
     joyn_graphql_url: str = "https://api.joyn.de/graphql"
     joyn_timeout_seconds: float = 10.0
-    joyn_series: str = ""
+    series_config_path: str = "config/series.json"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
