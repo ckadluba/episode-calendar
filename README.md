@@ -127,6 +127,14 @@ series. This will later be replaced by a more complete catalog/import workflow.
    The `{id}` value is the internal database UUID returned by the series list endpoint. Episode
    results are ordered by release time; `from`, `to`, and `series` are optional filters.
 
+RTL+ is supported experimentally through its current Bedrock layout endpoint. Configure the
+numeric program ID (or a URL slug ending in `_p_<id>`) in `config/series.json` and provide the
+short-lived `RTLPLUS_BEDROCK_TOKEN` and `RTLPLUS_AUTHORIZATION` values at runtime; never commit
+these values. RTL+ currently exposes episode metadata in layout blocks, while release times are
+only present in the editorial SEO markdown schedule table. That parser is deliberately isolated
+in `providers/rtlplus.py` and may require updates when the site changes. The tokens are browser
+session credentials and are not suitable as permanent application secrets.
+
 The same endpoints can be called from Bruno. Use `GET`, set the URL above, and send no request
 body. All date-time query parameters should include an explicit timezone such as `Z` or `+02:00`.
 

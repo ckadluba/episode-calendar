@@ -16,6 +16,7 @@ from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season
 from episode_calendar.db.session import get_session_factory
 from episode_calendar.providers.base import ProviderAdapter
 from episode_calendar.providers.joyn import JoynProvider
+from episode_calendar.providers.rtlplus import RTLPlusProvider
 
 
 @dataclass(frozen=True)
@@ -171,12 +172,29 @@ async def import_configured_joyn() -> None:
             )
 
 
+async def import_configured_rtlplus() -> None:
+    identifiers = configured_series("rtlplus")
+    if not identifiers:
+        raise RuntimeError("No RTL+ series configured in the series JSON file")
+    async with get_session_factory()() as session:
+        for identifier in identifiers:
+            result = await import_series(
+                session, RTLPlusProvider(), identifier, provider_name="RTL+"
+            )
+            print(
+                f"Imported {result.series.title}: {result.seasons} seasons, "
+                f"{result.episodes} episodes, {result.releases} releases"
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Import configured provider catalogs")
-    parser.add_argument("provider", choices=("joyn",))
+    parser.add_argument("provider", choices=("joyn", "rtlplus"))
     args = parser.parse_args()
     if args.provider == "joyn":
         asyncio.run(import_configured_joyn())
+    elif args.provider == "rtlplus":
+        asyncio.run(import_configured_rtlplus())
 
 
 if __name__ == "__main__":
