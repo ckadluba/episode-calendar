@@ -94,6 +94,14 @@ The current development workflow uses a temporary, JSON-based list of provider s
 series. This will later be replaced by a more complete catalog/import workflow.
 
 1. Copy `.env.example` to `.env` and set the local `JOYN_API_KEY`.
+   The Joyn key is public web-client configuration. To find the current value, open
+   `joyn.at` in a browser, open Developer Tools → Network, reload a series page, select the
+   request to `api.joyn.de/graphql`, and copy the `x-api-key` request header into `.env`.
+   For RTL+, open Developer Tools → Network, reload `plus.rtl.de`, accept the cookie banner,
+   select the request to `auth.rtl.de/.../protocol/openid-connect/token`, and copy the
+   `client_secret` form value into `RTLPLUS_OIDC_CLIENT_SECRET`. These values are public client
+   configuration, but do not copy or commit `Authorization`, `X-Bedrock-Token`, cookies, or
+   other account/device data.
 2. Maintain `config/series.json` with one list per provider, for example:
 
    ```json
