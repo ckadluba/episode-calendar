@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     rtlplus_layout_url: str = "https://layout.rtlde.bedrock.tech/front/v1/rtlde/m6group_web/main/token-web-31/program/{program_id}/layout"
     rtlplus_bedrock_token: str | None = None
     rtlplus_authorization: str | None = None
+    rtlplus_oidc_token_url: str = (
+        "https://auth.rtl.de/auth/realms/rtlplus/protocol/openid-connect/token"
+    )
+    rtlplus_oidc_client_id: str = "anonymous-user"
+    rtlplus_oidc_client_secret: str | None = None
+    rtlplus_auth_url: str = (
+        "https://front-auth.rtlde.bedrock.tech/v2/rtlde/platforms/m6group_web/token"
+    )
     rtlplus_timeout_seconds: float = 10.0
     series_config_path: str = "config/series.json"
 

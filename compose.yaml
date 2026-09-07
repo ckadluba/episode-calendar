@@ -20,6 +20,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
       JOYN_API_KEY: ${JOYN_API_KEY:-}
+      RTLPLUS_OIDC_CLIENT_SECRET: ${RTLPLUS_OIDC_CLIENT_SECRET:-}
       SERIES_CONFIG_PATH: ${SERIES_CONFIG_PATH:-config/series.json}
     ports:
       - "8000:8000"

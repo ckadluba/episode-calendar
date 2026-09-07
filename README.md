@@ -129,8 +129,8 @@ series. This will later be replaced by a more complete catalog/import workflow.
 
 RTL+ is supported experimentally through its current Bedrock layout endpoint. Configure the
 numeric program ID (or a URL slug ending in `_p_<id>`) in `config/series.json` and provide the
-short-lived `RTLPLUS_BEDROCK_TOKEN` and `RTLPLUS_AUTHORIZATION` values at runtime; never commit
-these values. RTL+ currently exposes episode metadata in layout blocks, while release times are
+public web-client value `RTLPLUS_OIDC_CLIENT_SECRET` at runtime; never commit it. The provider
+automatically obtains short-lived OIDC and Bedrock tokens. RTL+ currently exposes episode metadata in layout blocks, while release times are
 only present in the editorial SEO markdown schedule table. That parser is deliberately isolated
 in `providers/rtlplus.py` and may require updates when the site changes. The tokens are browser
 session credentials and are not suitable as permanent application secrets.

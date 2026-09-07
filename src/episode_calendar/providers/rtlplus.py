@@ -4,8 +4,10 @@ from __future__ import annotations
 # readable alongside the response structure.
 # ruff: noqa: E501
 import re
+import time
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -56,6 +58,7 @@ class RTLPlusProvider:
         endpoint_template: str | None = None,
         bedrock_token: str | None = None,
         authorization: str | None = None,
+        oidc_client_secret: str | None = None,
     ) -> None:
         settings = get_settings()
         self._client = client
@@ -63,6 +66,10 @@ class RTLPlusProvider:
         self._endpoint_template = endpoint_template or settings.rtlplus_layout_url
         self._bedrock_token = bedrock_token or settings.rtlplus_bedrock_token
         self._authorization = authorization or settings.rtlplus_authorization
+        self._oidc_url = settings.rtlplus_oidc_token_url
+        self._oidc_client_id = settings.rtlplus_oidc_client_id
+        self._oidc_client_secret = oidc_client_secret or settings.rtlplus_oidc_client_secret
+        self._auth_url = settings.rtlplus_auth_url
 
     @property
     def slug(self) -> str:
@@ -76,12 +83,65 @@ class RTLPlusProvider:
         program_id = match.group(1) if match else str(external_id)
         if not program_id.isdigit():
             raise ValueError("RTL+ program identifier must be numeric or end in _p_<id>")
-        if not self._bedrock_token or not self._authorization:
-            raise ValueError("RTL+ Bedrock token and Authorization are required")
         if self._client is not None:
+            if not self._bedrock_token or not self._authorization:
+                self._authorization, self._bedrock_token = await self._authenticate(self._client)
             return await self._fetch(self._client, program_id)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
+            if not self._bedrock_token or not self._authorization:
+                self._authorization, self._bedrock_token = await self._authenticate(client)
             return await self._fetch(client, program_id)
+
+    async def _authenticate(self, client: httpx.AsyncClient) -> tuple[str, str]:
+        if not self._oidc_client_secret:
+            raise ValueError("RTLPLUS_OIDC_CLIENT_SECRET is required for automatic authentication")
+        try:
+            oidc = await client.post(
+                self._oidc_url,
+                data={
+                    "client_id": self._oidc_client_id,
+                    "client_secret": self._oidc_client_secret,
+                    "grant_type": "client_credentials",
+                },
+            )
+            oidc.raise_for_status()
+            oidc_payload = oidc.json()
+            access_token = (
+                oidc_payload.get("access_token") if isinstance(oidc_payload, dict) else None
+            )
+            if not isinstance(access_token, str) or not access_token:
+                raise RTLPlusMalformedResponseError("OIDC response lacks access_token")
+            auth = await client.get(
+                self._auth_url,
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {access_token}",
+                    "X-Customer-Name": "rtlde",
+                    "X-Client-Release": "6.49.0",
+                    "x-auth-device-name": "episode-calendar",
+                    "x-auth-device-player-size-width": "0",
+                    "x-auth-device-player-size-height": "0",
+                    "x-auth-device-id": f"m6group_web|_luid_{uuid4()}",
+                    "X-Auth-Token": access_token,
+                    "X-Auth-Token-Timestamp": str(int(time.time())),
+                },
+            )
+            auth.raise_for_status()
+            auth_payload = auth.json()
+            bedrock_token = auth_payload.get("token") if isinstance(auth_payload, dict) else None
+            if not isinstance(bedrock_token, str) or not bedrock_token:
+                raise RTLPlusMalformedResponseError("Bedrock response lacks token")
+            return f"Bearer {access_token}", bedrock_token
+        except httpx.HTTPStatusError as exc:
+            raise RTLPlusHTTPError(f"RTL+ authentication HTTP {exc.response.status_code}") from exc
+        except httpx.RequestError as exc:
+            raise RTLPlusHTTPError(str(exc)) from exc
+        except ValueError as exc:
+            if isinstance(exc, RTLPlusMalformedResponseError):
+                raise
+            raise RTLPlusMalformedResponseError(
+                "RTL+ authentication response was not JSON"
+            ) from exc
 
     async def _fetch(self, client: httpx.AsyncClient, program_id: str) -> NormalizedSeries:
         pages: list[dict[str, Any]] = []
