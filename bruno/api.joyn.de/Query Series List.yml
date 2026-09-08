@@ -1,0 +1,30 @@
+info:
+  name: Query Series List
+  type: http
+  seq: 3
+
+http:
+  method: POST
+  url: https://FFQRV35SVV-dsn.algolia.net/1/indexes/indexion_prod_vod/query
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-Algolia-Application-Id
+      value: FFQRV35SVV
+    - name: X-Algolia-API-Key
+      value: YzhmYzQ0ZDQ2YmMwYzQ1MmI4ZDVkNTcwNTI2ZTJmZWMxMjFhZDIwN2ZiZTBjZDk0MzZjNzQzNWIzZGY5MmEwZXZhbGlkVW50aWw9MTc4ODgxMjk2Mg==
+      description: Use GQL AlgoliaApiKey to get this key
+  body:
+    type: json
+    data: |-
+      {
+        "params": "query=&page=0&hitsPerPage=100&facetFilters=%5B%5B%22type%3ASERIES%22%5D%2C%5B%22distributionTenant%3AJOYN_AT%22%5D%5D"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

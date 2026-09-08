@@ -1,0 +1,7 @@
+name: api.joyn.de
+variables:
+  - name: base_url
+    value: https://api.joyn.de
+  - secret: true
+    name: joyn_api_key
+    description: ""

@@ -1,0 +1,16 @@
+info:
+  name: Get Series by ID
+  type: http
+  seq: 4
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/series/44139970-94e0-4e14-a9ee-45c90afb8bd8"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false
