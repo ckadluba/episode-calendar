@@ -1,7 +1,7 @@
 locals { service_account = "${var.service_name}-runtime@${var.project_id}.iam.gserviceaccount.com" }
 
 resource "google_project_service" "required" {
-  for_each           = toset(["run.googleapis.com", "sqladmin.googleapis.com", "secretmanager.googleapis.com"])
+  for_each           = toset(["run.googleapis.com", "sqladmin.googleapis.com", "secretmanager.googleapis.com", "cloudscheduler.googleapis.com"])
   service            = each.value
   disable_on_destroy = false
 }
@@ -140,4 +140,37 @@ resource "google_cloud_run_v2_service_iam_member" "public" {
   location = var.region
   role     = "roles/run.invoker"
   member   = "allUsers"
+}
+
+resource "google_service_account" "scheduler" {
+  count        = var.enable_import_schedule ? 1 : 0
+  account_id   = "${var.service_name}-scheduler"
+  display_name = "Episode Calendar import scheduler"
+}
+
+resource "google_cloud_run_v2_job_iam_member" "scheduler" {
+  count    = var.enable_import_schedule ? 1 : 0
+  project  = var.project_id
+  location = var.region
+  name     = var.import_job_name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.scheduler[0].email}"
+}
+
+resource "google_cloud_scheduler_job" "import" {
+  count     = var.enable_import_schedule ? 1 : 0
+  name      = "${var.service_name}-import-daily"
+  region    = var.region
+  schedule  = var.import_schedule
+  time_zone = var.import_timezone
+
+  http_target {
+    uri         = "https://run.googleapis.com/v2/projects/${var.project_id}/locations/${var.region}/jobs/${var.import_job_name}:run"
+    http_method = "POST"
+    oauth_token {
+      service_account_email = google_service_account.scheduler[0].email
+    }
+  }
+
+  depends_on = [google_cloud_run_v2_job_iam_member.scheduler]
 }

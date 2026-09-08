@@ -253,6 +253,31 @@ curl "$(terraform -chdir=infra output -raw service_url)/api/v1/series"
 curl "$(terraform -chdir=infra output -raw service_url)/api/v1/episodes/current-week?timezone=Europe/Vienna"
 ```
 
+#### Schedule daily imports
+
+Cloud Scheduler can execute the existing import job once per day. The current Terraform setup
+uses `0 3 * * *` in `Europe/Vienna` and creates one scheduler job. Cloud Scheduler charges per
+configured job, not per execution; each billing account currently receives three jobs per month
+free, so one daily import job remains within that free allowance. The Cloud Run job execution and
+Cloud SQL runtime are separate usage considerations.
+
+Because Terraform grants the scheduler permission on the already-created Cloud Run Job, deploy
+`episode-calendar-import` first, then enable the schedule in `infra/terraform.tfvars`:
+
+```hcl
+enable_import_schedule = true
+```
+
+Apply Terraform once more:
+
+```shell
+terraform -chdir=infra apply
+```
+
+The scheduler invokes the Cloud Run Jobs API with a dedicated service account. Inspect the
+schedule with `gcloud scheduler jobs list --location=europe-west3` and trigger a test run with
+`gcloud scheduler jobs run episode-calendar-import-daily --location=europe-west3`.
+
 ## Tests and checks
 
 Tests use an isolated in-memory SQLite database and never contact a streaming provider.
@@ -364,8 +389,40 @@ session credentials and are not suitable as permanent application secrets.
 The same endpoints can be called from Bruno. Use `GET`, set the URL above, and send no request
 body. All date-time query parameters should include an explicit timezone such as `Z` or `+02:00`.
 
+### Deploy an update
+
+Use this short workflow after changing application code, `config/series.json`, or API behavior:
+
+1. Run the local checks:
+
+   ```shell
+   uv run pytest && uv run ruff check .
+   ```
+
+2. Build and push a new `linux/amd64` image. Prefer an immutable tag (for example a Git commit
+   SHA) and update `image` in `infra/terraform.tfvars` to that tag or digest:
+
+   ```shell
+   docker build --platform linux/amd64 --provenance=false -t REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG . && docker push REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG
+   ```
+
+3. Apply Terraform to deploy the new Cloud Run revision:
+
+   ```shell
+   terraform -chdir=infra plan && terraform -chdir=infra apply
+   ```
+
+4. If database migrations changed, run the migration job again. Then execute the import job to
+   refresh configured provider data:
+
+   ```shell
+   gcloud run jobs execute episode-calendar-migrate --region=REGION --project=PROJECT_ID --wait && gcloud run jobs execute episode-calendar-import --region=REGION --project=PROJECT_ID --wait
+   ```
+
+5. Verify the deployment through `/health` and the API endpoints. The daily scheduler continues
+   to use the existing import job automatically.
+
 ## Planned work
 
-Later increments can add provider adapters and an idempotent import service, followed by the
-series and episode REST resources, periodic execution, a calendar UI, and iCal or Home
-Assistant integrations.
+Later increments can add provider adapters, a calendar UI, and iCal or Home Assistant
+integrations.

@@ -17,6 +17,26 @@ variable "deploy_cloud_run" {
   default = false
 }
 
+variable "enable_import_schedule" {
+  type    = bool
+  default = false
+}
+
+variable "import_job_name" {
+  type    = string
+  default = "episode-calendar-import"
+}
+
+variable "import_schedule" {
+  type    = string
+  default = "0 3 * * *"
+}
+
+variable "import_timezone" {
+  type    = string
+  default = "Europe/Vienna"
+}
+
 variable "database_name" {
   type    = string
   default = "episode_calendar"

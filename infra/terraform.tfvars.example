@@ -5,3 +5,5 @@ image      = "europe-west3-docker.pkg.dev/episode-calendar-67234/episode-calenda
 database_password = "replace-with-a-random-value-of-at-least-16-characters"
 # Keep false until Secret Manager has all required versions.
 deploy_cloud_run = false
+# Enable only after the episode-calendar-import Cloud Run Job exists.
+enable_import_schedule = false
