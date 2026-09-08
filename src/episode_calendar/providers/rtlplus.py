@@ -181,6 +181,11 @@ class RTLPlusProvider:
                     params={"blockPage": page, "nbPages": 2},
                     headers=headers,
                 )
+                if response.status_code == 401 and attempt == 0 and self._oidc_client_secret:
+                    self._authorization, self._bedrock_token = await self._authenticate(client)
+                    headers["Authorization"] = self._authorization
+                    headers["X-Bedrock-Token"] = self._bedrock_token
+                    continue
                 if response.status_code == 429 or response.status_code >= 500:
                     if attempt < self._max_retries:
                         retry_after = response.headers.get("Retry-After")
