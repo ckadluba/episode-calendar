@@ -1,0 +1,5 @@
+name: episode-calendar.gcloud
+variables:
+  - secret: true
+    name: base_url
+    description: ""
