@@ -52,4 +52,14 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession) -> None:
         assert response.json()[0]["title"] == "Pilot"
         assert response.json()[0]["releases"][0]["release_at"].endswith("Z")
 
+        response = await client.get(
+            "/api/v1/episodes/current-week", params={"series": str(series.id)}
+        )
+        assert response.status_code == 200
+        assert response.json()[0]["title"] == "Pilot"
+
+        response = await client.get("/api/v1/episodes/next-week", params={"series": str(series.id)})
+        assert response.status_code == 200
+        assert response.json() == []
+
     app.dependency_overrides.clear()

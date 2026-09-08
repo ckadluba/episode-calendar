@@ -139,10 +139,14 @@ series. This will later be replaced by a more complete catalog/import workflow.
    GET http://localhost:8000/api/v1/series
    GET http://localhost:8000/api/v1/series/{id}
    GET http://localhost:8000/api/v1/episodes?from=2026-09-06T00:00:00Z&to=2026-09-13T23:59:59Z
+   GET http://localhost:8000/api/v1/episodes/current-week
+   GET http://localhost:8000/api/v1/episodes/next-week
    ```
 
    The `{id}` value is the internal database UUID returned by the series list endpoint. Episode
-   results are ordered by release time; `from`, `to`, and `series` are optional filters.
+   results are ordered by release time; `from`, `to`, and `series` are optional filters. The
+   convenience endpoints use Monday-to-Sunday calendar weeks in the `Europe/Vienna` timezone
+   and also accept the optional `series` filter.
 
 RTL+ is supported experimentally through its current Bedrock layout endpoint. Configure the
 numeric program ID (or a URL slug ending in `_p_<id>`) in `config/series.json` and provide the

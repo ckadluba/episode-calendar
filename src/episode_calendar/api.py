@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
@@ -13,6 +14,7 @@ from episode_calendar.db.models import Episode, EpisodeRelease, Season, Series
 from episode_calendar.db.session import get_session
 
 router = APIRouter(prefix="/api/v1")
+LOCAL_TIMEZONE = ZoneInfo("Europe/Vienna")
 
 
 class SeriesResponse(BaseModel):
@@ -103,3 +105,40 @@ async def list_episodes(
         )
         for episode, series_id, season_number in unique_rows.values()
     ]
+
+
+def _calendar_week_window(offset: int = 0) -> tuple[datetime, datetime]:
+    """Return the local Monday-start calendar week as timezone-aware bounds."""
+    today = datetime.now(LOCAL_TIMEZONE).date()
+    start_date = today - timedelta(days=today.weekday()) + timedelta(days=7 * offset)
+    start = datetime.combine(start_date, datetime.min.time(), tzinfo=LOCAL_TIMEZONE)
+    end = start + timedelta(days=7)
+    return start, end
+
+
+@router.get("/episodes/current-week", response_model=list[EpisodeResponse])
+async def list_current_week_episodes(
+    series: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> list[EpisodeResponse]:
+    start, end = _calendar_week_window()
+    return await list_episodes(
+        from_=start,
+        to=end - timedelta(microseconds=1),
+        series=series,
+        session=session,
+    )
+
+
+@router.get("/episodes/next-week", response_model=list[EpisodeResponse])
+async def list_next_week_episodes(
+    series: uuid.UUID | None = None,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> list[EpisodeResponse]:
+    start, end = _calendar_week_window(offset=1)
+    return await list_episodes(
+        from_=start,
+        to=end - timedelta(microseconds=1),
+        series=series,
+        session=session,
+    )
