@@ -146,7 +146,8 @@ series. This will later be replaced by a more complete catalog/import workflow.
    The `{id}` value is the internal database UUID returned by the series list endpoint. Episode
    results are ordered by release time; `from`, `to`, and `series` are optional filters. The
    convenience endpoints use Monday-to-Sunday calendar weeks in the `Europe/Vienna` timezone
-   and also accept the optional `series` filter.
+   and also accept the optional `series` and `platform` filters (`joyn` or `rtlplus`). The
+   series endpoints likewise accept `platform` as an optional query parameter.
 
 RTL+ is supported experimentally through its current Bedrock layout endpoint. Configure the
 numeric program ID (or a URL slug ending in `_p_<id>`) in `config/series.json` and provide the

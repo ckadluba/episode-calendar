@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from episode_calendar.db.models import Episode, EpisodeRelease, Season, Series
+from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.db.session import get_session
 
 router = APIRouter(prefix="/api/v1")
@@ -50,22 +50,31 @@ class EpisodeResponse(BaseModel):
 
 
 @router.get("/series", response_model=list[SeriesResponse])
-async def list_series(session: AsyncSession = Depends(get_session)) -> list[Series]:  # noqa: B008
-    result = await session.scalars(
+async def list_series(
+    platform: str | None = None,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> list[Series]:
+    statement = (
         select(Series).options(selectinload(Series.provider)).order_by(Series.title, Series.id)
     )
+    if platform is not None:
+        statement = statement.join(Series.provider).where(Provider.slug == platform)
+    result = await session.scalars(statement)
     return list(result)
 
 
 @router.get("/series/{series_id}", response_model=SeriesResponse)
 async def get_series(  # noqa: B008
     series_id: uuid.UUID,
+    platform: str | None = None,
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> Series:
     series = await session.scalar(
         select(Series).options(selectinload(Series.provider)).where(Series.id == series_id)
     )
     if series is None:
+        raise HTTPException(status_code=404, detail="Series not found")
+    if platform is not None and series.provider.slug != platform:
         raise HTTPException(status_code=404, detail="Series not found")
     return series
 
@@ -75,6 +84,7 @@ async def list_episodes(
     from_: datetime | None = Query(default=None, alias="from"),  # noqa: B008
     to: datetime | None = None,
     series: uuid.UUID | None = None,
+    platform: str | None = None,
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     for value, name in ((from_, "from"), (to, "to")):
@@ -89,6 +99,8 @@ async def list_episodes(
     )
     if series is not None:
         statement = statement.where(Season.series_id == series)
+    if platform is not None:
+        statement = statement.where(Series.provider.has(Provider.slug == platform))
     if from_ is not None:
         statement = statement.where(Episode.releases.any(EpisodeRelease.release_at >= from_))
     if to is not None:
@@ -129,6 +141,7 @@ def _calendar_week_window(offset: int = 0) -> tuple[datetime, datetime]:
 @router.get("/episodes/current-week", response_model=list[EpisodeResponse])
 async def list_current_week_episodes(
     series: uuid.UUID | None = None,
+    platform: str | None = None,
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     start, end = _calendar_week_window()
@@ -136,6 +149,7 @@ async def list_current_week_episodes(
         from_=start,
         to=end - timedelta(microseconds=1),
         series=series,
+        platform=platform,
         session=session,
     )
 
@@ -143,6 +157,7 @@ async def list_current_week_episodes(
 @router.get("/episodes/next-week", response_model=list[EpisodeResponse])
 async def list_next_week_episodes(
     series: uuid.UUID | None = None,
+    platform: str | None = None,
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     start, end = _calendar_week_window(offset=1)
@@ -150,5 +165,6 @@ async def list_next_week_episodes(
         from_=start,
         to=end - timedelta(microseconds=1),
         series=series,
+        platform=platform,
         session=session,
     )
