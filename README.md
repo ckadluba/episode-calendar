@@ -121,6 +121,15 @@ series. This will later be replaced by a more complete catalog/import workflow.
      uv run --no-sync python -m episode_calendar.importer joyn
    ```
 
+   Beide Provider können gemeinsam importiert werden:
+
+   ```shell
+   docker compose run --rm app uv run --no-sync python -m episode_calendar.importer all
+   ```
+
+   Einzelne fehlgeschlagene Serien werden protokolliert und blockieren die übrigen Serien nicht;
+   der Prozess endet anschließend mit einem Fehlercode, wenn mindestens ein Import fehlgeschlagen ist.
+
    The importer fetches complete series trees, normalizes them, and performs idempotent
    provider-scoped upserts into PostgreSQL.
 

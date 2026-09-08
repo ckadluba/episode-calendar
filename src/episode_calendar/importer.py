@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from episode_calendar.db.session import get_session_factory
 from episode_calendar.providers.base import ProviderAdapter
 from episode_calendar.providers.joyn import JoynProvider
 from episode_calendar.providers.rtlplus import RTLPlusProvider
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -158,43 +161,66 @@ def configured_series(provider: str) -> tuple[str, ...]:
 
 
 async def import_configured_joyn() -> None:
-    identifiers = configured_series("joyn")
-    if not identifiers:
-        raise RuntimeError("No Joyn series configured in the series JSON file")
-    async with get_session_factory()() as session:
-        for identifier in identifiers:
-            result = await import_series(
-                session, JoynProvider(), identifier, provider_name="Joyn Austria"
-            )
-            print(
-                f"Imported {result.series.title}: {result.seasons} seasons, "
-                f"{result.episodes} episodes, {result.releases} releases"
-            )
+    await import_configured("joyn", JoynProvider, "Joyn Austria")
 
 
 async def import_configured_rtlplus() -> None:
-    identifiers = configured_series("rtlplus")
+    await import_configured("rtlplus", RTLPlusProvider, "RTL+")
+
+
+async def import_configured(
+    provider_slug: str, adapter_factory: type[ProviderAdapter], provider_name: str
+) -> None:
+    """Import every configured series, reporting failures without aborting the batch."""
+    identifiers = configured_series(provider_slug)
     if not identifiers:
-        raise RuntimeError("No RTL+ series configured in the series JSON file")
+        raise RuntimeError(f"No {provider_slug} series configured in the series JSON file")
+    failed = 0
+    adapter = adapter_factory()
     async with get_session_factory()() as session:
         for identifier in identifiers:
-            result = await import_series(
-                session, RTLPlusProvider(), identifier, provider_name="RTL+"
-            )
+            try:
+                result = await import_series(
+                    session, adapter, identifier, provider_name=provider_name
+                )
+            except Exception as exc:  # provider failures must not hide later series
+                await session.rollback()
+                failed += 1
+                logger.error("Import failed for %s/%s: %s", provider_slug, identifier, exc)
+                print(f"Failed {provider_slug}/{identifier}: {exc}")
+                continue
             print(
                 f"Imported {result.series.title}: {result.seasons} seasons, "
                 f"{result.episodes} episodes, {result.releases} releases"
             )
+    if failed:
+        raise RuntimeError(f"{failed} of {len(identifiers)} {provider_slug} imports failed")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Import configured provider catalogs")
-    parser.add_argument("provider", choices=("joyn", "rtlplus"))
+    parser.add_argument("provider", choices=("joyn", "rtlplus", "all"))
     args = parser.parse_args()
     if args.provider == "joyn":
         asyncio.run(import_configured_joyn())
     elif args.provider == "rtlplus":
         asyncio.run(import_configured_rtlplus())
+    else:
+
+        async def run_all() -> None:
+            failures: list[Exception] = []
+            for provider_slug, factory, name in (
+                ("joyn", JoynProvider, "Joyn Austria"),
+                ("rtlplus", RTLPlusProvider, "RTL+"),
+            ):
+                try:
+                    await import_configured(provider_slug, factory, name)
+                except Exception as exc:
+                    failures.append(exc)
+            if failures:
+                raise RuntimeError("one or more provider imports failed") from failures[0]
+
+        asyncio.run(run_all())
 
 
 if __name__ == "__main__":
