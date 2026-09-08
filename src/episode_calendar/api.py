@@ -24,6 +24,7 @@ class SeriesResponse(BaseModel):
     external_id: str
     title: str
     description: str | None
+    platform: str
 
 
 class EpisodeReleaseResponse(BaseModel):
@@ -45,11 +46,14 @@ class EpisodeResponse(BaseModel):
     title: str
     description: str | None
     releases: list[EpisodeReleaseResponse]
+    platform: str
 
 
 @router.get("/series", response_model=list[SeriesResponse])
 async def list_series(session: AsyncSession = Depends(get_session)) -> list[Series]:  # noqa: B008
-    result = await session.scalars(select(Series).order_by(Series.title, Series.id))
+    result = await session.scalars(
+        select(Series).options(selectinload(Series.provider)).order_by(Series.title, Series.id)
+    )
     return list(result)
 
 
@@ -58,7 +62,9 @@ async def get_series(  # noqa: B008
     series_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> Series:
-    series = await session.get(Series, series_id)
+    series = await session.scalar(
+        select(Series).options(selectinload(Series.provider)).where(Series.id == series_id)
+    )
     if series is None:
         raise HTTPException(status_code=404, detail="Series not found")
     return series
@@ -77,8 +83,9 @@ async def list_episodes(
     statement = (
         select(Episode, Season.series_id, Season.number)
         .join(Episode.season)
+        .join(Series, Series.id == Season.series_id)
         .join(EpisodeRelease, EpisodeRelease.episode_id == Episode.id)
-        .options(selectinload(Episode.releases))
+        .options(selectinload(Episode.releases).selectinload(EpisodeRelease.provider))
     )
     if series is not None:
         statement = statement.where(Season.series_id == series)
@@ -102,6 +109,9 @@ async def list_episodes(
             title=episode.title,
             description=episode.description,
             releases=[EpisodeReleaseResponse.model_validate(item) for item in episode.releases],
+            platform=next(
+                (item.provider.slug for item in episode.releases if item.provider), "unknown"
+            ),
         )
         for episode, series_id, season_number in unique_rows.values()
     ]

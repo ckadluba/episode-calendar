@@ -40,6 +40,7 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession) -> None:
         response = await client.get("/api/v1/series")
         assert response.status_code == 200
         assert response.json()[0]["external_id"] == "d-series"
+        assert response.json()[0]["platform"] == "joyn"
 
         response = await client.get(
             "/api/v1/episodes",
@@ -50,6 +51,7 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession) -> None:
         )
         assert response.status_code == 200
         assert response.json()[0]["title"] == "Pilot"
+        assert response.json()[0]["platform"] == "joyn"
         assert response.json()[0]["releases"][0]["release_at"].endswith("Z")
 
         response = await client.get(

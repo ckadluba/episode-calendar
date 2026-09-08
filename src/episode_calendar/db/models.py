@@ -39,6 +39,11 @@ class Series(Base):
         back_populates="series", cascade="all, delete-orphan"
     )
 
+    @property
+    def platform(self) -> str:
+        """Provider slug exposed as the public platform identifier."""
+        return self.provider.slug
+
 
 class Season(Base):
     __tablename__ = "seasons"
