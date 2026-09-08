@@ -9,3 +9,8 @@ htmlcov/
 dist/
 *.egg-info/
 .DS_Store
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example

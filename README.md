@@ -135,12 +135,13 @@ before continuing.
 
    ```shell
    gcloud auth configure-docker REGION-docker.pkg.dev
-   docker build -t REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:latest .
+   docker build --platform linux/amd64 --provenance=false -t REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:latest .
    docker push REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:latest
    ```
 
-   Replace `REGION` with `europe-west3` (or the repository region). This validates the registry
-   setup; Cloud Run is not deployed by these commands.
+   Replace `REGION` with `europe-west3` (or the repository region). The explicit platform keeps
+   images built on Apple Silicon compatible with Cloud Run. This validates the registry setup;
+   Cloud Run is not deployed by these commands.
 
 8. Verify the local identity and project configuration before running Terraform:
 
@@ -154,6 +155,103 @@ Never commit service-account keys, Terraform state, OAuth tokens, provider API k
 Terraform should use Application Default Credentials locally and Workload Identity Federation in
 CI rather than long-lived service-account key files. See Google's [Terraform authentication
 guide](https://cloud.google.com/docs/terraform/authentication) for the recommended setup.
+
+### Deploy Infrastructure
+
+The Terraform configuration is in `infra/`. It is intentionally not applied by CI. First copy
+the example variables and initialize Terraform:
+
+```shell
+cp infra/terraform.tfvars.example infra/terraform.tfvars
+openssl rand -hex 24
+```
+
+Copy the generated random value into `database_password` in `infra/terraform.tfvars` before
+initializing or planning. Terraform marks this variable sensitive, but it is still present in
+local Terraform state, so protect that state file and do not commit it.
+
+Then initialize and apply the foundation. Keep `deploy_cloud_run = false` for this first apply;
+this creates Cloud SQL, IAM, and empty Secret Manager containers without attempting to start a
+revision that cannot read secrets yet:
+
+```shell
+terraform -chdir=infra init
+terraform -chdir=infra plan
+terraform -chdir=infra apply
+```
+
+The configuration creates Cloud SQL, the runtime service account, IAM bindings, and Secret
+Manager containers. It does not contain provider secret values. Add the database URL and provider
+values directly to Secret Manager after the infrastructure apply. Use the SQL connection name
+from the Terraform output, the same database user/name configured in `terraform.tfvars`, and the
+configured database password:
+
+The Cloud SQL configuration explicitly uses the `ENTERPRISE` edition because the inexpensive
+`db-f1-micro` tier is not available in `ENTERPRISE_PLUS`. If an apply fails part-way through,
+fix the reported issue and run the same `terraform -chdir=infra apply` again; Terraform will
+continue with resources that were not created yet.
+
+```shell
+CONNECTION_NAME="$(terraform -chdir=infra output -raw sql_connection_name)"
+read -r -s DB_PASSWORD; echo
+printf 'postgresql+asyncpg://episode_calendar:%s@/episode_calendar?host=/cloudsql/%s\n' "$DB_PASSWORD" "$CONNECTION_NAME" | gcloud secrets versions add episode-calendar-database-url --data-file=-
+read -r -s JOYN_API_KEY; echo
+printf '%s' "$JOYN_API_KEY" | gcloud secrets versions add episode-calendar-joyn-api-key --data-file=-
+read -r -s RTLPLUS_CLIENT_SECRET; echo
+printf '%s' "$RTLPLUS_CLIENT_SECRET" | gcloud secrets versions add episode-calendar-rtlplus-client-secret --data-file=-
+unset DB_PASSWORD JOYN_API_KEY RTLPLUS_CLIENT_SECRET CONNECTION_NAME
+```
+
+The database URL uses the Cloud Run Cloud SQL Unix socket, for example:
+
+```text
+postgresql+asyncpg://DB_USER:DB_PASSWORD@/DB_NAME?host=/cloudsql/PROJECT_ID:REGION:INSTANCE
+```
+
+Do not put provider values in `terraform.tfvars`, shell history, Git, or the README. The database
+password is read interactively above and is not placed in a command argument. After adding
+all secret versions, set `deploy_cloud_run = true` in `terraform.tfvars` and apply Terraform once
+more so Cloud Run is created with the configured secrets:
+
+```shell
+terraform -chdir=infra apply
+```
+
+Finally, the application image referenced by `image` must exist in Artifact Registry. Build and
+push it as described in the previous section. Cloud SQL deletion protection is enabled by
+default; review it explicitly before any planned teardown.
+
+#### Run database migrations
+
+The application container does not run migrations during startup. Run Alembic once as a Cloud
+Run Job after the infrastructure and Secret Manager setup are complete. Use the same image
+reference configured in `terraform.tfvars` (the example below uses the verified `latest` tag):
+
+```shell
+gcloud run jobs deploy episode-calendar-migrate --image=europe-west3-docker.pkg.dev/PROJECT_ID/episode-calendar/app:latest --region=REGION --project=PROJECT_ID --service-account=episode-calendar-runtime@PROJECT_ID.iam.gserviceaccount.com --set-cloudsql-instances=PROJECT_ID:REGION:episode-calendar-postgres --set-secrets=DATABASE_URL=episode-calendar-database-url:latest --command=uv --args=run,--no-sync,alembic,upgrade,head
+gcloud run jobs execute episode-calendar-migrate --region=REGION --project=PROJECT_ID --wait
+```
+
+The migration job is idempotent and can be executed again after deploying schema changes.
+
+#### Run provider imports
+
+Run the configured Joyn and RTL+ imports as a separate Cloud Run Job. Provider credentials are
+read from Secret Manager; no tokens are placed in the command line or image:
+
+```shell
+gcloud run jobs deploy episode-calendar-import --image=europe-west3-docker.pkg.dev/PROJECT_ID/episode-calendar/app:latest --region=REGION --project=PROJECT_ID --service-account=episode-calendar-runtime@PROJECT_ID.iam.gserviceaccount.com --set-cloudsql-instances=PROJECT_ID:REGION:episode-calendar-postgres --set-secrets=DATABASE_URL=episode-calendar-database-url:latest,JOYN_API_KEY=episode-calendar-joyn-api-key:latest,RTLPLUS_OIDC_CLIENT_SECRET=episode-calendar-rtlplus-client-secret:latest --command=uv --args=run,--no-sync,python,-m,episode_calendar.importer,all
+gcloud run jobs execute episode-calendar-import --region=REGION --project=PROJECT_ID --wait
+```
+
+Replace `PROJECT_ID` and `REGION` (for example `episode-calendar-67234` and `europe-west3`).
+The import job can be executed again; imports are designed to be idempotent. Check the result
+through the public API:
+
+```shell
+curl "$(terraform -chdir=infra output -raw service_url)/api/v1/series"
+curl "$(terraform -chdir=infra output -raw service_url)/api/v1/episodes/current-week?timezone=Europe/Vienna"
+```
 
 ## Tests and checks
 
@@ -169,6 +267,29 @@ uv run ruff format --check .
 
 The current development workflow uses a temporary, JSON-based list of provider series
 series. This will later be replaced by a more complete catalog/import workflow.
+
+### Prerequisites
+
+Install or make available the following tools before following this guide:
+
+- **Git** — source control and commits.
+- **GitHub account and GitHub CLI (`gh`)** — repository access and publishing changes.
+- **Python 3.13** — runtime for the application and tests.
+- **uv** — Python dependency and virtual-environment management.
+- **Docker** — local application/database containers and image builds. On macOS, Docker Desktop
+  or OrbStack provides the Docker daemon.
+- **Docker Compose** — starts PostgreSQL and the local application stack.
+- **VS Code** (optional) — development environment and integrated pytest test runner.
+- **Bruno** (optional) — manual REST/GraphQL request testing.
+- **Google Cloud CLI (`gcloud`)** — Google Cloud project, billing, API, registry, and auth setup.
+- **Terraform** — infrastructure provisioning from `infra/` (required for the cloud deployment
+  steps, not for local development).
+- **A modern browser with Developer Tools** — inspect public Joyn and RTL+ web-client
+  configuration when setting provider variables.
+- **`curl` and `jq`** — inspect HTTP responses and JSON during provider/API troubleshooting.
+
+On macOS, Homebrew is a convenient way to install Terraform and other command-line tools. Never
+commit `.env`, provider tokens, OAuth values, service-account keys, or Terraform state.
 
 1. Copy `.env.example` to `.env` and set the local `JOYN_API_KEY`.
    The Joyn key is public web-client configuration. To find the current value, open
