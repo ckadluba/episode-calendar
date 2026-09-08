@@ -78,6 +78,83 @@ uv run alembic upgrade head
 uv run uvicorn episode_calendar.main:app --reload --host 0.0.0.0
 ```
 
+### Setup Cloud Environment
+
+The following creates the Google Cloud project prerequisites. These commands do not provision
+Cloud Run or Cloud SQL yet; that will be handled by Terraform in a later step. Google Cloud
+requires a billing account for the services we plan to use, so review quotas and expected costs
+before continuing.
+
+1. Install and initialize the [Google Cloud CLI](https://cloud.google.com/sdk/docs/initialize),
+   then sign in:
+
+   ```shell
+   gcloud init
+   gcloud auth application-default login
+   ```
+
+2. Choose a globally unique project ID and create the project (replace the placeholders):
+
+   ```shell
+   gcloud projects create PROJECT_ID --name="Episode Calendar" --set-as-default
+   ```
+
+   Project IDs are permanent identifiers. Do not use credentials or API keys as the project ID.
+
+3. Link a billing account. List the billing accounts available to your user and copy the ID:
+
+   ```shell
+   gcloud billing accounts list
+   gcloud billing projects link PROJECT_ID --billing-account=BILLING_ACCOUNT_ID
+   ```
+
+4. Set the project and align the Application Default Credentials quota project:
+
+   ```shell
+   gcloud config set project PROJECT_ID
+   gcloud auth application-default set-quota-project PROJECT_ID
+   ```
+
+   If Google Cloud reports that the billing account is not open, activate or create an open
+   billing account before enabling services. Verify it with `gcloud billing accounts list` and
+   link it using the command from step 3.
+
+5. Enable the APIs needed for the planned deployment:
+
+   ```shell
+   gcloud services enable run.googleapis.com sqladmin.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com cloudbuild.googleapis.com iam.googleapis.com
+   ```
+
+6. Create an Artifact Registry repository for container images:
+
+   ```shell
+   gcloud artifacts repositories create episode-calendar --repository-format=docker --location=europe-west3 --description="episode-calendar images"
+   ```
+
+7. Authenticate Docker, build the image, and push it to Artifact Registry:
+
+   ```shell
+   gcloud auth configure-docker REGION-docker.pkg.dev
+   docker build -t REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:latest .
+   docker push REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:latest
+   ```
+
+   Replace `REGION` with `europe-west3` (or the repository region). This validates the registry
+   setup; Cloud Run is not deployed by these commands.
+
+8. Verify the local identity and project configuration before running Terraform:
+
+   ```shell
+   gcloud config get-value project
+   gcloud auth list
+   gcloud auth application-default print-access-token >/dev/null && echo "ADC ready"
+   ```
+
+Never commit service-account keys, Terraform state, OAuth tokens, provider API keys, or `.env`.
+Terraform should use Application Default Credentials locally and Workload Identity Federation in
+CI rather than long-lived service-account key files. See Google's [Terraform authentication
+guide](https://cloud.google.com/docs/terraform/authentication) for the recommended setup.
+
 ## Tests and checks
 
 Tests use an isolated in-memory SQLite database and never contact a streaming provider.
