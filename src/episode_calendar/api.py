@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
@@ -14,7 +14,7 @@ from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season
 from episode_calendar.db.session import get_session
 
 router = APIRouter(prefix="/api/v1")
-LOCAL_TIMEZONE = ZoneInfo("Europe/Vienna")
+DEFAULT_TIMEZONE = "Europe/Vienna"
 
 
 class SeriesResponse(BaseModel):
@@ -129,11 +129,19 @@ async def list_episodes(
     ]
 
 
-def _calendar_week_window(offset: int = 0) -> tuple[datetime, datetime]:
+def _calendar_week_window(
+    offset: int = 0, timezone_name: str = DEFAULT_TIMEZONE
+) -> tuple[datetime, datetime]:
     """Return the local Monday-start calendar week as timezone-aware bounds."""
-    today = datetime.now(LOCAL_TIMEZONE).date()
+    try:
+        timezone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise HTTPException(
+            status_code=422, detail="timezone must be a valid IANA timezone"
+        ) from exc
+    today = datetime.now(timezone).date()
     start_date = today - timedelta(days=today.weekday()) + timedelta(days=7 * offset)
-    start = datetime.combine(start_date, datetime.min.time(), tzinfo=LOCAL_TIMEZONE)
+    start = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone)
     end = start + timedelta(days=7)
     return start, end
 
@@ -142,9 +150,10 @@ def _calendar_week_window(offset: int = 0) -> tuple[datetime, datetime]:
 async def list_current_week_episodes(
     series: uuid.UUID | None = None,
     platform: str | None = None,
+    timezone: str = DEFAULT_TIMEZONE,
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
-    start, end = _calendar_week_window()
+    start, end = _calendar_week_window(timezone_name=timezone)
     return await list_episodes(
         from_=start,
         to=end - timedelta(microseconds=1),
@@ -158,9 +167,10 @@ async def list_current_week_episodes(
 async def list_next_week_episodes(
     series: uuid.UUID | None = None,
     platform: str | None = None,
+    timezone: str = DEFAULT_TIMEZONE,
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
-    start, end = _calendar_week_window(offset=1)
+    start, end = _calendar_week_window(offset=1, timezone_name=timezone)
     return await list_episodes(
         from_=start,
         to=end - timedelta(microseconds=1),

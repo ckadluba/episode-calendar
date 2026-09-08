@@ -141,12 +141,14 @@ series. This will later be replaced by a more complete catalog/import workflow.
    GET http://localhost:8000/api/v1/episodes?from=2026-09-06T00:00:00Z&to=2026-09-13T23:59:59Z
    GET http://localhost:8000/api/v1/episodes/current-week
    GET http://localhost:8000/api/v1/episodes/next-week
+   GET http://localhost:8000/api/v1/episodes/current-week?timezone=UTC
    ```
 
    The `{id}` value is the internal database UUID returned by the series list endpoint. Episode
    results are ordered by release time; `from`, `to`, and `series` are optional filters. The
    convenience endpoints use Monday-to-Sunday calendar weeks in the `Europe/Vienna` timezone
-   and also accept the optional `series` and `platform` filters (`joyn` or `rtlplus`). The
+   and also accept the optional `series`, `platform` (`joyn` or `rtlplus`), and `timezone`
+   (IANA name, default `Europe/Vienna`) filters. The
    series endpoints likewise accept `platform` as an optional query parameter.
 
 RTL+ is supported experimentally through its current Bedrock layout endpoint. Configure the

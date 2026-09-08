@@ -52,6 +52,15 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession) -> None:
         )
         assert response.status_code == 200
         assert response.json()[0]["title"] == "Pilot"
+        timezone_response = await client.get(
+            "/api/v1/episodes/current-week",
+            params={"series": str(series.id), "timezone": "UTC"},
+        )
+        assert timezone_response.status_code == 200
+        invalid_timezone = await client.get(
+            "/api/v1/episodes/current-week", params={"timezone": "not/a-timezone"}
+        )
+        assert invalid_timezone.status_code == 422
         assert response.json()[0]["platform"] == "joyn"
         assert (await client.get("/api/v1/episodes", params={"platform": "rtlplus"})).json() == []
         assert response.json()[0]["releases"][0]["release_at"].endswith("Z")
