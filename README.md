@@ -151,6 +151,10 @@ series. This will later be replaced by a more complete catalog/import workflow.
    (IANA name, default `Europe/Vienna`) filters. The
    series endpoints likewise accept `platform` as an optional query parameter.
 
+Provider imports run sequentially with a configurable pause (`IMPORT_DELAY_SECONDS`, default
+1 second). Temporary errors are retried up to `IMPORT_MAX_RETRIES` times using exponential
+backoff with jitter; the providers' `Retry-After` header is honored when present.
+
 RTL+ is supported experimentally through its current Bedrock layout endpoint. Configure the
 numeric program ID (or a URL slug ending in `_p_<id>`) in `config/series.json` and provide the
 public web-client value `RTLPLUS_OIDC_CLIENT_SECRET` at runtime; never commit it. The provider

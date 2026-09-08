@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import random
+
 # The provider mirrors a verbose external contract; long endpoint/field expressions are kept
 # readable alongside the response structure.
 # ruff: noqa: E501
@@ -70,6 +73,8 @@ class RTLPlusProvider:
         self._oidc_client_id = settings.rtlplus_oidc_client_id
         self._oidc_client_secret = oidc_client_secret or settings.rtlplus_oidc_client_secret
         self._auth_url = settings.rtlplus_auth_url
+        self._max_retries = settings.import_max_retries
+        self._backoff = settings.import_backoff_seconds
 
     @property
     def slug(self) -> str:
@@ -169,17 +174,31 @@ class RTLPlusProvider:
             "X-Bedrock-Token": self._bedrock_token or "",
             "Authorization": self._authorization or "",
         }
-        try:
-            response = await client.get(
-                self._endpoint_template.format(program_id=program_id),
-                params={"blockPage": page, "nbPages": 2},
-                headers=headers,
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise RTLPlusHTTPError(f"RTL+ HTTP {exc.response.status_code}") from exc
-        except httpx.RequestError as exc:
-            raise RTLPlusHTTPError(str(exc)) from exc
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = await client.get(
+                    self._endpoint_template.format(program_id=program_id),
+                    params={"blockPage": page, "nbPages": 2},
+                    headers=headers,
+                )
+                if response.status_code == 429 or response.status_code >= 500:
+                    if attempt < self._max_retries:
+                        retry_after = response.headers.get("Retry-After")
+                        delay = (
+                            float(retry_after)
+                            if retry_after and retry_after.isdigit()
+                            else self._backoff * (2**attempt) + random.random() * 0.25
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                response.raise_for_status()
+                break
+            except httpx.RequestError as exc:
+                if attempt >= self._max_retries:
+                    raise RTLPlusHTTPError(str(exc)) from exc
+                await asyncio.sleep(self._backoff * (2**attempt) + random.random() * 0.25)
+            except httpx.HTTPStatusError as exc:
+                raise RTLPlusHTTPError(f"RTL+ HTTP {exc.response.status_code}") from exc
         try:
             payload = response.json()
         except ValueError as exc:

@@ -177,8 +177,11 @@ async def import_configured(
         raise RuntimeError(f"No {provider_slug} series configured in the series JSON file")
     failed = 0
     adapter = adapter_factory()
+    settings = get_settings()
     async with get_session_factory()() as session:
         for identifier in identifiers:
+            if identifier != identifiers[0] and settings.import_delay_seconds > 0:
+                await asyncio.sleep(settings.import_delay_seconds)
             try:
                 result = await import_series(
                     session, adapter, identifier, provider_name=provider_name

@@ -24,6 +24,9 @@ class Settings(BaseSettings):
         "https://front-auth.rtlde.bedrock.tech/v2/rtlde/platforms/m6group_web/token"
     )
     rtlplus_timeout_seconds: float = 10.0
+    import_delay_seconds: float = 1.0
+    import_max_retries: int = 3
+    import_backoff_seconds: float = 1.0
     series_config_path: str = "config/series.json"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

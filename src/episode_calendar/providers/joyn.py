@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import random
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from json import JSONDecodeError
@@ -114,6 +116,8 @@ class JoynProvider:
             else (settings.joyn_timeout_seconds if settings else 10.0)
         )
         self._client = client
+        self._max_retries = settings.import_max_retries if settings else 3
+        self._backoff = settings.import_backoff_seconds if settings else 1.0
         if not self._api_key:
             raise ValueError("Joyn API key is required (set JOYN_API_KEY)")
 
@@ -203,24 +207,39 @@ class JoynProvider:
         query: str,
         variables: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        try:
-            response = await client.post(
-                self._endpoint,
-                headers={
-                    "Content-Type": "application/json",
-                    "Joyn-Platform": "web",
-                    "Joyn-Client-Version": "5.1579.1",
-                    "Joyn-Distribution-Tenant": "JOYN_AT",
-                    "Joyn-Country": "AT",
-                    "x-api-key": self._api_key,
-                },
-                json={"operationName": operation_name, "variables": variables, "query": query},
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise JoynHTTPError(exc.response.status_code, exc.response.text[:500]) from exc
-        except httpx.RequestError as exc:
-            raise JoynHTTPError(0, str(exc)) from exc
+        headers = {
+            "Content-Type": "application/json",
+            "Joyn-Platform": "web",
+            "Joyn-Client-Version": "5.1579.1",
+            "Joyn-Distribution-Tenant": "JOYN_AT",
+            "Joyn-Country": "AT",
+            "x-api-key": self._api_key,
+        }
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = await client.post(
+                    self._endpoint,
+                    headers=headers,
+                    json={"operationName": operation_name, "variables": variables, "query": query},
+                )
+                if response.status_code == 429 or response.status_code >= 500:
+                    if attempt < self._max_retries:
+                        retry_after = response.headers.get("Retry-After")
+                        delay = (
+                            float(retry_after)
+                            if retry_after and retry_after.isdigit()
+                            else self._backoff * (2**attempt) + random.random() * 0.25
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                response.raise_for_status()
+                break
+            except httpx.RequestError as exc:
+                if attempt >= self._max_retries:
+                    raise JoynHTTPError(0, str(exc)) from exc
+                await asyncio.sleep(self._backoff * (2**attempt) + random.random() * 0.25)
+            except httpx.HTTPStatusError as exc:
+                raise JoynHTTPError(exc.response.status_code, exc.response.text[:500]) from exc
         try:
             payload = response.json()
         except (JSONDecodeError, ValueError) as exc:
