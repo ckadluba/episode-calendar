@@ -23,32 +23,38 @@ Install or make available:
 - **Git** — source control.
 - **Python 3.13** — application runtime and tests.
 - **uv** — Python dependencies and virtual environments.
+- **Node.js 20+ and npm** — local frontend development and production builds.
 - **Docker with Compose** — local PostgreSQL, containers, and image builds.
 - **VS Code** (optional) — editor and integrated pytest runner.
 - **Bruno** (optional) — manual REST/GraphQL requests.
 - **curl and jq** (optional) — HTTP and JSON troubleshooting.
 - **A modern browser with Developer Tools** — inspect public provider web-client configuration.
 
-Cloud deployment additionally requires the **Google Cloud CLI (gcloud)**, **Terraform**, a Google
-Cloud project with billing, and a GitHub account for repository access. Homebrew is convenient for
+Cloud deployment additionally requires the **Google Cloud CLI (gcloud)**, **Terraform**, the
+**Firebase CLI**, a Google Cloud project with billing, and a GitHub account for repository access. Homebrew is convenient for
 installing command-line tools on macOS.
 
 Never commit `.env`, provider keys, OAuth values, service-account keys, or Terraform state.
 
 ### Local Development
 
-Install dependencies, configure the local environment, start PostgreSQL, run migrations, and
-start the API:
+Install dependencies, configure the local environment, start PostgreSQL, and run migrations:
 
 ```shell
 cp .env.example .env
 uv sync
 docker compose up -d db
 uv run alembic upgrade head
+```
+
+Start the API in the first terminal:
+
+```shell
 uv run uvicorn episode_calendar.main:app --reload
 ```
 
-The API is available at <http://localhost:8000>; `GET /health` reports its status. The local
+The API is available at <http://localhost:8000>; `GET /health` reports its status. Keep this
+terminal running. The local
 `DATABASE_URL` uses SQLAlchemy's async PostgreSQL form:
 `postgresql+asyncpg://user:password@host:5432/database`.
 
@@ -85,6 +91,16 @@ uv run python -m episode_calendar.importer joyn
 docker compose run --rm app uv run --no-sync python -m episode_calendar.importer all
 ```
 
+For a fresh local database, run the combined import once after setting the provider credentials
+and `config/series.json`. It is safe to repeat because imports are idempotent:
+
+```shell
+uv run python -m episode_calendar.importer all
+```
+
+Run this in a third terminal while the API is running, or before starting the API. The API only
+shows episodes after the corresponding provider import has completed.
+
 Imports are sequential, rate-limited, retried with backoff, and idempotent. Useful API requests:
 
 ```http
@@ -99,6 +115,22 @@ Episode results are ordered by release time. `from`, `to`, `series`, `platform`,
 `timezone` are optional filters; week endpoints use Monday-to-Sunday weeks in
 `Europe/Vienna` by default. The series `{id}` is the internal database UUID. The same
 requests can be made from Bruno.
+
+#### Local frontend
+
+In a second terminal, start the responsive React/Vite frontend from `frontend/`. It uses the local
+API by default:
+
+```shell
+cd frontend
+npm install
+npm run dev
+```
+
+Open <http://localhost:5173>. Set `VITE_API_BASE_URL` when the API runs somewhere else, for
+example `VITE_API_BASE_URL=http://localhost:8000 npm run dev`. Create a production build with
+`npm run build` and preview it with `npm run preview`. Filter selections are kept in the browser's
+local storage; no account or installation is required.
 
 ### Tests and checks
 
@@ -226,6 +258,59 @@ Deploy and execute the provider import job:
 ```shell
 gcloud run jobs deploy episode-calendar-import --image=REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG --region=REGION --project=PROJECT_ID --service-account=episode-calendar-runtime@PROJECT_ID.iam.gserviceaccount.com --set-cloudsql-instances=PROJECT_ID:REGION:episode-calendar-postgres --set-secrets=DATABASE_URL=episode-calendar-database-url:latest,JOYN_API_KEY=episode-calendar-joyn-api-key:latest,RTLPLUS_OIDC_CLIENT_SECRET=episode-calendar-rtlplus-client-secret:latest --command=uv --args=run,--no-sync,python,-m,episode_calendar.importer,all
 gcloud run jobs execute episode-calendar-import --region=REGION --project=PROJECT_ID --wait
+```
+
+### Deploy Frontend
+
+Firebase Hosting serves the static Vite build from the existing Google Cloud project. Install and
+authenticate the Firebase CLI once:
+
+```shell
+npm install --global firebase-tools
+firebase login
+gcloud services enable firebase.googleapis.com --project=episode-calendar-67234
+firebase projects:addfirebase
+firebase use episode-calendar-67234
+firebase hosting:sites:create episode-calendar-67234 --project=episode-calendar-67234
+```
+
+When `firebase projects:addfirebase` prompts for a project, select `episode-calendar-67234`. Before
+running it, open the project once in the Firebase console and accept the Firebase Terms if prompted;
+this acceptance cannot be completed by the CLI. Adding Firebase is a one-time,
+irreversible project-level operation. The default Hosting site is normally provisioned as part of
+this step; if it is not, run `firebase hosting:sites:create` afterwards. If site creation still
+returns HTTP 403, the signed-in account needs the **Firebase Hosting Admin** role (or Firebase
+Develop Admin) under **IAM & Admin → IAM**.
+
+Build the frontend with the deployed API URL and publish it:
+
+```shell
+cd frontend
+VITE_API_BASE_URL="$(terraform -chdir=../infra output -raw service_url)" npm run build
+cd ..
+firebase deploy --only hosting
+```
+
+The frontend is then available at `https://episode-calendar-67234.web.app`. Add that origin to
+`cors_origins` in `infra/terraform.tfvars` (alongside the local origins) and apply Terraform so
+the Cloud Run API accepts browser requests from Firebase Hosting:
+
+```shell
+terraform -chdir=infra apply
+```
+
+Verify that the deployed API returns a CORS header before opening the frontend:
+
+```shell
+curl -i -H "Origin: https://episode-calendar-67234.web.app" "$(terraform -chdir=infra output -raw service_url)/api/v1/series"
+```
+
+The response must contain `access-control-allow-origin: https://episode-calendar-67234.web.app`.
+
+If the header is missing, inspect the active Cloud Run revision and its environment:
+
+```shell
+gcloud run services describe episode-calendar --region=europe-west3 --project=episode-calendar-67234 --format='yaml(status.latestReadyRevisionName,spec.template.containers[0].image,spec.template.containers[0].env)'
 ```
 
 Set `enable_import_schedule = true` and apply Terraform once more. The default schedule is

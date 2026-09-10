@@ -7,3 +7,4 @@ database_password = "replace-with-a-random-value-of-at-least-16-characters"
 deploy_cloud_run = false
 # Enable only after the episode-calendar-import Cloud Run Job exists.
 enable_import_schedule = false
+cors_origins = "http://localhost:5173,http://127.0.0.1:5173,https://episode-calendar-67234.web.app"

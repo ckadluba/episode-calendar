@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     import_max_retries: int = 3
     import_backoff_seconds: float = 1.0
     series_config_path: str = "config/series.json"
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

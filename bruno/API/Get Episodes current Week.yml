@@ -14,6 +14,7 @@ http:
     - name: timezone
       value: Europe/London
       type: query
+      description: "Default: Europe/Vienna"
       disabled: true
   auth: inherit
 

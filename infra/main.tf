@@ -119,6 +119,10 @@ resource "google_cloud_run_v2_service" "app" {
           }
         }
       }
+      env {
+        name  = "CORS_ORIGINS"
+        value = var.cors_origins
+      }
       volume_mounts {
         name       = "cloudsql"
         mount_path = "/cloudsql"
