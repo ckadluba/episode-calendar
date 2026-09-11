@@ -66,6 +66,10 @@ gcloud iam service-accounts add-iam-policy-binding "$DEPLOY_EMAIL" --project="$P
   --role=roles/iam.workloadIdentityUser --member="$PRINCIPAL" >/dev/null
 gcloud iam service-accounts add-iam-policy-binding "$DEPLOY_EMAIL" --project="$PROJECT_ID" \
   --role=roles/iam.serviceAccountTokenCreator --member="$PRINCIPAL" >/dev/null
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --role=roles/iam.securityReviewer --member="serviceAccount:${DEPLOY_EMAIL}" >/dev/null
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --role=roles/iam.serviceAccountAdmin --member="serviceAccount:${DEPLOY_EMAIL}" >/dev/null
 
 if ! gcloud storage buckets describe "gs://${STATE_BUCKET}" --project="$PROJECT_ID" >/dev/null 2>&1; then
   gcloud storage buckets create "gs://${STATE_BUCKET}" --project="$PROJECT_ID" --location="$REGION" --uniform-bucket-level-access
@@ -87,7 +91,7 @@ if gcloud storage objects describe "gs://${STATE_BUCKET}/default.tfstate" --proj
     if [[ -n "$LOCAL_BACKUP" ]]; then
       terraform -chdir=infra init -input=false -reconfigure -backend-config="bucket=${STATE_BUCKET}"
       terraform -chdir=infra state push -force "../${LOCAL_BACKUP}"
-      for ROLE in "roles/artifactregistry.writer" "roles/cloudsql.admin" "roles/cloudscheduler.admin" "roles/firebasehosting.admin" "roles/iam.serviceAccountUser" "roles/run.admin" "roles/secretmanager.admin" "roles/serviceusage.serviceUsageAdmin" "roles/storage.admin"; do
+      for ROLE in "roles/artifactregistry.writer" "roles/cloudsql.admin" "roles/cloudscheduler.admin" "roles/firebasehosting.admin" "roles/iam.securityReviewer" "roles/iam.serviceAccountAdmin" "roles/iam.serviceAccountUser" "roles/run.admin" "roles/secretmanager.admin" "roles/serviceusage.serviceUsageAdmin" "roles/storage.admin"; do
         terraform -chdir=infra import -input=false \
           "google_project_iam_member.deploy[\"${ROLE}\"]" \
           "${PROJECT_ID} ${ROLE} serviceAccount:${DEPLOY_EMAIL}" >/dev/null

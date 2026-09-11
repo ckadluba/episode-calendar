@@ -7,6 +7,8 @@ locals {
     "roles/cloudsql.admin",
     "roles/cloudscheduler.admin",
     "roles/firebasehosting.admin",
+    "roles/iam.securityReviewer",
+    "roles/iam.serviceAccountAdmin",
     "roles/iam.serviceAccountUser",
     "roles/run.admin",
     "roles/secretmanager.admin",
