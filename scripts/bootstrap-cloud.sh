@@ -79,7 +79,7 @@ export TF_VAR_database_password="bootstrap-only-placeholder-not-used"
 export TF_VAR_deploy_cloud_run=false
 export TF_VAR_enable_import_schedule=false
 export TF_VAR_manage_deploy_iam=true
-terraform -chdir=infra init -input=false -backend-config="bucket=${STATE_BUCKET}"
+terraform -chdir=infra init -input=false -migrate-state -force-copy -backend-config="bucket=${STATE_BUCKET}"
 terraform -chdir=infra apply -input=false -auto-approve -target=google_project_iam_member.deploy
 
 cat <<EOF
