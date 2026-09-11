@@ -38,7 +38,7 @@ Never commit `.env`, provider keys, OAuth values, service-account keys, or Terra
 
 ### Local Development
 
-Install dependencies, configure the local environment, start PostgreSQL, and run migrations:
+Set up the backend once:
 
 ```shell
 cp .env.example .env
@@ -47,29 +47,15 @@ docker compose up -d db
 uv run alembic upgrade head
 ```
 
-Start the API in the first terminal:
+Start the backend in one terminal:
 
 ```shell
 uv run uvicorn episode_calendar.main:app --reload
 ```
 
-The API is available at <http://localhost:8000>; `GET /health` reports its status. Keep this
-terminal running. The local
-`DATABASE_URL` uses SQLAlchemy's async PostgreSQL form:
-`postgresql+asyncpg://user:password@host:5432/database`.
+The API is available at <http://localhost:8000>; `GET /health` reports its status.
 
-#### Dev Container
-
-The optional Dev Container starts PostgreSQL and installs the locked dependencies automatically.
-Open the repository in a compatible editor; if `.env` is missing, setup copies `.env.example`.
-From the container terminal run:
-
-```shell
-uv run alembic upgrade head
-uv run uvicorn episode_calendar.main:app --reload --host 0.0.0.0
-```
-
-#### Provider configuration and local imports
+#### Provider configuration and import
 
 Maintain provider series in `config/series.json` (override with `SERIES_CONFIG_PATH`):
 
@@ -84,24 +70,17 @@ page, select `api.joyn.de/graphql`, and copy its `x-api-key` header to `JOYN_API
 `RTLPLUS_OIDC_CLIENT_SECRET`. These are public web-client values, not user passwords. Never
 copy or commit `Authorization`, `X-Bedrock-Token`, cookies, or other browser session data.
 
-Import locally after the database is available:
-
-```shell
-uv run python -m episode_calendar.importer joyn
-docker compose run --rm app uv run --no-sync python -m episode_calendar.importer all
-```
-
-For a fresh local database, run the combined import once after setting the provider credentials
-and `config/series.json`. It is safe to repeat because imports are idempotent:
+After setting the provider credentials and `config/series.json`, run the combined import once:
 
 ```shell
 uv run python -m episode_calendar.importer all
 ```
 
-Run this in a third terminal while the API is running, or before starting the API. The API only
-shows episodes after the corresponding provider import has completed.
+Run it after PostgreSQL and migrations are ready, either before or while the API is running. The
+API only shows episodes after the corresponding provider import has completed. Imports are
+sequential, rate-limited, retried with backoff, and idempotent, so the command is safe to repeat.
 
-Imports are sequential, rate-limited, retried with backoff, and idempotent. Useful API requests:
+Useful API requests:
 
 ```http
 GET http://localhost:8000/api/v1/series
@@ -116,10 +95,9 @@ Episode results are ordered by release time. `from`, `to`, `series`, `platform`,
 `Europe/Vienna` by default. The series `{id}` is the internal database UUID. The same
 requests can be made from Bruno.
 
-#### Local frontend
+#### Frontend
 
-In a second terminal, start the responsive React/Vite frontend from `frontend/`. It uses the local
-API by default:
+In a second terminal, install dependencies and start the responsive React/Vite frontend:
 
 ```shell
 cd frontend
@@ -127,10 +105,27 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:5173>. Set `VITE_API_BASE_URL` when the API runs somewhere else, for
-example `VITE_API_BASE_URL=http://localhost:8000 npm run dev`. Create a production build with
-`npm run build` and preview it with `npm run preview`. Filter selections are kept in the browser's
-local storage; no account or installation is required.
+Open <http://localhost:5173>. The local API is used by default. If the API runs elsewhere, set
+`VITE_API_BASE_URL`, for example:
+
+```shell
+VITE_API_BASE_URL=http://localhost:8000 npm run dev
+```
+
+Create and preview a production frontend build with:
+
+```shell
+npm run build
+npm run preview
+```
+
+Build the backend image locally from the repository root with:
+
+```shell
+docker build -t episode-calendar:local .
+```
+
+Filter selections are kept in the browser's local storage; no account or installation is required.
 
 ### Tests and checks
 
