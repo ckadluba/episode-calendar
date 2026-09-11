@@ -85,16 +85,13 @@ if gcloud storage objects describe "gs://${STATE_BUCKET}/default.tfstate" --proj
   if [[ ! -f infra/terraform.tfstate ]]; then
     LOCAL_BACKUP="$(find infra -maxdepth 1 -name 'terraform.tfstate.bootstrap-backup.*' -print | sort | tail -1)"
     if [[ -n "$LOCAL_BACKUP" ]]; then
-      cp "$LOCAL_BACKUP" infra/terraform.tfstate
-      rm -f infra/.terraform/terraform.tfstate
-      terraform -chdir=infra init -input=false -reconfigure -backend=false
+      terraform -chdir=infra init -input=false -reconfigure -backend-config="bucket=${STATE_BUCKET}"
+      terraform -chdir=infra state push -force "../${LOCAL_BACKUP}"
       for ROLE in "roles/artifactregistry.writer" "roles/cloudsql.admin" "roles/cloudscheduler.admin" "roles/firebasehosting.admin" "roles/iam.serviceAccountUser" "roles/run.admin" "roles/secretmanager.admin" "roles/serviceusage.serviceUsageAdmin" "roles/storage.admin"; do
         terraform -chdir=infra import -input=false \
           "google_project_iam_member.deploy[\"${ROLE}\"]" \
-          "${PROJECT_ID}/${ROLE}/serviceAccount:${DEPLOY_EMAIL}" >/dev/null
+          "${PROJECT_ID} ${ROLE} serviceAccount:${DEPLOY_EMAIL}" >/dev/null
       done
-      rm -f infra/.terraform/terraform.tfstate
-      terraform -chdir=infra init -input=false -migrate-state -force-copy -backend-config="bucket=${STATE_BUCKET}"
     fi
   fi
   # A previous local-backend checkout can make Terraform prompt for migration even
