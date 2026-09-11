@@ -80,6 +80,12 @@ export TF_VAR_deploy_cloud_run=false
 export TF_VAR_enable_import_schedule=false
 export TF_VAR_manage_deploy_iam=true
 if gcloud storage objects describe "gs://${STATE_BUCKET}/default.tfstate" --project="$PROJECT_ID" >/dev/null 2>&1; then
+  # A previous local-backend checkout can make Terraform prompt for migration even
+  # when the remote state already exists. Preserve those local files as a backup.
+  BACKUP_SUFFIX="bootstrap-backup.$$"
+  [[ -f infra/terraform.tfstate ]] && mv infra/terraform.tfstate "infra/terraform.tfstate.${BACKUP_SUFFIX}"
+  [[ -f infra/terraform.tfstate.backup ]] && mv infra/terraform.tfstate.backup "infra/terraform.tfstate.backup.${BACKUP_SUFFIX}"
+  [[ -f infra/.terraform/terraform.tfstate ]] && mv infra/.terraform/terraform.tfstate "infra/.terraform/terraform.tfstate.${BACKUP_SUFFIX}"
   terraform -chdir=infra init -input=false -reconfigure -backend-config="bucket=${STATE_BUCKET}"
 else
   terraform -chdir=infra init -input=false -migrate-state -force-copy -backend-config="bucket=${STATE_BUCKET}"
