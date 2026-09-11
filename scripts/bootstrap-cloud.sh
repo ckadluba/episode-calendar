@@ -80,6 +80,23 @@ export TF_VAR_deploy_cloud_run=false
 export TF_VAR_enable_import_schedule=false
 export TF_VAR_manage_deploy_iam=true
 if gcloud storage objects describe "gs://${STATE_BUCKET}/default.tfstate" --project="$PROJECT_ID" >/dev/null 2>&1; then
+  # If a previous CI run initialized a partial remote state, merge the local
+  # state backup (which contains the existing infrastructure) before continuing.
+  if [[ ! -f infra/terraform.tfstate ]]; then
+    LOCAL_BACKUP="$(find infra -maxdepth 1 -name 'terraform.tfstate.bootstrap-backup.*' -print | sort | tail -1)"
+    if [[ -n "$LOCAL_BACKUP" ]]; then
+      cp "$LOCAL_BACKUP" infra/terraform.tfstate
+      rm -f infra/.terraform/terraform.tfstate
+      terraform -chdir=infra init -input=false -backend=false
+      for ROLE in "roles/artifactregistry.writer" "roles/cloudsql.admin" "roles/cloudscheduler.admin" "roles/firebasehosting.admin" "roles/iam.serviceAccountUser" "roles/run.admin" "roles/secretmanager.admin" "roles/serviceusage.serviceUsageAdmin" "roles/storage.admin"; do
+        terraform -chdir=infra import -input=false \
+          "google_project_iam_member.deploy[\"${ROLE}\"]" \
+          "${PROJECT_ID}/${ROLE}/serviceAccount:${DEPLOY_EMAIL}" >/dev/null
+      done
+      rm -f infra/.terraform/terraform.tfstate
+      terraform -chdir=infra init -input=false -migrate-state -force-copy -backend-config="bucket=${STATE_BUCKET}"
+    fi
+  fi
   # A previous local-backend checkout can make Terraform prompt for migration even
   # when the remote state already exists. Preserve those local files as a backup.
   BACKUP_SUFFIX="bootstrap-backup.$$"
