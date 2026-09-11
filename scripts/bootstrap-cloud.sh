@@ -87,7 +87,7 @@ if gcloud storage objects describe "gs://${STATE_BUCKET}/default.tfstate" --proj
     if [[ -n "$LOCAL_BACKUP" ]]; then
       cp "$LOCAL_BACKUP" infra/terraform.tfstate
       rm -f infra/.terraform/terraform.tfstate
-      terraform -chdir=infra init -input=false -backend=false
+      terraform -chdir=infra init -input=false -reconfigure -backend=false
       for ROLE in "roles/artifactregistry.writer" "roles/cloudsql.admin" "roles/cloudscheduler.admin" "roles/firebasehosting.admin" "roles/iam.serviceAccountUser" "roles/run.admin" "roles/secretmanager.admin" "roles/serviceusage.serviceUsageAdmin" "roles/storage.admin"; do
         terraform -chdir=infra import -input=false \
           "google_project_iam_member.deploy[\"${ROLE}\"]" \
