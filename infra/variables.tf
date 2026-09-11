@@ -1,5 +1,15 @@
 variable "project_id" { type = string }
 
+variable "deploy_service_account" {
+  type    = string
+  default = "github-deploy"
+}
+
+variable "manage_deploy_iam" {
+  type    = bool
+  default = false
+}
+
 variable "region" {
   type    = string
   default = "europe-west3"

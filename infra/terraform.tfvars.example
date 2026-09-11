@@ -1,5 +1,6 @@
 project_id = "episode-calendar-67234"
 region     = "europe-west3"
+deploy_service_account = "github-deploy"
 image      = "europe-west3-docker.pkg.dev/episode-calendar-67234/episode-calendar/app:latest"
 # Set locally; never commit the real value.
 database_password = "replace-with-a-random-value-of-at-least-16-characters"

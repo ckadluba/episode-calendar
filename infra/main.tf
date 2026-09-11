@@ -1,5 +1,27 @@
 locals { service_account = "${var.service_name}-runtime@${var.project_id}.iam.gserviceaccount.com" }
 
+locals {
+  deploy_service_account_email = "${var.deploy_service_account}@${var.project_id}.iam.gserviceaccount.com"
+  deploy_roles = toset([
+    "roles/artifactregistry.writer",
+    "roles/cloudsql.admin",
+    "roles/cloudscheduler.admin",
+    "roles/firebasehosting.admin",
+    "roles/iam.serviceAccountUser",
+    "roles/run.admin",
+    "roles/secretmanager.admin",
+    "roles/serviceusage.serviceUsageAdmin",
+    "roles/storage.admin",
+  ])
+}
+
+resource "google_project_iam_member" "deploy" {
+  for_each = var.manage_deploy_iam ? local.deploy_roles : toset([])
+  project  = var.project_id
+  role     = each.value
+  member   = "serviceAccount:${local.deploy_service_account_email}"
+}
+
 resource "google_project_service" "required" {
   for_each           = toset(["run.googleapis.com", "sqladmin.googleapis.com", "artifactregistry.googleapis.com", "secretmanager.googleapis.com", "cloudscheduler.googleapis.com"])
   service            = each.value

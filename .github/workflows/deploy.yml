@@ -65,6 +65,7 @@ jobs:
           TF_VAR_database_password: ${{ secrets.DATABASE_PASSWORD }}
           TF_VAR_deploy_cloud_run: "true"
           TF_VAR_enable_import_schedule: "true"
+          TF_VAR_manage_deploy_iam: "true"
           TF_VAR_cors_origins: "http://localhost:5173,http://127.0.0.1:5173,https://episode-calendar-67234.web.app"
         run: >-
           terraform -chdir=infra apply -input=false -auto-approve
@@ -115,6 +116,7 @@ jobs:
           TF_VAR_database_password: ${{ secrets.DATABASE_PASSWORD }}
           TF_VAR_deploy_cloud_run: "true"
           TF_VAR_enable_import_schedule: "true"
+          TF_VAR_manage_deploy_iam: "true"
           TF_VAR_cors_origins: "http://localhost:5173,http://127.0.0.1:5173,https://episode-calendar-67234.web.app"
         run: terraform -chdir=infra apply -input=false -auto-approve
 

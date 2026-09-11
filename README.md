@@ -200,24 +200,25 @@ The repository contains two GitHub Actions workflows:
 - `.github/workflows/deploy.yml` runs on pushes to `main`, pushes an immutable backend image,
   applies Terraform, runs migrations and the provider import job, and deploys Firebase Hosting.
 
-One-time setup is required before the first deployment:
+One-time setup is required before the first deployment. Run the bootstrap script with a local
+identity that can create service accounts, Workload Identity providers, buckets, and project IAM
+bindings:
 
-1. Create a GCS bucket for the Terraform state and migrate the existing local state. Use a unique
-   bucket name if this one is already taken:
+```shell
+gcloud auth login
+gcloud auth application-default login
+./scripts/bootstrap-cloud.sh \
+  --project episode-calendar-67234 \
+  --repository ckadluba/episode-calendar
+```
 
-   ```shell
-   gcloud storage buckets create gs://episode-calendar-67234-tfstate --project=episode-calendar-67234 --location=europe-west3 --uniform-bucket-level-access
-   gcloud storage buckets update gs://episode-calendar-67234-tfstate --versioning
-   terraform -chdir=infra init -migrate-state -backend-config="bucket=episode-calendar-67234-tfstate"
-   ```
+The script creates the GitHub OIDC provider, deploy service account, and Terraform state bucket,
+then invokes Terraform to grant the deploy account its project roles. It is safe to repeat and
+prints the exact values for the first two GitHub secrets.
 
-2. Create a dedicated GitHub deploy service account and a Workload Identity Federation provider
-   for the `ckadluba/episode-calendar` repository. Grant the service account the permissions it
-   needs to deploy (Cloud Run Admin, Cloud SQL Admin, Secret Manager Admin, Artifact Registry
-   Writer, Cloud Scheduler Admin, Service Account User, Storage Admin, and Firebase Hosting Admin).
-   Restrict the provider condition to this repository; do not create or upload a JSON key.
+The remaining one-time setup is:
 
-3. Add these GitHub repository secrets under **Settings → Secrets and variables → Actions**:
+1. Add these GitHub repository secrets under **Settings → Secrets and variables → Actions**:
 
    - `GCP_WORKLOAD_IDENTITY_PROVIDER` — full provider resource name.
    - `GCP_DEPLOY_SERVICE_ACCOUNT` — deploy service-account email.
@@ -225,7 +226,7 @@ One-time setup is required before the first deployment:
 
    The provider API keys remain in Secret Manager. Ensure the three required secret versions
    (`DATABASE_URL`, `JOYN_API_KEY`, and `RTLPLUS_OIDC_CLIENT_SECRET`) exist before the first run.
-   The deploy workflow creates or updates the state bucket if the deploy account has Storage Admin.
+   Do not create or upload a JSON key.
 
 ### Deploy Infrastructure
 
