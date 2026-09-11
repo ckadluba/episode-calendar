@@ -10,6 +10,10 @@ permissions:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    # The API settings are loaded while tests are collected. Tests override the
+    # database session with SQLite, so no PostgreSQL service is needed in CI.
+    env:
+      DATABASE_URL: sqlite+aiosqlite://
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

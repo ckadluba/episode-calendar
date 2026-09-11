@@ -8,9 +8,7 @@ from episode_calendar.config import get_settings
 def create_app() -> FastAPI:
     app = FastAPI(title="Episode Calendar", version="0.1.0")
     origins = [
-        origin.strip()
-        for origin in get_settings().cors_origins.split(",")
-        if origin.strip()
+        origin.strip() for origin in get_settings().cors_origins.split(",") if origin.strip()
     ]
     app.add_middleware(
         CORSMiddleware,
