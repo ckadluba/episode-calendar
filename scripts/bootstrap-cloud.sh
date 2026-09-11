@@ -79,7 +79,7 @@ export TF_VAR_database_password="bootstrap-only-placeholder-not-used"
 export TF_VAR_deploy_cloud_run=false
 export TF_VAR_enable_import_schedule=false
 export TF_VAR_manage_deploy_iam=true
-if gcloud storage ls "gs://${STATE_BUCKET}/default.tfstate" >/dev/null 2>&1; then
+if gcloud storage objects describe "gs://${STATE_BUCKET}/default.tfstate" >/dev/null 2>&1; then
   terraform -chdir=infra init -input=false -reconfigure -backend-config="bucket=${STATE_BUCKET}"
 else
   terraform -chdir=infra init -input=false -migrate-state -force-copy -backend-config="bucket=${STATE_BUCKET}"
