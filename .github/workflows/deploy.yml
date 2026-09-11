@@ -1,0 +1,145 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: episode-calendar-67234
+  REGION: europe-west3
+  SERVICE_NAME: episode-calendar
+  IMAGE_REPOSITORY: europe-west3-docker.pkg.dev/episode-calendar-67234/episode-calendar/app
+  TF_STATE_BUCKET: episode-calendar-67234-tfstate
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker authentication
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push application image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: docker buildx build --platform linux/amd64 --provenance=false --tag "${IMAGE_REPOSITORY}:${IMAGE_TAG}" --push .
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Ensure Terraform state bucket exists
+        run: |
+          gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" --project="${PROJECT_ID}" >/dev/null 2>&1 || \
+            gcloud storage buckets create "gs://${TF_STATE_BUCKET}" --project="${PROJECT_ID}" --location="${REGION}" --uniform-bucket-level-access
+          gcloud storage buckets update "gs://${TF_STATE_BUCKET}" --versioning
+
+      - name: Initialize Terraform remote state
+        run: terraform -chdir=infra init -input=false -backend-config="bucket=${TF_STATE_BUCKET}"
+
+      - name: Bootstrap infrastructure prerequisites
+        env:
+          TF_VAR_project_id: ${{ env.PROJECT_ID }}
+          TF_VAR_region: ${{ env.REGION }}
+          TF_VAR_image: ${{ env.IMAGE_REPOSITORY }}:${{ github.sha }}
+          TF_VAR_database_password: ${{ secrets.DATABASE_PASSWORD }}
+          TF_VAR_deploy_cloud_run: "true"
+          TF_VAR_enable_import_schedule: "true"
+          TF_VAR_cors_origins: "http://localhost:5173,http://127.0.0.1:5173,https://episode-calendar-67234.web.app"
+        run: >-
+          terraform -chdir=infra apply -input=false -auto-approve
+          -target=google_project_service.required
+          -target=google_sql_database_instance.postgres
+          -target=google_sql_database.app
+          -target=google_sql_user.app
+          -target=google_service_account.runtime
+          -target=google_project_iam_member.cloud_sql_client
+          -target=google_secret_manager_secret.database_url
+          -target=google_secret_manager_secret.joyn_api_key
+          -target=google_secret_manager_secret.rtlplus_client_secret
+          -target=google_secret_manager_secret_iam_member.runtime
+
+      - name: Deploy migration job
+        env:
+          IMAGE: ${{ env.IMAGE_REPOSITORY }}:${{ github.sha }}
+        run: >-
+          gcloud run jobs deploy "${SERVICE_NAME}-migrate"
+          --image="${IMAGE}"
+          --region="${REGION}"
+          --project="${PROJECT_ID}"
+          --service-account="${SERVICE_NAME}-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
+          --set-cloudsql-instances="${PROJECT_ID}:${REGION}:${SERVICE_NAME}-postgres"
+          --set-secrets=DATABASE_URL=episode-calendar-database-url:latest
+          --command=uv
+          --args=run,--no-sync,alembic,upgrade,head
+
+      - name: Deploy import job
+        env:
+          IMAGE: ${{ env.IMAGE_REPOSITORY }}:${{ github.sha }}
+        run: >-
+          gcloud run jobs deploy "${SERVICE_NAME}-import"
+          --image="${IMAGE}"
+          --region="${REGION}"
+          --project="${PROJECT_ID}"
+          --service-account="${SERVICE_NAME}-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
+          --set-cloudsql-instances="${PROJECT_ID}:${REGION}:${SERVICE_NAME}-postgres"
+          --set-secrets=DATABASE_URL=episode-calendar-database-url:latest,JOYN_API_KEY=episode-calendar-joyn-api-key:latest,RTLPLUS_OIDC_CLIENT_SECRET=episode-calendar-rtlplus-client-secret:latest
+          --command=uv
+          --args=run,--no-sync,python,-m,episode_calendar.importer,all
+
+      - name: Apply infrastructure and deploy Cloud Run
+        env:
+          TF_VAR_project_id: ${{ env.PROJECT_ID }}
+          TF_VAR_region: ${{ env.REGION }}
+          TF_VAR_image: ${{ env.IMAGE_REPOSITORY }}:${{ github.sha }}
+          TF_VAR_database_password: ${{ secrets.DATABASE_PASSWORD }}
+          TF_VAR_deploy_cloud_run: "true"
+          TF_VAR_enable_import_schedule: "true"
+          TF_VAR_cors_origins: "http://localhost:5173,http://127.0.0.1:5173,https://episode-calendar-67234.web.app"
+        run: terraform -chdir=infra apply -input=false -auto-approve
+
+      - name: Read Cloud Run service URL
+        id: service-url
+        run: echo "url=$(terraform -chdir=infra output -raw service_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Run database migrations
+        run: gcloud run jobs execute "${SERVICE_NAME}-migrate" --region="${REGION}" --project="${PROJECT_ID}" --wait
+
+      - name: Run provider import
+        run: gcloud run jobs execute "${SERVICE_NAME}-import" --region="${REGION}" --project="${PROJECT_ID}" --wait
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          API_URL: ${{ steps.service-url.outputs.url }}
+        run: npm ci && VITE_API_BASE_URL="${API_URL}" npm run build
+
+      - name: Deploy frontend to Firebase Hosting
+        run: npx --yes firebase-tools deploy --only hosting --project="${PROJECT_ID}"

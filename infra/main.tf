@@ -1,7 +1,7 @@
 locals { service_account = "${var.service_name}-runtime@${var.project_id}.iam.gserviceaccount.com" }
 
 resource "google_project_service" "required" {
-  for_each           = toset(["run.googleapis.com", "sqladmin.googleapis.com", "secretmanager.googleapis.com", "cloudscheduler.googleapis.com"])
+  for_each           = toset(["run.googleapis.com", "sqladmin.googleapis.com", "artifactregistry.googleapis.com", "secretmanager.googleapis.com", "cloudscheduler.googleapis.com"])
   service            = each.value
   disable_on_destroy = false
 }

@@ -145,8 +145,8 @@ uv run ruff format --check .
 ## Cloud Environment
 
 Cloud deployment uses Cloud Run, Cloud SQL, Secret Manager, Artifact Registry, Cloud Scheduler,
-and Terraform. Terraform is intentionally not run by CI. Review billing and quotas before
-continuing. Use Application Default Credentials locally rather than service-account key files.
+Firebase Hosting, and Terraform. Review billing and quotas before continuing. Use short-lived
+GitHub OIDC credentials for CI rather than service-account key files.
 
 ### Setup Cloud Environment
 
@@ -191,6 +191,42 @@ continuing. Use Application Default Credentials locally rather than service-acco
    gcloud auth application-default print-access-token >/dev/null && echo "ADC ready"
    ```
 
+### Automated deployment prerequisites
+
+The repository contains two GitHub Actions workflows:
+
+- `.github/workflows/ci.yml` runs on pull requests, tests the Python application, builds the
+  backend image, and builds the frontend.
+- `.github/workflows/deploy.yml` runs on pushes to `main`, pushes an immutable backend image,
+  applies Terraform, runs migrations and the provider import job, and deploys Firebase Hosting.
+
+One-time setup is required before the first deployment:
+
+1. Create a GCS bucket for the Terraform state and migrate the existing local state. Use a unique
+   bucket name if this one is already taken:
+
+   ```shell
+   gcloud storage buckets create gs://episode-calendar-67234-tfstate --project=episode-calendar-67234 --location=europe-west3 --uniform-bucket-level-access
+   gcloud storage buckets update gs://episode-calendar-67234-tfstate --versioning
+   terraform -chdir=infra init -migrate-state -backend-config="bucket=episode-calendar-67234-tfstate"
+   ```
+
+2. Create a dedicated GitHub deploy service account and a Workload Identity Federation provider
+   for the `ckadluba/episode-calendar` repository. Grant the service account the permissions it
+   needs to deploy (Cloud Run Admin, Cloud SQL Admin, Secret Manager Admin, Artifact Registry
+   Writer, Cloud Scheduler Admin, Service Account User, Storage Admin, and Firebase Hosting Admin).
+   Restrict the provider condition to this repository; do not create or upload a JSON key.
+
+3. Add these GitHub repository secrets under **Settings → Secrets and variables → Actions**:
+
+   - `GCP_WORKLOAD_IDENTITY_PROVIDER` — full provider resource name.
+   - `GCP_DEPLOY_SERVICE_ACCOUNT` — deploy service-account email.
+   - `DATABASE_PASSWORD` — the existing Cloud SQL application-user password.
+
+   The provider API keys remain in Secret Manager. Ensure the three required secret versions
+   (`DATABASE_URL`, `JOYN_API_KEY`, and `RTLPLUS_OIDC_CLIENT_SECRET`) exist before the first run.
+   The deploy workflow creates or updates the state bucket if the deploy account has Storage Admin.
+
 ### Deploy Infrastructure
 
 The first Terraform apply creates Cloud SQL, IAM, and empty Secret Manager containers. Copy the
@@ -206,7 +242,7 @@ Copy the generated value into `database_password` in `infra/terraform.tfvars`. K
 password is sensitive but still exists in local Terraform state.
 
 ```shell
-terraform -chdir=infra init
+terraform -chdir=infra init -backend-config="bucket=episode-calendar-67234-tfstate"
 terraform -chdir=infra plan
 terraform -chdir=infra apply
 ```
