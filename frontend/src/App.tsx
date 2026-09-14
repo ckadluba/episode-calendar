@@ -9,6 +9,41 @@ type Episode = {
 
 const API_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:8000";
 const TIMEZONE = "Europe/Vienna";
+const CACHE_PREFIX = "episode-calendar-cache-v1";
+
+type CachedValue<T> = { timestamp: number; data: T };
+
+function readLocal<T>(key: string, fallback: T): T {
+  try {
+    const value = localStorage.getItem(key);
+    if (value === null) return fallback;
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      // Preferences created by older versions were stored as plain strings.
+      return value as T;
+    }
+  } catch {
+    return fallback;
+  }
+}
+
+function readCache<T>(key: string): CachedValue<T> | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) ?? "null") as CachedValue<T> | null;
+    return value && Array.isArray(value.data) && typeof value.timestamp === "number" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache<T>(key: string, data: T) {
+  try {
+    localStorage.setItem(key, JSON.stringify({ timestamp: Date.now(), data }));
+  } catch {
+    // Caching is best effort (for example, private browsing may disable storage).
+  }
+}
 
 function weekDays(week: "current" | "next") {
   const now = new Date();
@@ -24,27 +59,45 @@ const dayLabel = new Intl.DateTimeFormat("de-AT", { weekday: "long", day: "numer
 const timeLabel = new Intl.DateTimeFormat("de-AT", { hour: "2-digit", minute: "2-digit" });
 
 export function App() {
-  const [week, setWeek] = useState<"current" | "next">("current");
+  const [week, setWeek] = useState<"current" | "next">(() => readLocal<"current" | "next">("episode-calendar-week", "current"));
   const [series, setSeries] = useState<Series[]>([]);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
-  const [platform, setPlatform] = useState(localStorage.getItem("episode-calendar-platform") ?? "all");
-  const [seriesId, setSeriesId] = useState(localStorage.getItem("episode-calendar-series") ?? "all");
+  const [platform, setPlatform] = useState(() => readLocal("episode-calendar-platform", "all"));
+  const [seriesId, setSeriesId] = useState(() => readLocal("episode-calendar-series", "all"));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => { localStorage.setItem("episode-calendar-week", week); }, [week]);
   useEffect(() => { localStorage.setItem("episode-calendar-platform", platform); }, [platform]);
   useEffect(() => { localStorage.setItem("episode-calendar-series", seriesId); }, [seriesId]);
   useEffect(() => {
+    const seriesKey = `${CACHE_PREFIX}:${API_URL}:series`;
+    const episodesKey = `${CACHE_PREFIX}:${API_URL}:episodes:${week}:${TIMEZONE}`;
+    const cachedSeries = readCache<Series[]>(seriesKey);
+    const cachedEpisodes = readCache<Episode[]>(episodesKey);
+    if (cachedSeries) setSeries(cachedSeries.data);
+    if (cachedEpisodes) setEpisodes(cachedEpisodes.data);
+
     const load = async () => {
-      setLoading(true); setError(null);
+      setLoading(!cachedSeries || !cachedEpisodes); setError(null);
       try {
         const [seriesResponse, episodeResponse] = await Promise.all([
-          fetch(`${API_URL}/api/v1/series`).then((response) => response.json()),
-          fetch(`${API_URL}/api/v1/episodes/${week}-week?timezone=${encodeURIComponent(TIMEZONE)}`).then((response) => response.json()),
+          fetch(`${API_URL}/api/v1/series`).then(async (response) => {
+            if (!response.ok) throw new Error(`Serien konnten nicht geladen werden (${response.status}).`);
+            return response.json();
+          }),
+          fetch(`${API_URL}/api/v1/episodes/${week}-week?timezone=${encodeURIComponent(TIMEZONE)}`).then(async (response) => {
+            if (!response.ok) throw new Error(`Episoden konnten nicht geladen werden (${response.status}).`);
+            return response.json();
+          }),
         ]);
         if (!Array.isArray(seriesResponse) || !Array.isArray(episodeResponse)) throw new Error("Ungültige API-Antwort");
+        writeCache(seriesKey, seriesResponse);
+        writeCache(episodesKey, episodeResponse);
         setSeries(seriesResponse); setEpisodes(episodeResponse);
-      } catch (cause) { setError(cause instanceof Error ? cause.message : "Die API ist nicht erreichbar."); }
+      } catch (cause) {
+        if (!cachedSeries || !cachedEpisodes) setError(cause instanceof Error ? cause.message : "Die API ist nicht erreichbar.");
+      }
       finally { setLoading(false); }
     };
     void load();

@@ -25,6 +25,7 @@ services:
       IMPORT_MAX_RETRIES: ${IMPORT_MAX_RETRIES:-3}
       IMPORT_BACKOFF_SECONDS: ${IMPORT_BACKOFF_SECONDS:-1.0}
       SERIES_CONFIG_PATH: ${SERIES_CONFIG_PATH:-config/series.json}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173}
     ports:
       - "8000:8000"
     depends_on:

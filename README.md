@@ -125,7 +125,9 @@ Build the backend image locally from the repository root with:
 docker build -t episode-calendar:local .
 ```
 
-Filter selections are kept in the browser's local storage; no account or installation is required.
+Filter selections and the most recently loaded series/episode data are kept in the browser's local
+storage, so returning to the app renders immediately while fresh data is fetched in the background.
+No account or installation is required.
 
 ### Tests and checks
 
@@ -135,6 +137,10 @@ Tests use an isolated SQLite database and never contact streaming providers:
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
+cd frontend
+npm ci
+npm test
+npm run build
 ```
 
 ## Cloud Environment
