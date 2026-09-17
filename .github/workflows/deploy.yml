@@ -106,6 +106,19 @@ jobs:
           --command=uv
           --args=run,--no-sync,python,-m,episode_calendar.importer,all
 
+      - name: Import existing scheduler into Terraform state
+        env:
+          SCHEDULER_NAME: ${{ env.SERVICE_NAME }}-import-periodic
+        run: |
+          if ! terraform -chdir=infra state list | grep -Fq 'google_cloud_scheduler_job.import[0]'; then
+            if gcloud scheduler jobs describe "${SCHEDULER_NAME}" \
+              --location="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+              terraform -chdir=infra import -input=false \
+                'google_cloud_scheduler_job.import[0]' \
+                "projects/${PROJECT_ID}/locations/${REGION}/jobs/${SCHEDULER_NAME}"
+            fi
+          fi
+
       - name: Apply infrastructure and deploy Cloud Run
         env:
           TF_VAR_project_id: ${{ env.PROJECT_ID }}
