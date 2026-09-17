@@ -109,6 +109,14 @@ jobs:
       - name: Import existing scheduler into Terraform state
         env:
           SCHEDULER_NAME: ${{ env.SERVICE_NAME }}-import-periodic
+          TF_VAR_project_id: ${{ env.PROJECT_ID }}
+          TF_VAR_region: ${{ env.REGION }}
+          TF_VAR_image: ${{ env.IMAGE_REPOSITORY }}:${{ github.sha }}
+          TF_VAR_database_password: ${{ secrets.DATABASE_PASSWORD }}
+          TF_VAR_deploy_cloud_run: "true"
+          TF_VAR_enable_import_schedule: "true"
+          TF_VAR_manage_deploy_iam: "true"
+          TF_VAR_cors_origins: "http://localhost:5173,http://127.0.0.1:5173,https://episode-calendar-67234.web.app"
         run: |
           if ! terraform -chdir=infra state list | grep -Fq 'google_cloud_scheduler_job.import[0]'; then
             if gcloud scheduler jobs describe "${SCHEDULER_NAME}" \
