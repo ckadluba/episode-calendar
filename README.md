@@ -273,7 +273,7 @@ Build and push an amd64 image. Apple Silicon users must specify the platform; us
 tag or digest when possible:
 
 ```shell
-docker build --platform linux/amd64 --provenance=false -t REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG . && docker push REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG
+docker build --platform linux/amd64 --provenance=false -t europe-west3-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG . && docker push europe-west3-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG
 ```
 
 Set that image reference in `infra/terraform.tfvars`, set `deploy_cloud_run = true`, and apply:
@@ -287,15 +287,15 @@ The output contains `service_url`. The application container does not run migrat
 Deploy and execute the migration job:
 
 ```shell
-gcloud run jobs deploy episode-calendar-migrate --image=REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG --region=REGION --project=PROJECT_ID --service-account=episode-calendar-runtime@PROJECT_ID.iam.gserviceaccount.com --set-cloudsql-instances=PROJECT_ID:REGION:episode-calendar-postgres --set-secrets=DATABASE_URL=episode-calendar-database-url:latest --command=uv --args=run,--no-sync,alembic,upgrade,head
-gcloud run jobs execute episode-calendar-migrate --region=REGION --project=PROJECT_ID --wait
+gcloud run jobs deploy episode-calendar-migrate --image=europe-west3-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG --region=europe-west3 --project=PROJECT_ID --service-account=episode-calendar-runtime@PROJECT_ID.iam.gserviceaccount.com --set-cloudsql-instances=PROJECT_ID:europe-west3:episode-calendar-postgres --set-secrets=DATABASE_URL=episode-calendar-database-url:latest --command=uv --args=run,--no-sync,alembic,upgrade,head
+gcloud run jobs execute episode-calendar-migrate --region=europe-west3 --project=PROJECT_ID --wait
 ```
 
 Deploy and execute the provider import job:
 
 ```shell
-gcloud run jobs deploy episode-calendar-import --image=REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG --region=REGION --project=PROJECT_ID --service-account=episode-calendar-runtime@PROJECT_ID.iam.gserviceaccount.com --set-cloudsql-instances=PROJECT_ID:REGION:episode-calendar-postgres --set-secrets=DATABASE_URL=episode-calendar-database-url:latest,JOYN_API_KEY=episode-calendar-joyn-api-key:latest,RTLPLUS_OIDC_CLIENT_SECRET=episode-calendar-rtlplus-client-secret:latest --command=uv --args=run,--no-sync,python,-m,episode_calendar.importer,all
-gcloud run jobs execute episode-calendar-import --region=REGION --project=PROJECT_ID --wait
+gcloud run jobs deploy episode-calendar-import --image=europe-west3-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG --region=europe-west3 --project=PROJECT_ID --service-account=episode-calendar-runtime@PROJECT_ID.iam.gserviceaccount.com --set-cloudsql-instances=PROJECT_ID:europe-west3:episode-calendar-postgres --set-secrets=DATABASE_URL=episode-calendar-database-url:latest,JOYN_API_KEY=episode-calendar-joyn-api-key:latest,RTLPLUS_OIDC_CLIENT_SECRET=episode-calendar-rtlplus-client-secret:latest --command=uv --args=run,--no-sync,python,-m,episode_calendar.importer,all
+gcloud run jobs execute episode-calendar-import --region=europe-west3 --project=PROJECT_ID --wait
 ```
 
 ### Deploy Frontend
@@ -383,7 +383,7 @@ After changing application code, `config/series.json`, or API behavior:
 2. Build and push a new `linux/amd64` image with an immutable tag, then update `image` in
    `infra/terraform.tfvars`:
    ```shell
-   docker build --platform linux/amd64 --provenance=false -t REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG . && docker push REGION-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG
+   docker build --platform linux/amd64 --provenance=false -t europe-west3-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG . && docker push europe-west3-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG
    ```
 3. Deploy the new revision:
    ```shell
@@ -391,10 +391,10 @@ After changing application code, `config/series.json`, or API behavior:
    ```
 4. If migrations changed, execute the migration job; then refresh provider data:
    ```shell
-   gcloud run jobs execute episode-calendar-migrate --region=REGION --project=PROJECT_ID --wait
-   gcloud run jobs execute episode-calendar-import --region=REGION --project=PROJECT_ID --wait
+   gcloud run jobs execute episode-calendar-migrate --region=europe-west3 --project=PROJECT_ID --wait
+   gcloud run jobs execute episode-calendar-import --region=europe-west3 --project=PROJECT_ID --wait
    ```
-5. Verify `/health` and the API. The daily scheduler continues to execute the existing import job.
+5. Verify `/health` and the API. The periodoc scheduler continues to execute the existing import job.
 
 ## Planned work
 
