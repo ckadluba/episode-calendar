@@ -92,9 +92,14 @@ if gcloud storage objects describe "gs://${STATE_BUCKET}/default.tfstate" --proj
       terraform -chdir=infra init -input=false -reconfigure -backend-config="bucket=${STATE_BUCKET}"
       terraform -chdir=infra state push -force "../${LOCAL_BACKUP}"
       for ROLE in "roles/artifactregistry.writer" "roles/cloudsql.admin" "roles/cloudscheduler.admin" "roles/firebasehosting.admin" "roles/iam.securityReviewer" "roles/iam.serviceAccountAdmin" "roles/iam.serviceAccountUser" "roles/run.admin" "roles/secretmanager.admin" "roles/serviceusage.serviceUsageAdmin" "roles/storage.admin"; do
-        terraform -chdir=infra import -input=false \
+        if ! terraform -chdir=infra import -input=false \
           "google_project_iam_member.deploy[\"${ROLE}\"]" \
-          "${PROJECT_ID} ${ROLE} serviceAccount:${DEPLOY_EMAIL}" >/dev/null
+          "${PROJECT_ID} ${ROLE} serviceAccount:${DEPLOY_EMAIL}" >/dev/null; then
+          # The remote binding may have been removed outside Terraform while
+          # the state still contains it. Let the targeted apply recreate it.
+          terraform -chdir=infra state rm -lock=false \
+            "google_project_iam_member.deploy[\"${ROLE}\"]" >/dev/null || true
+        fi
       done
     fi
   fi
