@@ -352,17 +352,17 @@ gcloud run services describe episode-calendar --region=europe-west3 --project=ep
 ```
 
 Set `enable_import_schedule = true` and apply Terraform once more. The default schedule is
-`0 3 * * *` in `Europe/Vienna`; it invokes the existing import job with a dedicated service
+`0 /2 * * *` in `Europe/Vienna`; it invokes the existing import job with a dedicated service
 account:
 
 ```shell
 terraform -chdir=infra apply
-gcloud scheduler jobs list --location=REGION
-gcloud scheduler jobs run episode-calendar-import-daily --location=REGION
+gcloud scheduler jobs list --location=europe-west3
+gcloud scheduler jobs run episode-calendar-import--periodic --location=europe-west3
 ```
 
 Cloud Scheduler currently provides three jobs per billing account per month at no charge; one
-daily scheduler job is within that allowance. Cloud Run job execution and Cloud SQL runtime are
+periodic scheduler job is within that allowance. Cloud Run job execution and Cloud SQL runtime are
 separate usage considerations. See the [official Scheduler pricing](https://cloud.google.com/scheduler/pricing).
 
 Verify the deployment:

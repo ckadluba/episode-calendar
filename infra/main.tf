@@ -187,7 +187,7 @@ resource "google_cloud_run_v2_job_iam_member" "scheduler" {
 
 resource "google_cloud_scheduler_job" "import" {
   count     = var.enable_import_schedule ? 1 : 0
-  name      = "${var.service_name}-import-daily"
+  name      = "${var.service_name}-import-periodic"
   region    = var.region
   schedule  = var.import_schedule
   time_zone = var.import_timezone

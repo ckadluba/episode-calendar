@@ -39,7 +39,7 @@ variable "import_job_name" {
 
 variable "import_schedule" {
   type    = string
-  default = "0 3 * * *"
+  default = "0 */2 * * *"
 }
 
 variable "import_timezone" {
