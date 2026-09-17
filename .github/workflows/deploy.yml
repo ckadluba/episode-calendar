@@ -43,11 +43,8 @@ jobs:
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
 
-      - name: Ensure Terraform state bucket exists
-        run: |
-          gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" --project="${PROJECT_ID}" >/dev/null 2>&1 || \
-            gcloud storage buckets create "gs://${TF_STATE_BUCKET}" --project="${PROJECT_ID}" --location="${REGION}" --uniform-bucket-level-access
-          gcloud storage buckets update "gs://${TF_STATE_BUCKET}" --versioning
+      - name: Verify Terraform state bucket
+        run: gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" --project="${PROJECT_ID}" >/dev/null
 
       - name: Initialize Terraform remote state
         run: terraform -chdir=infra init -input=false -backend-config="bucket=${TF_STATE_BUCKET}"
