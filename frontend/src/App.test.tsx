@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "./App";
+import { App, seriesColor } from "./App";
 
 const series = [
   { id: "series-1", title: "Testserie", platform: "rtlplus", description: null },
@@ -39,10 +39,22 @@ describe("App preferences", () => {
 
     await waitFor(() => expect(screen.getByRole("option", { name: "rtlplus" })).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText("Plattform"), { target: { value: "rtlplus" } });
-    fireEvent.change(screen.getByLabelText("Serie"), { target: { value: "series-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Serie" }));
+    fireEvent.click(screen.getByRole("option", { name: "Testserie" }));
 
     expect(localStorage.getItem("episode-calendar-platform")).toBe("rtlplus");
     expect(localStorage.getItem("episode-calendar-series")).toBe("series-1");
+  });
+
+  it("uses the same stable color in the series selector and legend", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("option", { name: "rtlplus" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Serie" }));
+    const picker = screen.getByRole("listbox", { name: "Serie" });
+    const option = within(picker).getByRole("option", { name: "Testserie" });
+    expect(option).toBeInTheDocument();
+    expect(option.querySelector(".series-dot")).toHaveStyle({ backgroundColor: seriesColor("series-1") });
   });
 
   it("renders cached API data without waiting for the network", () => {
