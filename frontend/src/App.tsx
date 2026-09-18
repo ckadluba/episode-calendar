@@ -69,10 +69,12 @@ export function seriesColor(seriesId: string) {
   return SERIES_COLORS[Math.abs(hash) % SERIES_COLORS.length];
 }
 
-function SeriesPicker({ series, value, onChange }: { series: Series[]; value: string; onChange: (value: string) => void }) {
+function SeriesPicker({ series, selectedIds, onChange }: { series: Series[]; selectedIds: string[]; onChange: (ids: string[]) => void }) {
   const [open, setOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
-  const selected = series.find((item) => item.id === value);
+  const sortedSeries = [...series].sort((left, right) => left.title.localeCompare(right.title, "de"));
+  const allSelected = sortedSeries.length > 0 && sortedSeries.every((item) => selectedIds.includes(item.id));
+  const toggle = (id: string) => onChange(selectedIds.includes(id) ? selectedIds.filter((item) => item !== id) : [...selectedIds, id]);
 
   useEffect(() => {
     if (!open) return;
@@ -85,14 +87,14 @@ function SeriesPicker({ series, value, onChange }: { series: Series[]; value: st
 
   return <div className="series-picker" ref={pickerRef}>
     <button className="series-picker-button" type="button" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
-      {selected && <span className="series-dot" style={{ backgroundColor: seriesColor(selected.id) }} aria-hidden="true" />}
-      {selected?.title ?? "Alle Serien"}<span className="series-picker-chevron" aria-hidden="true">⌄</span>
+      {allSelected ? "Alle Serien" : `${selectedIds.length} Serien ausgewählt`}<span className="series-picker-chevron" aria-hidden="true">⌄</span>
     </button>
     {open && <div className="series-picker-menu" role="listbox" aria-label="Serie">
-      <button className="series-picker-option" type="button" role="option" aria-selected={value === "all"} onClick={() => { onChange("all"); setOpen(false); }}>Alle Serien</button>
-      {series.map((item) => <button className="series-picker-option" type="button" role="option" aria-selected={value === item.id} key={item.id} onClick={() => { onChange(item.id); setOpen(false); }}>
-        <span className="series-dot" style={{ backgroundColor: seriesColor(item.id) }} aria-hidden="true" />{item.title}
-      </button>)}
+      <button className="series-picker-option series-picker-all" type="button" role="option" aria-selected={allSelected} onClick={() => onChange(allSelected ? [] : sortedSeries.map((item) => item.id))}>Alle Serien</button>
+      {sortedSeries.map((item) => <label className="series-picker-option" role="option" aria-selected={selectedIds.includes(item.id)} key={item.id}>
+        <input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggle(item.id)} />
+        <span className="series-dot" style={{ backgroundColor: seriesColor(item.id) }} aria-hidden="true" />{item.title} <span className="series-platform">({item.platform})</span>
+      </label>)}
     </div>}
   </div>;
 }
@@ -101,14 +103,19 @@ export function App() {
   const [week, setWeek] = useState<"current" | "next">(() => readLocal<"current" | "next">("episode-calendar-week", "current"));
   const [series, setSeries] = useState<Series[]>([]);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
-  const [platform, setPlatform] = useState(() => readLocal("episode-calendar-platform", "all"));
-  const [seriesId, setSeriesId] = useState(() => readLocal("episode-calendar-series", "all"));
+  const [selectedSeriesIds, setSelectedSeriesIds] = useState<string[]>([]);
+  const [seriesSelectionInitialized, setSeriesSelectionInitialized] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { localStorage.setItem("episode-calendar-week", week); }, [week]);
-  useEffect(() => { localStorage.setItem("episode-calendar-platform", platform); }, [platform]);
-  useEffect(() => { localStorage.setItem("episode-calendar-series", seriesId); }, [seriesId]);
+  useEffect(() => {
+    if (!series.length || seriesSelectionInitialized) return;
+    const saved = readLocal<unknown>("episode-calendar-series-selection", null);
+    setSelectedSeriesIds(Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string" && series.some((item) => item.id === id)) : series.map((item) => item.id));
+    setSeriesSelectionInitialized(true);
+  }, [series, seriesSelectionInitialized]);
+  useEffect(() => { if (seriesSelectionInitialized) localStorage.setItem("episode-calendar-series-selection", JSON.stringify(selectedSeriesIds)); }, [selectedSeriesIds, seriesSelectionInitialized]);
   useEffect(() => {
     const seriesKey = `${CACHE_PREFIX}:${API_URL}:series`;
     const episodesKey = `${CACHE_PREFIX}:${API_URL}:episodes:${week}:${TIMEZONE}`;
@@ -142,8 +149,7 @@ export function App() {
     void load();
   }, [week]);
 
-  const platforms = useMemo(() => [...new Set(series.map((item) => item.platform))].sort(), [series]);
-  const filtered = episodes.filter((episode) => (platform === "all" || episode.platform === platform) && (seriesId === "all" || episode.series_id === seriesId));
+  const filtered = episodes.filter((episode) => selectedSeriesIds.includes(episode.series_id));
   const byDay = new Map<string, Episode[]>();
   filtered.forEach((episode) => {
     const release = episode.releases.find((item) => item.release_type === "streaming") ?? episode.releases[0];
@@ -157,7 +163,7 @@ export function App() {
  return <main className="app-shell">
     <header className="hero"><p className="eyebrow">EPISODE CALENDAR</p><h1>Was läuft diese Woche?</h1><p className="subtitle">Neue Episoden deiner Serien auf einen Blick.</p></header>
     <nav className="week-switch" aria-label="Woche"><button className={week === "current" ? "active" : ""} onClick={() => setWeek("current")}>Diese Woche</button><button className={week === "next" ? "active" : ""} onClick={() => setWeek("next")}>Nächste Woche</button></nav>
-    <section className="filters" aria-label="Filter"><label>Plattform<select value={platform} onChange={(event) => { setPlatform(event.target.value); setSeriesId("all"); }}><option value="all">Alle Plattformen</option>{platforms.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label>Serie<SeriesPicker series={series.filter((item) => platform === "all" || item.platform === platform)} value={seriesId} onChange={setSeriesId} /></label></section>
+    <section className="filters" aria-label="Filter"><label>Serien<SeriesPicker series={series} selectedIds={selectedSeriesIds} onChange={setSelectedSeriesIds} /></label></section>
     {loading && <p className="status">Kalender wird geladen …</p>}
     {error && <p className="status error">{error}<br /><small>Prüfe, ob die API unter {API_URL} läuft.</small></p>}
     {!loading && !error && <section className="calendar">{days.map((day) => { const items = byDay.get(dateKey(day)) ?? []; return <article className="day" key={dateKey(day)}><h2>{dayLabel.format(day)}</h2>{items.length === 0 ? <p className="empty">Keine Episoden</p> : items.map((episode) => { const release = episode.releases.find((item) => item.release_type === "streaming") ?? episode.releases[0]; const show = seriesMap.get(episode.series_id); const color = seriesColor(episode.series_id); const colorStyle = { "--series-color": color } as CSSProperties; const content = <><div className="episode-time">{release && timeLabel.format(new Date(release.release_at))}</div><div><h3><span className="series-dot" style={{ backgroundColor: color }} aria-hidden="true" />{show?.title ?? "Unbekannte Serie"}</h3><p>{episode.season_number ? `S${episode.season_number} · ` : ""}{episode.number ? `E${episode.number} · ` : ""}{episode.title}</p><span className={`badge ${episode.platform}`}>{episode.platform}</span></div></>; return release?.url ? <a className="episode episode-link" style={colorStyle} href={release.url} target="_blank" rel="noreferrer" key={episode.id}>{content}</a> : <div className="episode" style={colorStyle} key={episode.id}>{content}</div>; })}</article>; })}</section>}
