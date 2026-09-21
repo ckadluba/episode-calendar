@@ -346,13 +346,12 @@ class RTLPlusProvider:
         metadata = seo.get("metadata", {}) if isinstance(seo, dict) else {}
         if not isinstance(metadata, dict):
             return {}
-        text = " ".join(
-            str(metadata.get(key, "")) for key in ("title", "text") if metadata.get(key)
-        )
+        text = "\n".join(str(value) for value in metadata.values() if isinstance(value, str))
         if not isinstance(text, str):
             return {}
-        year_match = re.search(r"\b(20\d{2})\b", text)
-        year = int(year_match.group(1)) if year_match else datetime.now().year
+        # Schedule dates on RTL+ pages omit the year; unrelated catalogue text often
+        # contains historical years, so those must not determine the release year.
+        year = datetime.now().year
         result: dict[int, datetime] = {}
         for match in _DATE_RE.finditer(text):
             episode, day, month, hour, minute = map(int, match.groups())

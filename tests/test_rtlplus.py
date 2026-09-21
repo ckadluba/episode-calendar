@@ -42,6 +42,19 @@ def test_schedule_supports_current_weekly_rtl_format() -> None:
     assert schedule[7] == datetime(2026, 9, 23, tzinfo=ZoneInfo("Europe/Vienna"))
 
 
+def test_schedule_reads_date_and_cadence_from_separate_metadata_fields() -> None:
+    schedule = RTLPlusProvider._schedule(
+        {
+            "metadata": {
+                "title": "Are You The One - Realitystars in Love, ab 12. August auf RTL+",
+                "text": "Erstausstrahlung 2021\nMittwochs",
+            }
+        }
+    )
+
+    assert schedule[7] == datetime(2026, 9, 23, tzinfo=ZoneInfo("Europe/Vienna"))
+
+
 def test_schedule_uses_streaming_dates_from_rtl_schedule_table() -> None:
     schedule = RTLPlusProvider._schedule(
         {
