@@ -265,6 +265,15 @@ class RTLPlusProvider:
                 season_match = _SEASON_RE.search(str(season_title or ""))
                 if season_match:
                     season_numbers.add(int(season_match.group(1)))
+                items = content.get("items", []) if isinstance(content, dict) else []
+                if isinstance(items, list):
+                    for item in items:
+                        raw = item.get("itemContent") if isinstance(item, dict) else None
+                        if not isinstance(raw, dict):
+                            continue
+                        season_match = _SEASON_RE.search(str(raw.get("highlight") or ""))
+                        if season_match:
+                            season_numbers.add(int(season_match.group(1)))
         current_season_number = max(season_numbers, default=None)
         seasons: dict[int, list[NormalizedEpisode]] = {}
         for payload in pages:
