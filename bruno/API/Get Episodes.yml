@@ -5,18 +5,17 @@ info:
 
 http:
   method: GET
-  url: "{{base_url}}/api/v1/episodes?from=2026-09-07T00:00:00Z&to=2026-09-27T23:59:59Z"
+  url: "{{base_url}}/api/v1/episodes?from=2026-09-28T00:00:00Z&to=2026-10-04T23:59:59Z&platform=bbc_iplayer"
   params:
     - name: from
-      value: 2026-09-07T00:00:00Z
+      value: 2026-09-28T00:00:00Z
       type: query
     - name: to
-      value: 2026-09-27T23:59:59Z
+      value: 2026-10-04T23:59:59Z
       type: query
     - name: platform
-      value: rtlplus
+      value: bbc_iplayer
       type: query
-      disabled: true
   auth: inherit
 
 settings:
