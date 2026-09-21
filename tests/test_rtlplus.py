@@ -55,6 +55,20 @@ def test_schedule_reads_date_and_cadence_from_separate_metadata_fields() -> None
     assert schedule[7] == datetime(2026, 9, 23, tzinfo=ZoneInfo("Europe/Vienna"))
 
 
+def test_schedule_uses_start_date_weekday_when_block_has_no_cadence() -> None:
+    schedule = RTLPlusProvider._schedule(
+        {
+            "metadata": {
+                "title": "Love Island VIP 2026",
+                "description": "Die neue Staffel startet ab dem 16. September.",
+            }
+        }
+    )
+
+    assert schedule[1] == datetime(2026, 9, 16, tzinfo=ZoneInfo("Europe/Vienna"))
+    assert schedule[2] == datetime(2026, 9, 23, tzinfo=ZoneInfo("Europe/Vienna"))
+
+
 def test_schedule_uses_streaming_dates_from_rtl_schedule_table() -> None:
     schedule = RTLPlusProvider._schedule(
         {

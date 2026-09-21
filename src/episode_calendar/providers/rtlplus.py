@@ -37,7 +37,7 @@ _TABLE_DATE_RE = re.compile(
     re.IGNORECASE,
 )
 _START_DATE_RE = re.compile(
-    r"(?:ab|start(?:et)?(?:\s+am)?)\s+(\d{1,2})\.\s*"
+    r"(?:ab(?:\s+dem)?|start(?:et)?(?:\s+am)?)\s+(\d{1,2})\.\s*"
     r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)",
     re.IGNORECASE,
 )
@@ -405,9 +405,11 @@ class RTLPlusProvider:
         )
         if not isinstance(text, str):
             return {}
-        # Schedule dates on RTL+ pages omit the year; unrelated catalogue text often
-        # contains historical years, so those must not determine the release year.
-        year = datetime.now().year
+        title = metadata.get("title", "")
+        title_year = re.search(r"\b(20\d{2})\b", title) if isinstance(title, str) else None
+        # Schedule dates usually omit the year; use the page title when it identifies
+        # the current season and otherwise use the current year.
+        year = int(title_year.group(1)) if title_year else datetime.now().year
         result: dict[int, datetime] = {}
         for match in _DATE_RE.finditer(text):
             episode, day, month, hour, minute = map(int, match.groups())
@@ -437,21 +439,17 @@ class RTLPlusProvider:
         if result:
             return result
 
-        weekday_match = _WEEKDAY_RE.search(text)
-        if not weekday_match:
-            return result
         timezone = ZoneInfo("Europe/Vienna")
         now = datetime.now(timezone)
         start_match = _START_DATE_RE.search(text)
-        if start_match:
-            day = int(start_match.group(1))
-            month = _MONTHS[start_match.group(2).lower()]
-            start = datetime(year, month, day, tzinfo=timezone)
-            if start > now + timedelta(days=31):
-                start = start.replace(year=year - 1)
-        else:
+        if not start_match:
             # A cadence without a start date is not enough to date an episode. In
             # particular, do not turn completed seasons into current releases.
             return result
+        day = int(start_match.group(1))
+        month = _MONTHS[start_match.group(2).lower()]
+        start = datetime(year, month, day, tzinfo=timezone)
+        if start > now + timedelta(days=31):
+            start = start.replace(year=year - 1)
 
         return {episode: start + timedelta(weeks=episode - 1) for episode in range(1, 53)}
