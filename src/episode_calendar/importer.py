@@ -16,6 +16,7 @@ from episode_calendar.config import get_settings
 from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.db.session import get_session_factory
 from episode_calendar.providers.base import ProviderAdapter
+from episode_calendar.providers.bbc_iplayer import BBCIPlayerProvider
 from episode_calendar.providers.joyn import JoynProvider
 from episode_calendar.providers.rtlplus import RTLPlusProvider
 
@@ -111,14 +112,23 @@ async def import_series(
             episode_count += 1
 
             for normalized_release in normalized_episode.releases:
-                release = await session.scalar(
-                    select(EpisodeRelease).where(
-                        EpisodeRelease.episode_id == episode.id,
-                        EpisodeRelease.provider_id == provider.id,
-                        EpisodeRelease.release_type == normalized_release.release_type,
-                        EpisodeRelease.release_at == normalized_release.release_at,
+                release = None
+                if normalized_release.external_id:
+                    release = await session.scalar(
+                        select(EpisodeRelease).where(
+                            EpisodeRelease.provider_id == provider.id,
+                            EpisodeRelease.external_id == normalized_release.external_id,
+                        )
                     )
-                )
+                if release is None:
+                    release = await session.scalar(
+                        select(EpisodeRelease).where(
+                            EpisodeRelease.episode_id == episode.id,
+                            EpisodeRelease.provider_id == provider.id,
+                            EpisodeRelease.release_type == normalized_release.release_type,
+                            EpisodeRelease.release_at == normalized_release.release_at,
+                        )
+                    )
                 if release is None:
                     release = EpisodeRelease(
                         episode_id=episode.id,
@@ -153,11 +163,26 @@ def configured_series(provider: str) -> tuple[str, ...]:
     if not isinstance(config, dict):
         raise RuntimeError(f"Series configuration {path} must contain a JSON object")
     identifiers = config.get(provider, [])
-    if not isinstance(identifiers, list) or not all(
-        isinstance(identifier, str) for identifier in identifiers
-    ):
-        raise RuntimeError(f"Series configuration entry {provider!r} must be a list of strings")
-    return tuple(identifier.strip() for identifier in identifiers if identifier.strip())
+    if not isinstance(identifiers, list):
+        raise RuntimeError(f"Series configuration entry {provider!r} must be a list")
+    normalized: list[str] = []
+    for identifier in identifiers:
+        if isinstance(identifier, str):
+            value = identifier.strip()
+        elif isinstance(identifier, dict):
+            value = identifier.get("id", "")
+            if not isinstance(value, str):
+                raise RuntimeError(
+                    f"Series configuration entry {provider!r} objects must contain a string id"
+                )
+            value = value.strip()
+        else:
+            raise RuntimeError(
+                f"Series configuration entry {provider!r} must contain objects with string ids"
+            )
+        if value:
+            normalized.append(value)
+    return tuple(normalized)
 
 
 async def import_configured_joyn() -> None:
@@ -166,6 +191,10 @@ async def import_configured_joyn() -> None:
 
 async def import_configured_rtlplus() -> None:
     await import_configured("rtlplus", RTLPlusProvider, "RTL+")
+
+
+async def import_configured_bbc_iplayer() -> None:
+    await import_configured("bbc_iplayer", BBCIPlayerProvider, "BBC iPlayer")
 
 
 async def import_configured(
@@ -202,12 +231,14 @@ async def import_configured(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Import configured provider catalogs")
-    parser.add_argument("provider", choices=("joyn", "rtlplus", "all"))
+    parser.add_argument("provider", choices=("joyn", "rtlplus", "bbc_iplayer", "all"))
     args = parser.parse_args()
     if args.provider == "joyn":
         asyncio.run(import_configured_joyn())
     elif args.provider == "rtlplus":
         asyncio.run(import_configured_rtlplus())
+    elif args.provider == "bbc_iplayer":
+        asyncio.run(import_configured_bbc_iplayer())
     else:
 
         async def run_all() -> None:
@@ -215,6 +246,7 @@ def main() -> None:
             for provider_slug, factory, name in (
                 ("joyn", JoynProvider, "Joyn Austria"),
                 ("rtlplus", RTLPlusProvider, "RTL+"),
+                ("bbc_iplayer", BBCIPlayerProvider, "BBC iPlayer"),
             ):
                 try:
                     await import_configured(provider_slug, factory, name)
