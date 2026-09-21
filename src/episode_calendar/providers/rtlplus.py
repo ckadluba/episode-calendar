@@ -246,7 +246,24 @@ class RTLPlusProvider:
         title = metadata.get("title")
         if not isinstance(title, str) or not title:
             raise RTLPlusMalformedResponseError("RTL+ response lacks series title")
-        releases = self._schedule(first.get("seo"))
+        schedule_labels: list[str] = []
+        for payload in pages:
+            for block in payload.get("blocks", []):
+                if (
+                    not isinstance(block, dict)
+                    or block.get("analytics", {}).get("tealium", {}).get("from")
+                    != "feature.videos_by_season_by_program"
+                ):
+                    continue
+                content = block.get("content")
+                block_title = (
+                    (content.get("title") or {}).get("short")
+                    if isinstance(content, dict) and isinstance(content.get("title"), dict)
+                    else None
+                )
+                if isinstance(block_title, str):
+                    schedule_labels.append(block_title)
+        releases = self._schedule(first.get("seo"), "\n".join(schedule_labels))
         season_numbers: set[int] = set()
         for payload in pages:
             for block in payload.get("blocks", []):
@@ -351,11 +368,13 @@ class RTLPlusProvider:
         return NormalizedSeries(external_id=program_id, title=title, seasons=normalized_seasons)
 
     @staticmethod
-    def _schedule(seo: Any) -> dict[int, datetime]:
+    def _schedule(seo: Any, extra_text: str = "") -> dict[int, datetime]:
         metadata = seo.get("metadata", {}) if isinstance(seo, dict) else {}
         if not isinstance(metadata, dict):
             return {}
-        text = "\n".join(str(value) for value in metadata.values() if isinstance(value, str))
+        text = "\n".join(
+            [*(str(value) for value in metadata.values() if isinstance(value, str)), extra_text]
+        )
         if not isinstance(text, str):
             return {}
         # Schedule dates on RTL+ pages omit the year; unrelated catalogue text often

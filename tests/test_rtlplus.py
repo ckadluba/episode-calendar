@@ -115,7 +115,7 @@ def test_schedule_is_only_applied_to_current_season() -> None:
 def test_current_season_can_be_read_from_episode_highlight() -> None:
     payload = {
         "entity": {"id": "6838", "metadata": {"title": "Demo"}},
-        "seo": {"metadata": {"title": "Demo, ab 12. August", "text": "Mittwochs"}},
+        "seo": {"metadata": {"title": "Demo, ab 12. August"}},
         "blocks": [
             {
                 "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
