@@ -32,7 +32,7 @@ _DATE_RE = re.compile(
     re.IGNORECASE,
 )
 _TABLE_DATE_RE = re.compile(
-    r"(?:[A-Za-zÄÖÜäöü]+\.?\s*,?\s*)?(\d{1,2})\.(\d{1,2})\.?(?:\s*(?:ab|um)?\s*)?"
+    r"(?:[A-Za-zÄÖÜäöü]+\\?\.?\s*,?\s*)?(\d{1,2})\\?\.(\d{1,2})\\?\.?(?:\s*(?:ab|um)?\s*)?"
     r"(\d{1,2})(?::(\d{2}))?\s*(?:Uhr)?",
     re.IGNORECASE,
 )
@@ -292,6 +292,14 @@ class RTLPlusProvider:
                         if season_match:
                             season_numbers.add(int(season_match.group(1)))
         current_season_number = max(season_numbers, default=None)
+        seo_text = "\n".join(
+            str(value)
+            for value in (first.get("seo") or {}).get("metadata", {}).values()
+            if isinstance(value, str)
+        )
+        has_explicit_schedule = bool(
+            re.search(r"^\s*\|\s*\*{0,2}Folge\s+\d+", seo_text, re.IGNORECASE | re.MULTILINE)
+        )
         seasons: dict[int, list[NormalizedEpisode]] = {}
         for payload in pages:
             for block in payload.get("blocks", []):
@@ -356,6 +364,26 @@ class RTLPlusProvider:
                             "episode did not match normalized model"
                         ) from exc
                     seasons.setdefault(season_number, []).append(episode)
+        if current_season_number is not None and has_explicit_schedule:
+            current_episodes = seasons.get(current_season_number, [])
+            next_episode_number = max((episode.number for episode in current_episodes), default=0) + 1
+            release_at = releases.get(next_episode_number)
+            if release_at is not None and release_at >= datetime.now(ZoneInfo("Europe/Vienna")):
+                current_episodes.append(
+                    NormalizedEpisode(
+                        external_id=(
+                            f"{program_id}:season:{current_season_number}:episode:"
+                            f"{next_episode_number}"
+                        ),
+                        number=next_episode_number,
+                        title=f"Folge {next_episode_number}",
+                        releases=(
+                            NormalizedEpisodeRelease(
+                                release_type=ReleaseType.STREAMING, release_at=release_at
+                            ),
+                        ),
+                    )
+                )
         normalized_seasons = tuple(
             NormalizedSeason(
                 external_id=f"{program_id}:season:{number}",

@@ -61,8 +61,8 @@ def test_schedule_uses_streaming_dates_from_rtl_schedule_table() -> None:
             "metadata": {
                 "text": (
                     "Folge | RTL | RTL+ / Streaming\n"
-                    "Folge 1 | Mo., 17.8. um 20:15 Uhr | Mo., 3.8. ab 00:00 Uhr\n"
-                    "Folge 2 | Di., 18.8. um 20:15 Uhr | Mi., 5.8. ab 0:00 Uhr"
+                    "Folge 1 | Mo., 17.8\\. um 20:15 Uhr | Mo., 3.8\\. ab 00:00 Uhr\n"
+                    "Folge 2 | Di., 18.8\\. um 20:15 Uhr | Mi., 5.8\\. ab 0:00 Uhr"
                 )
             }
         }
@@ -70,6 +70,48 @@ def test_schedule_uses_streaming_dates_from_rtl_schedule_table() -> None:
 
     assert schedule[1] == datetime(2026, 8, 3, tzinfo=ZoneInfo("Europe/Vienna"))
     assert schedule[2] == datetime(2026, 8, 5, tzinfo=ZoneInfo("Europe/Vienna"))
+
+
+def test_normalize_adds_next_planned_episode_from_schedule_table() -> None:
+    result = RTLPlusProvider._normalize(
+        RTLPlusProvider.__new__(RTLPlusProvider),
+        "6405",
+        [
+            {
+                "entity": {"id": "6405", "metadata": {"title": "Demo"}},
+                "seo": {
+                    "metadata": {
+                        "title": "Demo 2026, ab 25. August auf RTL+",
+                        "text": (
+                            "| **Folge 4** | Di., 15.9. um 0:00 Uhr |\n"
+                            "| **Folge 5** | Di., 22.9. um 0:00 Uhr |"
+                        ),
+                    }
+                },
+                "blocks": [
+                    {
+                        "analytics": {
+                            "tealium": {"from": "feature.videos_by_season_by_program"}
+                        },
+                        "content": {
+                            "title": {"short": "Dienstags"},
+                            "items": [
+                                {
+                                    "itemContent": {
+                                        "id": "clip-4",
+                                        "title": "Folge 4",
+                                        "highlight": "Staffel 11 • Folge 4",
+                                    }
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert result.seasons[0].episodes[-1].number == 5
 
 
 def test_schedule_does_not_invent_dates_for_cadence_without_start_date() -> None:
