@@ -60,8 +60,11 @@ The API is available at <http://localhost:8000>; `GET /health` reports its statu
 Maintain provider series in `config/series.json` (override with `SERIES_CONFIG_PATH`):
 
 ```json
-{"joyn": ["villa-der-versuchung", "so-denkt-oesterreich"], "rtlplus": []}
+{"joyn": [{"id": "villa-der-versuchung"}, {"id": "so-denkt-oesterreich"}], "rtlplus": [], "bbc_iplayer": [{"id": "m002csng", "comment": "The Celebrity Traitors"}]}
 ```
+
+All provider entries use objects with an `id` field. The optional `comment` field is only
+documentation for humans; it does not configure or override the provider's series title.
 
 For Joyn, open `joyn.at`, accept consent, open Developer Tools → Network, reload a series
 page, select `api.joyn.de/graphql`, and copy its `x-api-key` header to `JOYN_API_KEY` in
@@ -74,6 +77,14 @@ After setting the provider credentials and `config/series.json`, run the combine
 
 ```shell
 uv run python -m episode_calendar.importer all
+```
+
+BBC iPlayer uses public programme PIDs and does not require an additional secret. The example
+configuration contains `m002csng` for *The Celebrity Traitors* and `b006m8dq` for *Strictly
+Come Dancing*. Import only BBC data with:
+
+```shell
+uv run python -m episode_calendar.importer bbc_iplayer
 ```
 
 Run it after PostgreSQL and migrations are ready, either before or while the API is running. The

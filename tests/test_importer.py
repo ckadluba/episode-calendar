@@ -68,10 +68,26 @@ async def test_import_updates_existing_metadata(db_session: AsyncSession) -> Non
 
 def test_configured_series_reads_provider_lists(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "series.json"
-    config_path.write_text('{"joyn": [" demo ", "", "second"], "rtlplus": []}', encoding="utf-8")
+    config_path.write_text(
+        '{"joyn": [{"id": " demo "}, {"id": ""}, {"id": "second"}], "rtlplus": []}',
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         "episode_calendar.importer.get_settings",
         lambda: SimpleNamespace(series_config_path=str(config_path)),
     )
 
     assert configured_series("joyn") == ("demo", "second")
+
+
+def test_configured_bbc_series_accepts_labeled_ids(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "series.json"
+    config_path.write_text(
+        '{"bbc_iplayer": [{"id": " m1234567 ", "comment": "Demo"}]}', encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "episode_calendar.importer.get_settings",
+        lambda: SimpleNamespace(series_config_path=str(config_path)),
+    )
+
+    assert configured_series("bbc_iplayer") == ("m1234567",)

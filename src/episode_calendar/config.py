@@ -24,6 +24,10 @@ class Settings(BaseSettings):
         "https://front-auth.rtlde.bedrock.tech/v2/rtlde/platforms/m6group_web/token"
     )
     rtlplus_timeout_seconds: float = 10.0
+    bbc_iplayer_api_url: str = "https://ibl.api.bbci.co.uk/ibl/v1"
+    bbc_iplayer_timeout_seconds: float = 10.0
+    bbc_iplayer_schedule_channels: str = "bbc_one_london"
+    bbc_iplayer_schedule_days: int = 14
     import_delay_seconds: float = 1.0
     import_max_retries: int = 3
     import_backoff_seconds: float = 1.0
