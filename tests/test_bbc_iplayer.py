@@ -73,6 +73,7 @@ async def test_normalizes_programme_and_paginates_episodes() -> None:
     assert result.seasons[0].number == 2
     normalized = result.seasons[0].episodes[0]
     assert normalized.number == 1
+    assert normalized.title == "One"
     assert normalized.releases[0].release_type is ReleaseType.STREAMING
     assert normalized.releases[0].release_at == datetime(2026, 9, 21, 20, tzinfo=UTC)
 
@@ -111,6 +112,8 @@ async def test_imports_scheduled_episode_before_iplayer_availability() -> None:
         await client.aclose()
 
     release = result.seasons[0].episodes[0].releases[0]
+    assert result.seasons[0].episodes[0].number == 1
+    assert result.seasons[0].episodes[0].title == "Week 1"
     assert release.release_at == datetime(2026, 9, 26, 19, tzinfo=UTC)
     assert release.available_until is None
 

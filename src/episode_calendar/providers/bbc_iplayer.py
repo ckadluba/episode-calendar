@@ -23,7 +23,10 @@ from episode_calendar.providers.base import (
 )
 
 _SEASON_RE = re.compile(r"(?:series|cyfres)\s+(\d+)", re.IGNORECASE)
-_EPISODE_RE = re.compile(r"(?:series|cyfres)\s+\d+\s*:\s*(\d+)", re.IGNORECASE)
+_EPISODE_RE = re.compile(
+    r"(?:series|cyfres)\s+\d+\s*:\s*(?:(?:episode|folge|week)\s+)?(\d+)",
+    re.IGNORECASE,
+)
 
 
 class BBCIPlayerProviderError(RuntimeError):
@@ -255,7 +258,7 @@ class BBCIPlayerProvider:
         return NormalizedEpisode(
             external_id=episode_id,
             number=cls._episode_number(subtitle),
-            title=title,
+            title=cls._episode_title(raw, title),
             description=cls._description(raw),
             releases=(
                 NormalizedEpisodeRelease(
@@ -313,6 +316,15 @@ class BBCIPlayerProvider:
     def _episode_number(value: Any) -> int | None:
         match = _EPISODE_RE.search(value) if isinstance(value, str) else None
         return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _episode_title(raw: Mapping[str, Any], fallback: str) -> str:
+        subtitle = raw.get("subtitle")
+        if not isinstance(subtitle, str) or not subtitle.strip():
+            return fallback
+        title = re.sub(r"^(?:series|cyfres)\s+\d+\s*:\s*", "", subtitle, flags=re.IGNORECASE)
+        title = re.sub(r"^\d+\.\s*", "", title)
+        return title.strip() or fallback
 
     @staticmethod
     def _datetime(value: Any, location: str) -> datetime:
