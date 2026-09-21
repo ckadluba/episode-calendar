@@ -31,6 +31,11 @@ _DATE_RE = re.compile(
     r"\*\*Folge\s+(\d+)\*\*\s*\|[^|]*\|[^|]*?\s*(?:Di\.|Do\.|Mi\.|Mo\.|Sa\.|So\.)?\s*(\d{1,2})\.(\d{1,2})\.,?\s*(\d{1,2}):(\d{2})\s*Uhr",
     re.IGNORECASE,
 )
+_TABLE_DATE_RE = re.compile(
+    r"(?:[A-Za-zÄÖÜäöü]+\.?\s*,?\s*)?(\d{1,2})\.(\d{1,2})\.?(?:\s*(?:ab|um)?\s*)?"
+    r"(\d{1,2})(?::(\d{2}))?\s*(?:Uhr)?",
+    re.IGNORECASE,
+)
 _START_DATE_RE = re.compile(
     r"(?:ab|start(?:et)?(?:\s+am)?)\s+(\d{1,2})\.\s*"
     r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)",
@@ -54,17 +59,6 @@ _MONTHS = {
     "november": 11,
     "dezember": 12,
 }
-_WEEKDAYS = {
-    "montag": 0,
-    "dienstag": 1,
-    "mittwoch": 2,
-    "donnerstag": 3,
-    "freitag": 4,
-    "samstag": 5,
-    "sonntag": 6,
-}
-
-
 class RTLPlusProviderError(RuntimeError):
     """Base class for RTL+ catalog failures."""
 
@@ -253,6 +247,25 @@ class RTLPlusProvider:
         if not isinstance(title, str) or not title:
             raise RTLPlusMalformedResponseError("RTL+ response lacks series title")
         releases = self._schedule(first.get("seo"))
+        season_numbers: set[int] = set()
+        for payload in pages:
+            for block in payload.get("blocks", []):
+                if (
+                    not isinstance(block, dict)
+                    or block.get("analytics", {}).get("tealium", {}).get("from")
+                    != "feature.videos_by_season_by_program"
+                ):
+                    continue
+                content = block.get("content")
+                season_title = (
+                    (content.get("title") or {}).get("short")
+                    if isinstance(content, dict) and isinstance(content.get("title"), dict)
+                    else None
+                )
+                season_match = _SEASON_RE.search(str(season_title or ""))
+                if season_match:
+                    season_numbers.add(int(season_match.group(1)))
+        current_season_number = max(season_numbers, default=None)
         seasons: dict[int, list[NormalizedEpisode]] = {}
         for payload in pages:
             for block in payload.get("blocks", []):
@@ -291,7 +304,11 @@ class RTLPlusProvider:
                         int(season_match.group(1)),
                         int(episode_match.group(1)),
                     )
-                    release_at = releases.get(episode_number)
+                    release_at = (
+                        releases.get(episode_number)
+                        if season_number == current_season_number
+                        else None
+                    )
                     release_tuple = (
                         ()
                         if release_at is None
@@ -326,7 +343,12 @@ class RTLPlusProvider:
 
     @staticmethod
     def _schedule(seo: Any) -> dict[int, datetime]:
-        text = seo.get("metadata", {}).get("text", "") if isinstance(seo, dict) else ""
+        metadata = seo.get("metadata", {}) if isinstance(seo, dict) else {}
+        if not isinstance(metadata, dict):
+            return {}
+        text = " ".join(
+            str(metadata.get(key, "")) for key in ("title", "text") if metadata.get(key)
+        )
         if not isinstance(text, str):
             return {}
         year_match = re.search(r"\b(20\d{2})\b", text)
@@ -340,10 +362,29 @@ class RTLPlusProvider:
         if result:
             return result
 
+        # Current RTL+ pages often publish a Markdown table instead of the former SEO
+        # schedule syntax. The streaming date is the rightmost date in each episode row.
+        for line in text.splitlines():
+            episode_match = _EPISODE_RE.search(line)
+            dates = list(_TABLE_DATE_RE.finditer(line))
+            if not episode_match or not dates:
+                continue
+            match = dates[-1]
+            day, month, hour, minute = match.groups()
+            result[int(episode_match.group(1))] = datetime(
+                year,
+                int(month),
+                int(day),
+                int(hour),
+                int(minute or 0),
+                tzinfo=ZoneInfo("Europe/Vienna"),
+            )
+        if result:
+            return result
+
         weekday_match = _WEEKDAY_RE.search(text)
         if not weekday_match:
             return result
-        weekday = _WEEKDAYS[weekday_match.group(1).lower().rstrip("s")]
         timezone = ZoneInfo("Europe/Vienna")
         now = datetime.now(timezone)
         start_match = _START_DATE_RE.search(text)
@@ -354,7 +395,8 @@ class RTLPlusProvider:
             if start > now + timedelta(days=31):
                 start = start.replace(year=year - 1)
         else:
-            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            start -= timedelta(days=(start.weekday() - weekday) % 7)
+            # A cadence without a start date is not enough to date an episode. In
+            # particular, do not turn completed seasons into current releases.
+            return result
 
         return {episode: start + timedelta(weeks=episode - 1) for episode in range(1, 53)}

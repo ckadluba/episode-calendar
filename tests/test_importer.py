@@ -66,6 +66,37 @@ async def test_import_updates_existing_metadata(db_session: AsyncSession) -> Non
     assert persisted.provider.slug == "joyn"
 
 
+async def test_reimport_removes_releases_missing_from_provider(db_session: AsyncSession) -> None:
+    class ChangingProvider(FakeProvider):
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            normalized = await super().fetch_series(external_id)
+            self.calls += 1
+            if self.calls > 1:
+                season = normalized.seasons[0]
+                normalized = normalized.model_copy(
+                    update={
+                        "seasons": (
+                            season.model_copy(
+                                update={
+                                    "episodes": (
+                                        season.episodes[0].model_copy(update={"releases": ()}),
+                                    )
+                                }
+                            ),
+                        )
+                    }
+                )
+            return normalized
+
+    provider = ChangingProvider()
+    await import_series(db_session, provider, "ignored")
+    await import_series(db_session, provider, "ignored")
+
+    assert (await db_session.scalar(select(func.count()).select_from(EpisodeRelease))) == 0
+
+
 def test_configured_series_reads_provider_lists(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "series.json"
     config_path.write_text(
