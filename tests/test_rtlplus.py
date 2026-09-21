@@ -33,3 +33,10 @@ def test_normalizes_layout_items_and_schedule() -> None:
     episode = result.seasons[0].episodes[0]
     assert episode.external_id == "clip_1"
     assert episode.releases[0].release_at == datetime(2026, 9, 1, tzinfo=ZoneInfo("Europe/Vienna"))
+
+
+def test_schedule_supports_current_weekly_rtl_format() -> None:
+    schedule = RTLPlusProvider._schedule({"metadata": {"text": "Mittwochs, ab 12. August"}})
+
+    assert schedule[6] == datetime(2026, 9, 16, tzinfo=ZoneInfo("Europe/Vienna"))
+    assert schedule[7] == datetime(2026, 9, 23, tzinfo=ZoneInfo("Europe/Vienna"))

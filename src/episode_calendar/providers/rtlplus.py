@@ -8,7 +8,7 @@ import random
 # ruff: noqa: E501
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -31,6 +31,38 @@ _DATE_RE = re.compile(
     r"\*\*Folge\s+(\d+)\*\*\s*\|[^|]*\|[^|]*?\s*(?:Di\.|Do\.|Mi\.|Mo\.|Sa\.|So\.)?\s*(\d{1,2})\.(\d{1,2})\.,?\s*(\d{1,2}):(\d{2})\s*Uhr",
     re.IGNORECASE,
 )
+_START_DATE_RE = re.compile(
+    r"(?:ab|start(?:et)?(?:\s+am)?)\s+(\d{1,2})\.\s*"
+    r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)",
+    re.IGNORECASE,
+)
+_WEEKDAY_RE = re.compile(
+    r"\b(Montags?|Dienstags?|Mittwochs?|Donnerstags?|Freitags?|Samstags?|Sonntags?)\b",
+    re.IGNORECASE,
+)
+_MONTHS = {
+    "januar": 1,
+    "februar": 2,
+    "märz": 3,
+    "april": 4,
+    "mai": 5,
+    "juni": 6,
+    "juli": 7,
+    "august": 8,
+    "september": 9,
+    "oktober": 10,
+    "november": 11,
+    "dezember": 12,
+}
+_WEEKDAYS = {
+    "montag": 0,
+    "dienstag": 1,
+    "mittwoch": 2,
+    "donnerstag": 3,
+    "freitag": 4,
+    "samstag": 5,
+    "sonntag": 6,
+}
 
 
 class RTLPlusProviderError(RuntimeError):
@@ -48,9 +80,8 @@ class RTLPlusMalformedResponseError(RTLPlusProviderError):
 class RTLPlusProvider:
     """Read RTL+ Bedrock layout metadata for the German RTL+ catalogue.
 
-    The layout endpoint and item fields are observed current web behaviour. Release times
-    are currently only present in the SEO markdown schedule table, so parsing that table is
-    intentionally isolated and may need adjustment when RTL+ changes its editorial content.
+    The layout endpoint and item fields are observed current web behaviour. Release times are
+    parsed from the SEO markdown schedule table or the newer weekly cadence format.
     """
 
     def __init__(
@@ -296,6 +327,8 @@ class RTLPlusProvider:
     @staticmethod
     def _schedule(seo: Any) -> dict[int, datetime]:
         text = seo.get("metadata", {}).get("text", "") if isinstance(seo, dict) else ""
+        if not isinstance(text, str):
+            return {}
         year_match = re.search(r"\b(20\d{2})\b", text)
         year = int(year_match.group(1)) if year_match else datetime.now().year
         result: dict[int, datetime] = {}
@@ -304,4 +337,24 @@ class RTLPlusProvider:
             result[episode] = datetime(
                 year, month, day, hour, minute, tzinfo=ZoneInfo("Europe/Vienna")
             )
-        return result
+        if result:
+            return result
+
+        weekday_match = _WEEKDAY_RE.search(text)
+        if not weekday_match:
+            return result
+        weekday = _WEEKDAYS[weekday_match.group(1).lower().rstrip("s")]
+        timezone = ZoneInfo("Europe/Vienna")
+        now = datetime.now(timezone)
+        start_match = _START_DATE_RE.search(text)
+        if start_match:
+            day = int(start_match.group(1))
+            month = _MONTHS[start_match.group(2).lower()]
+            start = datetime(year, month, day, tzinfo=timezone)
+            if start > now + timedelta(days=31):
+                start = start.replace(year=year - 1)
+        else:
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            start -= timedelta(days=(start.weekday() - weekday) % 7)
+
+        return {episode: start + timedelta(weeks=episode - 1) for episode in range(1, 53)}
