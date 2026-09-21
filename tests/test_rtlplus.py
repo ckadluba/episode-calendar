@@ -104,9 +104,7 @@ def test_normalize_adds_next_planned_episode_from_schedule_table() -> None:
                 },
                 "blocks": [
                     {
-                        "analytics": {
-                            "tealium": {"from": "feature.videos_by_season_by_program"}
-                        },
+                        "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
                         "content": {
                             "title": {"short": "Dienstags"},
                             "items": [
@@ -191,8 +189,6 @@ def test_current_season_can_be_read_from_episode_highlight() -> None:
         ],
     }
 
-    result = RTLPlusProvider._normalize(
-        RTLPlusProvider.__new__(RTLPlusProvider), "6838", [payload]
-    )
+    result = RTLPlusProvider._normalize(RTLPlusProvider.__new__(RTLPlusProvider), "6838", [payload])
 
     assert len(result.seasons[0].episodes[0].releases) == 1

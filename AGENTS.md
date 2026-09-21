@@ -19,7 +19,8 @@ Alembic, httpx, pytest, uv, and Docker Compose.
 - Do not add real provider integrations, a scheduler, authentication, queues, caching, or UI
   infrastructure without a task requiring them.
 
-Run `uv run pytest`, `uv run ruff check .`, and `uv run ruff format --check .` before committing.
+After every code or test change, run `uv run --no-sync ruff check .` and
+`uv run --no-sync ruff format --check .`; also run `uv run pytest` before committing.
 Run locally with `uv run uvicorn episode_calendar.main:app --reload`; copy `.env.example` to
 `.env`, start PostgreSQL with `docker compose up -d db`, and migrate with
 `uv run alembic upgrade head`.

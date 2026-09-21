@@ -59,6 +59,8 @@ _MONTHS = {
     "november": 11,
     "dezember": 12,
 }
+
+
 class RTLPlusProviderError(RuntimeError):
     """Base class for RTL+ catalog failures."""
 
@@ -366,7 +368,9 @@ class RTLPlusProvider:
                     seasons.setdefault(season_number, []).append(episode)
         if current_season_number is not None and has_explicit_schedule:
             current_episodes = seasons.get(current_season_number, [])
-            next_episode_number = max((episode.number for episode in current_episodes), default=0) + 1
+            next_episode_number = (
+                max((episode.number for episode in current_episodes), default=0) + 1
+            )
             release_at = releases.get(next_episode_number)
             if release_at is not None and release_at >= datetime.now(ZoneInfo("Europe/Vienna")):
                 current_episodes.append(
