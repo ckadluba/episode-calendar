@@ -146,9 +146,6 @@ jobs:
       - name: Run database migrations
         run: gcloud run jobs execute "${SERVICE_NAME}-migrate" --region="${REGION}" --project="${PROJECT_ID}" --wait
 
-      - name: Run provider import
-        run: gcloud run jobs execute "${SERVICE_NAME}-import" --region="${REGION}" --project="${PROJECT_ID}" --wait
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
