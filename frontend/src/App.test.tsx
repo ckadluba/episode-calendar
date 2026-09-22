@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, seriesColor } from "./App";
+import { App, episodeStartLabel, seriesColor } from "./App";
 
 const series = [
   { id: "series-1", title: "Testserie", platform: "rtlplus", description: null },
@@ -84,5 +84,14 @@ describe("App preferences", () => {
 
     expect(screen.getByRole("button", { name: "Serien" })).toBeInTheDocument();
     expect(screen.queryByText("Kalender wird geladen …")).not.toBeInTheDocument();
+  });
+});
+
+describe("episode start labels", () => {
+  it("labels first episodes as new series or new seasons", () => {
+    expect(episodeStartLabel({ season_number: 1, number: 1 })).toBe("Neue Serie");
+    expect(episodeStartLabel({ season_number: null, number: 1 })).toBe("Neue Serie");
+    expect(episodeStartLabel({ season_number: 2, number: 1 })).toBe("Neue Staffel");
+    expect(episodeStartLabel({ season_number: 2, number: 2 })).toBeNull();
   });
 });
