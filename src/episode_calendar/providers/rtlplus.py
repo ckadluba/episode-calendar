@@ -372,7 +372,10 @@ class RTLPlusProvider:
                 max((episode.number for episode in current_episodes), default=0) + 1
             )
             release_at = releases.get(next_episode_number)
-            if release_at is not None and release_at >= datetime.now(ZoneInfo("Europe/Vienna")):
+            if (
+                release_at is not None
+                and release_at.date() >= datetime.now(ZoneInfo("Europe/Vienna")).date()
+            ):
                 current_episodes.append(
                     NormalizedEpisode(
                         external_id=(

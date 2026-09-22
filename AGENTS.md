@@ -10,6 +10,8 @@ Alembic, httpx, pytest, uv, and Docker Compose.
   its headers, GraphQL details, and API key handling inside the Joyn adapter.
 - The initial provider lists live in `config/series.json` (override with `SERIES_CONFIG_PATH`).
   Import with `uv run python -m episode_calendar.importer joyn`; imports must remain idempotent.
+- Series configuration entries always require an `id`; omit the optional `comment` when the ID is
+  already a clear, human-readable slug.
 - Never fetch provider data from an API request. Imports are a separate workflow and must be
   idempotent.
 - Preserve external IDs under provider-scoped uniqueness. Do not move release data onto
