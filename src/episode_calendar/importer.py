@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from episode_calendar.config import get_settings
@@ -66,6 +66,16 @@ async def import_series(
     else:
         series.title = normalized.title
         series.description = normalized.description
+
+    # A provider response is the source of truth for releases. Remove releases from
+    # the previous import first so obsolete inferred dates cannot remain in the calendar.
+    episode_ids = select(Episode.id).join(Season).where(Season.series_id == series.id)
+    await session.execute(
+        delete(EpisodeRelease).where(
+            EpisodeRelease.provider_id == provider.id,
+            EpisodeRelease.episode_id.in_(episode_ids),
+        )
+    )
 
     season_count = episode_count = release_count = 0
     for normalized_season in normalized.seasons:
