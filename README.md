@@ -218,7 +218,8 @@ The repository contains two GitHub Actions workflows:
 - `.github/workflows/ci.yml` runs on pull requests, tests the Python application, builds the
   backend image, and builds the frontend.
 - `.github/workflows/deploy.yml` runs on pushes to `main`, pushes an immutable backend image,
-  applies Terraform, runs migrations and the provider import job, and deploys Firebase Hosting.
+applies Terraform and migrations, and deploys Firebase Hosting. Provider data is refreshed by the
+scheduled Cloud Run import job.
 
 One-time setup is required before the first deployment. Run the bootstrap script with a local
 identity that can create service accounts, Workload Identity providers, buckets, and project IAM
