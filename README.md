@@ -11,7 +11,7 @@ separate so an episode can have multiple streaming or broadcast releases. Provid
 scoped by provider and imports use idempotent upserts.
 
 Provider adapters implement the generic abstraction in `providers/base.py`. Joyn Austria, RTL+,
-and Channel 4 are isolated in their provider modules. The importer fetches complete series trees, normalizes
+Channel 4, and ITVX are isolated in their provider modules. The importer fetches complete series trees, normalizes
 them, and persists them. API requests read PostgreSQL and never call providers directly.
 
 ## Development
@@ -60,11 +60,13 @@ The API is available at <http://localhost:8000>; `GET /health` reports its statu
 Maintain provider series in `config/series.json` (override with `SERIES_CONFIG_PATH`):
 
 ```json
-{"joyn": [{"id": "villa-der-versuchung"}, {"id": "so-denkt-oesterreich"}], "rtlplus": [], "bbc_iplayer": [{"id": "m002csng", "comment": "The Celebrity Traitors"}]}
+{"joyn": [{"id": "villa-der-versuchung"}], "rtlplus": [], "bbc_iplayer": [{"id": "m002csng", "comment": "The Celebrity Traitors"}], "itvx": [{"id": "im-a-celebrity-get-me-out-of-here/L2649"}, {"id": "big-brother/10a4928"}]}
 ```
 
 All provider entries use objects with an `id` field. The optional `comment` field is only
 documentation for humans; it does not configure or override the provider's series title.
+ITVX entries use the programme path shown in the ITVX URL; ITVX does not require a separate
+credential.
 
 For Joyn, open `joyn.at`, accept consent, open Developer Tools → Network, reload a series
 page, select `api.joyn.de/graphql`, and copy its `x-api-key` header to `JOYN_API_KEY` in
@@ -88,6 +90,9 @@ uv run python -m episode_calendar.importer bbc_iplayer
 
 # Channel 4
 uv run python -m episode_calendar.importer channel4
+
+# ITVX
+uv run python -m episode_calendar.importer itvx
 ```
 
 Run it after PostgreSQL and migrations are ready, either before or while the API is running. The

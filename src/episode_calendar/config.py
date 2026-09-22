@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     channel4_tv_guide_url: str = "https://www.channel4.com/tv-guide"
     channel4_schedule_days: int = 14
     channel4_timeout_seconds: float = 10.0
+    itvx_base_url: str = "https://www.itv.com/watch"
+    itvx_timeout_seconds: float = 30.0
     import_delay_seconds: float = 1.0
     import_max_retries: int = 3
     import_backoff_seconds: float = 1.0
