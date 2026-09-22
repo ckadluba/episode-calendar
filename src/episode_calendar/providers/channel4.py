@@ -243,6 +243,8 @@ class Channel4Provider:
             programmes = self._tv_guide_cache.get(guide_date)
             if programmes is None:
                 response = await self._get_tv_guide(client, guide_date)
+                if response is None:
+                    continue
                 programmes = self._parse_tv_guide(response.text)
                 self._tv_guide_cache[guide_date] = programmes
             for programme in programmes:
@@ -288,12 +290,16 @@ class Channel4Provider:
                 programmes_by_id.setdefault(episode_id, []).append(scheduled_programme)
         return {episode_id: tuple(items) for episode_id, items in programmes_by_id.items()}
 
-    async def _get_tv_guide(self, client: httpx.AsyncClient, guide_date: date) -> httpx.Response:
+    async def _get_tv_guide(
+        self, client: httpx.AsyncClient, guide_date: date
+    ) -> httpx.Response | None:
         try:
             response = await client.get(f"{self._tv_guide_url}/{guide_date.isoformat()}")
             response.raise_for_status()
             return response
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
             raise Channel4HTTPError(f"Channel 4 TV guide HTTP {exc.response.status_code}") from exc
         except httpx.RequestError as exc:
             raise Channel4HTTPError(str(exc)) from exc
