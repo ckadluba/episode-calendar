@@ -4,9 +4,11 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from episode_calendar.domain import ReleaseType
+from episode_calendar.providers.base import NormalizedEpisodeRelease
 from episode_calendar.providers.channel4 import (
     Channel4MalformedResponseError,
     Channel4Provider,
+    _ScheduledProgramme,
 )
 
 
@@ -40,7 +42,7 @@ async def test_fetches_public_json_and_normalizes_episode() -> None:
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        result = await Channel4Provider(client=client).fetch_series("demo")
+        result = await Channel4Provider(client=client, schedule_days=0).fetch_series("demo")
     finally:
         await client.aclose()
 
@@ -49,6 +51,30 @@ async def test_fetches_public_json_and_normalizes_episode() -> None:
     assert episode.external_id == "78327-007"
     assert episode.releases[0].release_type is ReleaseType.STREAMING
     assert episode.releases[0].release_at == datetime(2026, 7, 17, tzinfo=ZoneInfo("Europe/London"))
+
+
+def test_merges_scheduled_tv_broadcast_release() -> None:
+    release = NormalizedEpisodeRelease(
+        release_type=ReleaseType.TV_BROADCAST,
+        release_at=datetime(2026, 9, 22, 21, tzinfo=ZoneInfo("UTC")),
+        url="https://www.channel4.com/tv-guide/2026-09-22/C4/78327-007",
+    )
+    scheduled_programme = _ScheduledProgramme(
+        external_id="78327-007",
+        season_number=8,
+        episode_number=7,
+        title="Demo",
+        description="A scheduled demo",
+        release=release,
+    )
+    result = Channel4Provider._normalize(
+        "demo", payload(), scheduled_releases={"78327-007": (scheduled_programme,)}
+    )
+
+    assert {item.release_type for item in result.seasons[0].episodes[0].releases} == {
+        ReleaseType.STREAMING,
+        ReleaseType.TV_BROADCAST,
+    }
 
 
 def test_rejects_missing_brand_data() -> None:

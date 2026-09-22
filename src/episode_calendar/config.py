@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     bbc_iplayer_schedule_channels: str = "bbc_one_london"
     bbc_iplayer_schedule_days: int = 14
     channel4_base_url: str = "https://www.channel4.com/programmes"
+    channel4_tv_guide_url: str = "https://www.channel4.com/tv-guide"
+    channel4_schedule_days: int = 14
     channel4_timeout_seconds: float = 10.0
     import_delay_seconds: float = 1.0
     import_max_retries: int = 3
