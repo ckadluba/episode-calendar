@@ -12,6 +12,8 @@ Alembic, httpx, pytest, uv, and Docker Compose.
   Import with `uv run python -m episode_calendar.importer joyn`; imports must remain idempotent.
 - Series configuration entries always require an `id`; omit the optional `comment` when the ID is
   already a clear, human-readable slug.
+- Every new provider must get a distinct platform badge color in
+  `frontend/src/styles.css`; do not leave its calendar badge on the generic fallback color.
 - Never fetch provider data from an API request. Imports are a separate workflow and must be
   idempotent.
 - Preserve external IDs under provider-scoped uniqueness. Do not move release data onto
