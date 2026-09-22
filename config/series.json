@@ -62,5 +62,9 @@
     {"id": "celebrity-gogglebox"},
     {"id": "8-out-of-10-cats-does-countdown"},
     {"id": "the-great-british-bake-off"}
+  ],
+  "itvx": [
+    {"id": "im-a-celebrity-get-me-out-of-here/L2649"},
+    {"id": "big-brother/10a4928"}
   ]
 }

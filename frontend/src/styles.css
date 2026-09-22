@@ -10,5 +10,6 @@ button, select { font: inherit; }
 .episode-badges { display: flex; flex-wrap: wrap; gap: 5px; }
 .badge.bbc_iplayer { background: #3656a8; }
 .badge.channel4 { background: #a84b35; }
+.badge.itvx { background: #6b3fa0; }
 @media (max-width: 1050px) { .calendar { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .app-shell { padding-top: 32px; }.filters { align-items: stretch; flex-direction: column; }.series-picker-button { width: 100%; }.calendar { display: block; }.day { min-height: auto; margin-bottom: 12px; }.day h2 { font-size: 1.05rem; }.week-switch { width: 100%; }.week-switch button { flex: 1; } }
