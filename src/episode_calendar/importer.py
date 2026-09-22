@@ -17,6 +17,7 @@ from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season
 from episode_calendar.db.session import get_session_factory
 from episode_calendar.providers.base import ProviderAdapter
 from episode_calendar.providers.bbc_iplayer import BBCIPlayerProvider
+from episode_calendar.providers.channel4 import Channel4Provider
 from episode_calendar.providers.joyn import JoynProvider
 from episode_calendar.providers.rtlplus import RTLPlusProvider
 
@@ -197,6 +198,10 @@ async def import_configured_bbc_iplayer() -> None:
     await import_configured("bbc_iplayer", BBCIPlayerProvider, "BBC iPlayer")
 
 
+async def import_configured_channel4() -> None:
+    await import_configured("channel4", Channel4Provider, "Channel 4")
+
+
 async def import_configured(
     provider_slug: str, adapter_factory: type[ProviderAdapter], provider_name: str
 ) -> None:
@@ -231,7 +236,7 @@ async def import_configured(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Import configured provider catalogs")
-    parser.add_argument("provider", choices=("joyn", "rtlplus", "bbc_iplayer", "all"))
+    parser.add_argument("provider", choices=("joyn", "rtlplus", "bbc_iplayer", "channel4", "all"))
     args = parser.parse_args()
     if args.provider == "joyn":
         asyncio.run(import_configured_joyn())
@@ -239,6 +244,8 @@ def main() -> None:
         asyncio.run(import_configured_rtlplus())
     elif args.provider == "bbc_iplayer":
         asyncio.run(import_configured_bbc_iplayer())
+    elif args.provider == "channel4":
+        asyncio.run(import_configured_channel4())
     else:
 
         async def run_all() -> None:
@@ -247,6 +254,7 @@ def main() -> None:
                 ("joyn", JoynProvider, "Joyn Austria"),
                 ("rtlplus", RTLPlusProvider, "RTL+"),
                 ("bbc_iplayer", BBCIPlayerProvider, "BBC iPlayer"),
+                ("channel4", Channel4Provider, "Channel 4"),
             ):
                 try:
                     await import_configured(provider_slug, factory, name)

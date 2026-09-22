@@ -10,8 +10,8 @@ The domain model is `Provider -> Series -> Season -> Episode -> EpisodeRelease`;
 separate so an episode can have multiple streaming or broadcast releases. Provider IDs are
 scoped by provider and imports use idempotent upserts.
 
-Provider adapters implement the generic abstraction in `providers/base.py`. Joyn Austria and RTL+
-are isolated in their provider modules. The importer fetches complete series trees, normalizes
+Provider adapters implement the generic abstraction in `providers/base.py`. Joyn Austria, RTL+,
+and Channel 4 are isolated in their provider modules. The importer fetches complete series trees, normalizes
 them, and persists them. API requests read PostgreSQL and never call providers directly.
 
 ## Development
@@ -85,6 +85,9 @@ Come Dancing*. Import only BBC data with:
 
 ```shell
 uv run python -m episode_calendar.importer bbc_iplayer
+
+# Channel 4
+uv run python -m episode_calendar.importer channel4
 ```
 
 Run it after PostgreSQL and migrations are ready, either before or while the API is running. The

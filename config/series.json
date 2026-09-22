@@ -57,5 +57,9 @@
     {"id": "m002csng", "comment": "The Celebrity Traitors"},
     {"id": "m002kksc", "comment": "The Celebrity Traitors: Uncloaked"},
     {"id": "b006m8dq", "comment": "Strictly Come Dancing; scheduled release 2026-09-26"}
+  ],
+  "channel4": [
+    {"id": "celebrity-gogglebox", "comment": "Celebrity Gogglebox"},
+    {"id": "8-out-of-10-cats-does-countdown", "comment": "8 Out of 10 Cats Does Countdown"}
   ]
 }
