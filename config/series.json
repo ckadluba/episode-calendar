@@ -59,8 +59,8 @@
     {"id": "b006m8dq", "comment": "Strictly Come Dancing; scheduled release 2026-09-26"}
   ],
   "channel4": [
-    {"id": "celebrity-gogglebox", "comment": "Celebrity Gogglebox"},
-    {"id": "8-out-of-10-cats-does-countdown", "comment": "8 Out of 10 Cats Does Countdown"},
-    {"id": "the-great-british-bake-off", "comment": "The Great British Bake Off"}
+    {"id": "celebrity-gogglebox"},
+    {"id": "8-out-of-10-cats-does-countdown"},
+    {"id": "the-great-british-bake-off"}
   ]
 }
