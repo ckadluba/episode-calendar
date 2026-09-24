@@ -95,7 +95,7 @@ def test_normalize_adds_next_planned_episode_from_schedule_table() -> None:
                 "entity": {"id": "6405", "metadata": {"title": "Demo"}},
                 "seo": {
                     "metadata": {
-                        "title": "Demo 2026, ab 25. August auf RTL+",
+                        "title": "Demo 2099, ab 25. August auf RTL+",
                         "text": (
                             "| **Folge 4** | Di., 15.9. um 0:00 Uhr |\n"
                             "| **Folge 5** | Di., 22.9. um 0:00 Uhr |"
