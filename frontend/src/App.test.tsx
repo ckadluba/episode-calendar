@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, episodeStartLabel, seriesColor } from "./App";
 
@@ -38,35 +38,54 @@ describe("App preferences", () => {
   it("persists an arbitrary series selection", async () => {
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Serien" })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Serien" }));
-    const picker = screen.getByRole("listbox", { name: "Serie" });
-    fireEvent.click(within(picker).getByRole("checkbox", { name: /Testserie/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Testserie" }));
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
 
-    expect(JSON.parse(localStorage.getItem("episode-calendar-series-selection") ?? "null")).toEqual(["series-2"]);
+    expect(JSON.parse(localStorage.getItem("episode-calendar-series-selection") ?? "null")).toEqual({ selected: ["series-2"], known: ["series-1", "series-2"] });
   });
 
-  it("uses the same stable color in the series selector and legend", async () => {
+  it("uses the same stable color in the series filter and legend", async () => {
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Serien" })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Serien" }));
-    const picker = screen.getByRole("listbox", { name: "Serie" });
-    const option = within(picker).getByRole("option", { name: /Testserie/ });
-    expect(option).toHaveTextContent("Testserie (rtlplus)");
-    expect(option.querySelector(".series-dot")).toHaveStyle({ backgroundColor: seriesColor("series-1") });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    const checkbox = screen.getByRole("checkbox", { name: "Testserie" });
+    expect(checkbox.parentElement?.querySelector(".series-dot")).toHaveStyle({ backgroundColor: seriesColor("series-1") });
   });
 
-  it("restores the saved series selection and sorts entries by title", async () => {
+  it("restores the saved series selection and groups entries by platform", async () => {
     localStorage.setItem("episode-calendar-series-selection", JSON.stringify(["series-2"]));
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Serien" })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Serien" }));
-    const options = within(screen.getByRole("listbox", { name: "Serie" })).getAllByRole("option");
-    expect(options.map((option) => option.textContent)).toEqual(["Alle Serien", "Andere Serie (joyn)", "Testserie (rtlplus)"]);
-    expect(within(options[1]).getByRole("checkbox")).toBeChecked();
-    expect(within(options[2]).getByRole("checkbox")).not.toBeChecked();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    expect(screen.getByRole("heading", { name: "Joyn" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "RTL+" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Andere Serie" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Testserie" })).not.toBeChecked();
+  });
+
+  it("selects series added since the saved filter", async () => {
+    localStorage.setItem("episode-calendar-series-selection", JSON.stringify({ selected: ["series-2"], known: ["series-2"] }));
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("2 von 2 Serien ausgewählt")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    expect(screen.getByRole("checkbox", { name: "Testserie" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Andere Serie" })).toBeChecked();
+  });
+
+  it("discards changes made on the filter page", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Testserie" }));
+    fireEvent.click(screen.getByRole("button", { name: "Verwerfen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    expect(screen.getByRole("checkbox", { name: "Testserie" })).toBeChecked();
   });
 
   it("renders cached API data without waiting for the network", () => {
@@ -82,7 +101,7 @@ describe("App preferences", () => {
 
     render(<App />);
 
-    expect(screen.getByRole("button", { name: "Serien" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument();
     expect(screen.queryByText("Kalender wird geladen …")).not.toBeInTheDocument();
   });
 });

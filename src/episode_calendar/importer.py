@@ -30,6 +30,7 @@ class ImportResult:
     series: Series
     seasons: int
     episodes: int
+    new_episodes: int
     releases: int
 
 
@@ -78,7 +79,7 @@ async def import_series(
         )
     )
 
-    season_count = episode_count = release_count = 0
+    season_count = episode_count = new_episode_count = release_count = 0
     for normalized_season in normalized.seasons:
         season = await session.scalar(
             select(Season).where(
@@ -117,6 +118,7 @@ async def import_series(
                 )
                 session.add(episode)
                 await session.flush()
+                new_episode_count += 1
             else:
                 episode.number = normalized_episode.number
                 episode.title = normalized_episode.title
@@ -159,7 +161,11 @@ async def import_series(
 
     await session.commit()
     return ImportResult(
-        series=series, seasons=season_count, episodes=episode_count, releases=release_count
+        series=series,
+        seasons=season_count,
+        episodes=episode_count,
+        new_episodes=new_episode_count,
+        releases=release_count,
     )
 
 
@@ -243,7 +249,8 @@ async def import_configured(
                 continue
             print(
                 f"Imported {result.series.title}: {result.seasons} seasons, "
-                f"{result.episodes} episodes, {result.releases} releases"
+                f"{result.episodes} episodes ({result.new_episodes} new), "
+                f"{result.releases} releases"
             )
     if failed:
         raise RuntimeError(f"{failed} of {len(identifiers)} {provider_slug} imports failed")
