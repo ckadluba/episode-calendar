@@ -126,6 +126,41 @@ def test_normalize_adds_next_planned_episode_from_schedule_table() -> None:
     assert result.seasons[0].episodes[-1].number == 5
 
 
+def test_normalize_uses_diffusion_date_for_first_episode_without_schedule() -> None:
+    result = RTLPlusProvider._normalize(
+        RTLPlusProvider.__new__(RTLPlusProvider),
+        "254773",
+        [
+            {
+                "entity": {"id": "254773", "metadata": {"title": "Yeliz & Jimi"}},
+                "seo": {"diffusionDate": 1790028000, "metadata": {"title": "Yeliz & Jimi"}},
+                "blocks": [
+                    {
+                        "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                        "content": {
+                            "items": [
+                                {
+                                    "itemContent": {
+                                        "id": "clip-1",
+                                        "title": "New Year, Same Problems",
+                                        "highlight": (
+                                            "Staffel 2 • Folge 1 • New Year, Same Problems"
+                                        ),
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+
+    episode = result.seasons[0].episodes[0]
+    assert episode.number == 1
+    assert episode.releases[0].release_at == datetime(2026, 9, 22, tzinfo=ZoneInfo("Europe/Vienna"))
+
+
 def test_schedule_does_not_invent_dates_for_cadence_without_start_date() -> None:
     assert RTLPlusProvider._schedule({"metadata": {"text": "Montags"}}) == {}
 

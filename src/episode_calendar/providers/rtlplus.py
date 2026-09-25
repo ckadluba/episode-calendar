@@ -8,7 +8,7 @@ import random
 # ruff: noqa: E501
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -266,6 +266,7 @@ class RTLPlusProvider:
                 if isinstance(block_title, str):
                     schedule_labels.append(block_title)
         releases = self._schedule(first.get("seo"), "\n".join(schedule_labels))
+        diffusion_release = self._diffusion_release(first.get("seo"))
         season_numbers: set[int] = set()
         for payload in pages:
             for block in payload.get("blocks", []):
@@ -345,6 +346,12 @@ class RTLPlusProvider:
                         if season_number == current_season_number
                         else None
                     )
+                    if (
+                        release_at is None
+                        and season_number == current_season_number
+                        and episode_number == 1
+                    ):
+                        release_at = diffusion_release
                     release_tuple = (
                         ()
                         if release_at is None
@@ -401,6 +408,15 @@ class RTLPlusProvider:
             for number, episodes in sorted(seasons.items())
         )
         return NormalizedSeries(external_id=program_id, title=title, seasons=normalized_seasons)
+
+    @staticmethod
+    def _diffusion_release(seo: Any) -> datetime | None:
+        if not isinstance(seo, dict):
+            return None
+        value = seo.get("diffusionDate")
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, UTC).astimezone(ZoneInfo("Europe/Vienna"))
+        return None
 
     @staticmethod
     def _schedule(seo: Any, extra_text: str = "") -> dict[int, datetime]:
