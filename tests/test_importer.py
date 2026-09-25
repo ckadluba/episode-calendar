@@ -51,6 +51,8 @@ async def test_import_is_idempotent(db_session: AsyncSession) -> None:
     second = await import_series(db_session, provider, "ignored")
 
     assert first.series.id == second.series.id
+    assert first.new_episodes == 1
+    assert second.new_episodes == 0
     assert (await db_session.scalar(select(func.count()).select_from(Provider))) == 1
     assert (await db_session.scalar(select(func.count()).select_from(Series))) == 1
     assert (await db_session.scalar(select(func.count()).select_from(Season))) == 1
