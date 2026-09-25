@@ -38,7 +38,7 @@ describe("App preferences", () => {
   it("persists an arbitrary series selection", async () => {
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("2 von 2 Serien ausgewählt")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Filter" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Testserie" }));
     fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
@@ -49,7 +49,7 @@ describe("App preferences", () => {
   it("uses the same stable color in the series filter and legend", async () => {
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("2 von 2 Serien ausgewählt")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Filter" }));
     const checkbox = screen.getByRole("checkbox", { name: "Testserie" });
     expect(checkbox.parentElement?.querySelector(".series-dot")).toHaveStyle({ backgroundColor: seriesColor("series-1") });
@@ -59,7 +59,7 @@ describe("App preferences", () => {
     localStorage.setItem("episode-calendar-series-selection", JSON.stringify(["series-2"]));
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("1 von 2 Serien ausgewählt")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Filter" }));
     expect(screen.getByRole("heading", { name: "Joyn" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "RTL+" })).toBeInTheDocument();
@@ -80,7 +80,7 @@ describe("App preferences", () => {
   it("discards changes made on the filter page", async () => {
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("2 von 2 Serien ausgewählt")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Filter" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Testserie" }));
     fireEvent.click(screen.getByRole("button", { name: "Verwerfen" }));
