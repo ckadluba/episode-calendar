@@ -303,6 +303,14 @@ class RTLPlusProvider:
         has_explicit_schedule = bool(
             re.search(r"^\s*\|\s*\*{0,2}Folge\s+\d+", seo_text, re.IGNORECASE | re.MULTILINE)
         )
+        diffusion_episode_number = None
+        if (
+            diffusion_release is not None
+            and releases
+            and not has_explicit_schedule
+            and current_season_number is not None
+        ):
+            diffusion_episode_number = self._diffusion_episode_number(pages, current_season_number)
         seasons: dict[int, list[NormalizedEpisode]] = {}
         for payload in pages:
             for block in payload.get("blocks", []):
@@ -341,11 +349,14 @@ class RTLPlusProvider:
                         int(season_match.group(1)),
                         int(episode_match.group(1)),
                     )
-                    release_at = (
-                        releases.get(episode_number)
-                        if season_number == current_season_number
-                        else None
-                    )
+                    release_at = None
+                    if season_number == current_season_number:
+                        if diffusion_episode_number is not None:
+                            release_at = diffusion_release + timedelta(
+                                weeks=episode_number - diffusion_episode_number
+                            )
+                        else:
+                            release_at = releases.get(episode_number)
                     if (
                         release_at is None
                         and season_number == current_season_number
@@ -416,6 +427,51 @@ class RTLPlusProvider:
         value = seo.get("diffusionDate")
         if isinstance(value, (int, float)):
             return datetime.fromtimestamp(value, UTC).astimezone(ZoneInfo("Europe/Vienna"))
+        return None
+
+    @staticmethod
+    def _diffusion_episode_number(
+        pages: list[dict[str, Any]], current_season_number: int
+    ) -> int | None:
+        """Return the first episode from RTL+'s current weekday block.
+
+        RTL+ exposes the episode order in the layout response. The first item in the
+        weekday block is the episode represented by the page-level diffusion date.
+        Other blocks, such as "Kostenlose Folgen", are unrelated to that date.
+        """
+
+        for payload in pages:
+            for block in payload.get("blocks", []):
+                if (
+                    not isinstance(block, dict)
+                    or block.get("analytics", {}).get("tealium", {}).get("from")
+                    != "feature.videos_by_season_by_program"
+                ):
+                    continue
+                content = block.get("content")
+                if not isinstance(content, dict):
+                    continue
+                title = content.get("title")
+                block_title = title.get("short") if isinstance(title, dict) else None
+                if not isinstance(block_title, str) or not _WEEKDAY_RE.search(block_title):
+                    continue
+                items = content.get("items")
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    raw = item.get("itemContent") if isinstance(item, dict) else None
+                    if not isinstance(raw, dict):
+                        continue
+                    highlight = str(raw.get("highlight") or "")
+                    season_match = _SEASON_RE.search(highlight)
+                    episode_match = _EPISODE_RE.search(highlight)
+                    if (
+                        season_match
+                        and episode_match
+                        and int(season_match.group(1)) == current_season_number
+                    ):
+                        episode_number = int(episode_match.group(1))
+                        return episode_number if episode_number > 0 else None
         return None
 
     @staticmethod

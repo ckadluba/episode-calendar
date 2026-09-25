@@ -416,7 +416,8 @@ After changing application code, `config/series.json`, or API behavior:
    ```
 5. Verify `/health` and the API. The periodoc scheduler continues to execute the existing import job.
 
-## Planned work
+## License
 
-Future increments can add a calendar UI, iCal feeds, Home Assistant integrations, and additional
-provider adapters.
+This project is licensed under the [Apache License 2.0](LICENSE).
+
+Created by [Christian Kadluba](https://github.com/ckadluba).

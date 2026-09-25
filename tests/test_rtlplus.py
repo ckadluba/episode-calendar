@@ -161,6 +161,131 @@ def test_normalize_uses_diffusion_date_for_first_episode_without_schedule() -> N
     assert episode.releases[0].release_at == datetime(2026, 9, 22, tzinfo=ZoneInfo("Europe/Vienna"))
 
 
+def test_normalize_anchors_weekly_schedule_to_latest_feed_episode() -> None:
+    result = RTLPlusProvider._normalize(
+        RTLPlusProvider.__new__(RTLPlusProvider),
+        "6838",
+        [
+            {
+                "entity": {"id": "6838", "metadata": {"title": "Demo"}},
+                "seo": {
+                    "diffusionDate": 1790114400,
+                    "metadata": {
+                        "title": "Demo Staffel 6, ab 12. August auf RTL+ streamen",
+                    },
+                },
+                "blocks": [
+                    {
+                        "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                        "content": {
+                            "title": {"short": "Mittwochs"},
+                            "items": [
+                                {
+                                    "itemContent": {
+                                        "id": f"clip-{episode_number}",
+                                        "title": f"Folge {episode_number}",
+                                        "highlight": (
+                                            f"Staffel 6 • Folge {episode_number} • Folge "
+                                            f"{episode_number}"
+                                        ),
+                                    }
+                                }
+                                for episode_number in (14, 13, 12, 7)
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+
+    episodes = {episode.number: episode for episode in result.seasons[0].episodes}
+    assert episodes[12].releases[0].release_at == datetime(
+        2026, 9, 9, tzinfo=ZoneInfo("Europe/Vienna")
+    )
+    assert episodes[13].releases[0].release_at == datetime(
+        2026, 9, 16, tzinfo=ZoneInfo("Europe/Vienna")
+    )
+    assert episodes[14].releases[0].release_at == datetime(
+        2026, 9, 23, tzinfo=ZoneInfo("Europe/Vienna")
+    )
+
+
+def test_normalize_uses_weekday_block_order_not_highest_episode_number() -> None:
+    payload = {
+        "entity": {"id": "6838", "metadata": {"title": "Demo"}},
+        "seo": {
+            "diffusionDate": 1790114400,
+            "metadata": {"title": "Demo Staffel 6, ab 12. August auf RTL+ streamen"},
+        },
+        "blocks": [
+            {
+                "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                "content": {
+                    "title": {"short": "Mittwochs"},
+                    "items": [
+                        {
+                            "itemContent": {
+                                "id": f"clip-{episode_number}",
+                                "title": f"Folge {episode_number}",
+                                "highlight": f"Staffel 6 • Folge {episode_number}",
+                            }
+                        }
+                        for episode_number in (12, 14)
+                    ],
+                },
+            }
+        ],
+    }
+
+    result = RTLPlusProvider._normalize(RTLPlusProvider.__new__(RTLPlusProvider), "6838", [payload])
+
+    episodes = {episode.number: episode for episode in result.seasons[0].episodes}
+    assert episodes[12].releases[0].release_at == datetime(
+        2026, 9, 23, tzinfo=ZoneInfo("Europe/Vienna")
+    )
+    assert episodes[14].releases[0].release_at == datetime(
+        2026, 10, 7, tzinfo=ZoneInfo("Europe/Vienna")
+    )
+
+
+def test_normalize_does_not_assume_premium_previews_for_other_programmes() -> None:
+    result = RTLPlusProvider._normalize(
+        RTLPlusProvider.__new__(RTLPlusProvider),
+        "11169",
+        [
+            {
+                "entity": {"id": "11169", "metadata": {"title": "Ex on the Beach"}},
+                "seo": {
+                    "diffusionDate": 1790287200,
+                    "metadata": {"title": "Ex on the Beach Staffel 7 ab 29. Mai 2026"},
+                },
+                "blocks": [
+                    {
+                        "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                        "content": {
+                            "title": {"short": "Freitags"},
+                            "items": [
+                                {
+                                    "itemContent": {
+                                        "id": "clip-18",
+                                        "title": "Folge 18",
+                                        "highlight": "Staffel 7 • Folge 18 • Folge 18",
+                                    }
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+
+    episode = result.seasons[0].episodes[0]
+    assert episode.number == 18
+    assert episode.releases[0].release_at == datetime(2026, 9, 25, tzinfo=ZoneInfo("Europe/Vienna"))
+
+
 def test_schedule_does_not_invent_dates_for_cadence_without_start_date() -> None:
     assert RTLPlusProvider._schedule({"metadata": {"text": "Montags"}}) == {}
 
