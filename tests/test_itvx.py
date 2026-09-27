@@ -5,6 +5,7 @@ import pytest
 
 from episode_calendar.domain import ReleaseType
 from episode_calendar.providers.itvx import (
+    ITVXHTTPError,
     ITVXMalformedResponseError,
     ITVXProvider,
 )
@@ -93,6 +94,64 @@ async def test_fetch_series_requests_programme_path() -> None:
         assert result.seasons[0].episodes[0].external_id == "1a7103a0273"
 
     await run()
+
+
+@pytest.mark.asyncio
+async def test_fetch_series_retries_transient_request_errors() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.ReadTimeout("", request=request)
+        return httpx.Response(
+            200,
+            text=page_html(
+                {
+                    "programmeTitle": "Big Brother",
+                    "seriesList": [
+                        {
+                            "seriesNumber": 4,
+                            "titles": [
+                                {
+                                    "id": "episode-1",
+                                    "episodeNumber": 1,
+                                    "episodeTitle": "Launch",
+                                    "broadcastDateTime": "2026-09-22T20:00:00Z",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await ITVXProvider(
+            client=client, base_url="https://example.test/watch", max_retries=2, backoff=0
+        ).get_series("big-brother/10a4928")
+
+    assert attempts == 3
+    assert result.title == "Big Brother"
+
+
+@pytest.mark.asyncio
+async def test_fetch_series_raises_after_retry_limit() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ReadTimeout("", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ITVXHTTPError, match="ReadTimeout"):
+            await ITVXProvider(
+                client=client, base_url="https://example.test/watch", max_retries=2, backoff=0
+            ).get_series("big-brother/10a4928")
+
+    assert attempts == 3
 
 
 def test_normalize_rejects_missing_next_data() -> None:

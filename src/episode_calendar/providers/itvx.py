@@ -21,6 +21,7 @@ from episode_calendar.providers.base import (
     NormalizedSeason,
     NormalizedSeries,
 )
+from episode_calendar.providers.http import request_with_retries
 
 _NEXT_DATA_RE = re.compile(
     r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', re.IGNORECASE | re.DOTALL
@@ -60,11 +61,15 @@ class ITVXProvider:
         client: httpx.AsyncClient | None = None,
         timeout: float | None = None,
         base_url: str | None = None,
+        max_retries: int | None = None,
+        backoff: float | None = None,
     ) -> None:
         settings = get_settings()
         self._client = client
         self._timeout = timeout if timeout is not None else settings.itvx_timeout_seconds
         self._base_url = (base_url or settings.itvx_base_url).rstrip("/")
+        self._max_retries = max_retries if max_retries is not None else settings.import_max_retries
+        self._backoff = backoff if backoff is not None else settings.import_backoff_seconds
 
     @property
     def slug(self) -> str:
@@ -84,15 +89,19 @@ class ITVXProvider:
 
     async def _fetch(self, client: httpx.AsyncClient, path: str) -> NormalizedSeries:
         try:
-            response = await client.get(
-                f"{self._base_url}/{quote(path, safe='/')}",
-                follow_redirects=True,
-                headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-GB,en;q=0.9",
-                    "Referer": "https://www.itv.com/",
-                    "User-Agent": "Mozilla/5.0 (compatible; episode-calendar/1.0)",
-                },
+            response = await request_with_retries(
+                lambda: client.get(
+                    f"{self._base_url}/{quote(path, safe='/')}",
+                    follow_redirects=True,
+                    headers={
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-GB,en;q=0.9",
+                        "Referer": "https://www.itv.com/",
+                        "User-Agent": "Mozilla/5.0 (compatible; episode-calendar/1.0)",
+                    },
+                ),
+                max_retries=self._max_retries,
+                backoff=self._backoff,
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:

@@ -15,7 +15,7 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession) -> None:
     series = Series(provider=provider, external_id="d-series", title="Demo")
     season = Season(series=series, external_id="c-season", number=1)
     episode = Episode(season=season, external_id="e-1", number=1, title="Pilot")
-    release_at = datetime.now(UTC) + timedelta(days=2)
+    release_at = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
     episode.releases.append(
         EpisodeRelease(
             provider=provider,
