@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
-type Series = { id: string; title: string; platform: string; description: string | null };
+type Series = { id: string; title: string; platform: string; platform_id: string; description: string | null };
 type Release = { release_type: string; release_at: string; url: string | null };
 type Episode = {
   id: string; series_id: string; season_number: number | null; number: number | null;
-  title: string; description: string | null; platform: string; releases: Release[];
+  title: string; description: string | null; platform: string; platform_id: string; releases: Release[];
 };
 
 const API_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:8000";
@@ -74,18 +74,6 @@ export function episodeStartLabel(episode: Pick<Episode, "season_number" | "numb
   return episode.season_number === null || episode.season_number === 1 ? "Neue Serie" : "Neue Staffel";
 }
 
-const platformLabels: Record<string, string> = {
-  bbc_iplayer: "BBC iPlayer",
-  channel4: "Channel 4",
-  itvx: "ITVX",
-  joyn: "Joyn",
-  rtlplus: "RTL+",
-};
-
-function platformLabel(platform: string) {
-  return platformLabels[platform] ?? platform;
-}
-
 function SeriesFilterPage({ series, selectedIds, onSave, onDiscard }: {
   series: Series[];
   selectedIds: string[];
@@ -100,7 +88,7 @@ function SeriesFilterPage({ series, selectedIds, onSave, onDiscard }: {
       .filter((item) => item.title.toLocaleLowerCase("de").includes(normalizedQuery))
       .sort((left, right) => left.title.localeCompare(right.title, "de"));
     return [...new Set(visible.map((item) => item.platform))]
-      .sort((left, right) => platformLabel(left).localeCompare(platformLabel(right), "de"))
+      .sort((left, right) => left.localeCompare(right, "de"))
       .map((platform) => ({ platform, series: visible.filter((item) => item.platform === platform) }));
   }, [normalizedQuery, series]);
 
@@ -110,13 +98,37 @@ function SeriesFilterPage({ series, selectedIds, onSave, onDiscard }: {
 
   return <main className="app-shell filter-page">
     <header className="hero"><p className="eyebrow">EPISODE CALENDAR</p><h1>Serien filtern</h1><p className="subtitle">Wähle aus, welche Serien im Kalender erscheinen.</p></header>
+    <div className="filter-actions filter-actions-top">
+      <button className="secondary-button" type="button" onClick={() => setDraftIds(series.map((item) => item.id))}>Alle auswählen</button>
+      <button className="secondary-button" type="button" onClick={() => setDraftIds([])}>Keine auswählen</button>
+    </div>
     <label className="filter-search">Serien durchsuchen
       <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="z. B. Celebrity" />
     </label>
     <section className="series-groups" aria-label="Serienauswahl">
       {groups.length === 0 && <p className="empty">Keine Serien gefunden.</p>}
       {groups.map((group) => <section className="series-group" key={group.platform}>
-        <h2>{platformLabel(group.platform)}</h2>
+        <h2><label className="provider-filter-option">
+          <input
+            type="checkbox"
+            aria-label={`Alle Serien von ${group.platform} auswählen`}
+            checked={group.series.every((item) => draftIds.includes(item.id))}
+            ref={(element) => {
+              if (element) {
+                element.indeterminate = group.series.some((item) => draftIds.includes(item.id))
+                  && !group.series.every((item) => draftIds.includes(item.id));
+              }
+            }}
+            onChange={() => {
+              const groupIds = group.series.map((item) => item.id);
+              const allSelected = groupIds.every((id) => draftIds.includes(id));
+              setDraftIds((current) => allSelected
+                ? current.filter((id) => !groupIds.includes(id))
+                : [...new Set([...current, ...groupIds])]);
+            }}
+          />
+          {group.platform}
+        </label></h2>
         {group.series.map((item) => <label className="series-filter-option" key={item.id}>
           <input type="checkbox" checked={draftIds.includes(item.id)} onChange={() => toggle(item.id)} />
           <span className="series-dot" style={{ backgroundColor: seriesColor(item.id) }} aria-hidden="true" />
@@ -229,7 +241,7 @@ export function App() {
     <section className="filters" aria-label="Filter"><button className="filter-button" type="button" disabled={!seriesSelectionInitialized} onClick={() => setFilterOpen(true)}>Filter</button><span>{selectedSeriesIds.length} von {series.length} Serien ausgewählt</span></section>
     {loading && <p className="status">Kalender wird geladen …</p>}
     {error && <p className="status error">{error}<br /><small>Prüfe, ob die API unter {API_URL} läuft.</small></p>}
-    {!loading && !error && <section className="calendar">{days.map((day) => { const items = byDay.get(dateKey(day)) ?? []; return <article className="day" key={dateKey(day)}><h2>{dayLabel.format(day)}</h2>{items.length === 0 ? <p className="empty">Keine Episoden</p> : items.map((episode) => { const release = episode.releases.find((item) => item.release_type === "streaming") ?? episode.releases[0]; const show = seriesMap.get(episode.series_id); const color = seriesColor(episode.series_id); const colorStyle = { "--series-color": color } as CSSProperties; const startLabel = episodeStartLabel(episode); const className = `episode${release?.url ? " episode-link" : ""}${startLabel ? " episode-new" : ""}`; const content = <><div className="episode-time">{release && timeLabel.format(new Date(release.release_at))}</div><div><h3><span className="series-dot" style={{ backgroundColor: color }} aria-hidden="true" />{show?.title ?? "Unbekannte Serie"}</h3><p>{episode.season_number ? `S${episode.season_number} · ` : ""}{episode.number ? `E${episode.number} · ` : ""}{episode.title}</p><div className="episode-badges">{startLabel && <span className="new-badge">{startLabel}</span>}<span className={`badge ${episode.platform}`}>{episode.platform}</span></div></div></>; return release?.url ? <a className={className} style={colorStyle} href={release.url} target="_blank" rel="noreferrer" key={episode.id}>{content}</a> : <div className={className} style={colorStyle} key={episode.id}>{content}</div>; })}</article>; })}</section>}
+    {!loading && !error && <section className="calendar">{days.map((day) => { const items = byDay.get(dateKey(day)) ?? []; return <article className="day" key={dateKey(day)}><h2>{dayLabel.format(day)}</h2>{items.length === 0 ? <p className="empty">Keine Episoden</p> : items.map((episode) => { const release = episode.releases.find((item) => item.release_type === "streaming") ?? episode.releases[0]; const show = seriesMap.get(episode.series_id); const color = seriesColor(episode.series_id); const colorStyle = { "--series-color": color } as CSSProperties; const startLabel = episodeStartLabel(episode); const className = `episode${release?.url ? " episode-link" : ""}${startLabel ? " episode-new" : ""}`; const content = <><div className="episode-time">{release && timeLabel.format(new Date(release.release_at))}</div><div><h3><span className="series-dot" style={{ backgroundColor: color }} aria-hidden="true" />{show?.title ?? "Unbekannte Serie"}</h3><p>{episode.season_number ? `S${episode.season_number} · ` : ""}{episode.number ? `E${episode.number} · ` : ""}{episode.title}</p><div className="episode-badges">{startLabel && <span className="new-badge">{startLabel}</span>}<span className={`badge ${episode.platform_id}`}>{episode.platform}</span></div></div></>; return release?.url ? <a className={className} style={colorStyle} href={release.url} target="_blank" rel="noreferrer" key={episode.id}>{content}</a> : <div className={className} style={colorStyle} key={episode.id}>{content}</div>; })}</article>; })}</section>}
     {!loading && !error && filtered.length === 0 && <p className="status">Für diese Filter wurden keine Episoden gefunden.</p>}
     <footer className="app-footer">Episode Calendar is open source under the <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noreferrer">Apache 2.0 license</a>. Created by <a href="https://github.com/ckadluba" target="_blank" rel="noreferrer">Christian Kadluba</a>. <a href="https://github.com/ckadluba/episode-calendar" target="_blank" rel="noreferrer">View the source on GitHub</a>.</footer>
   </main>;

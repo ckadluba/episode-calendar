@@ -46,6 +46,9 @@ class ITVXMalformedResponseError(ITVXProviderError):
     pass
 
 
+_DEFAULT_TIMEOUT_SECONDS = 30.0
+
+
 class ITVXProvider:
     """Read catalogue metadata embedded in public ITVX programme pages.
 
@@ -66,7 +69,7 @@ class ITVXProvider:
     ) -> None:
         settings = get_settings()
         self._client = client
-        self._timeout = timeout if timeout is not None else settings.itvx_timeout_seconds
+        self._timeout = timeout if timeout is not None else _DEFAULT_TIMEOUT_SECONDS
         self._base_url = (base_url or settings.itvx_base_url).rstrip("/")
         self._max_retries = max_retries if max_retries is not None else settings.import_max_retries
         self._backoff = backoff if backoff is not None else settings.import_backoff_seconds

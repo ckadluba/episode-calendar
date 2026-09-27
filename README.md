@@ -11,7 +11,7 @@ separate so an episode can have multiple streaming or broadcast releases. Provid
 scoped by provider and imports use idempotent upserts.
 
 Provider adapters implement the generic abstraction in `providers/base.py`. Joyn Austria, RTL+,
-Channel 4, and ITVX are isolated in their provider modules. The importer fetches complete series trees, normalizes
+and Channel 4 are isolated in their provider modules. The importer fetches complete series trees, normalizes
 them, and persists them. API requests read PostgreSQL and never call providers directly.
 
 ## Development
@@ -60,14 +60,26 @@ The API is available at <http://localhost:8000>; `GET /health` reports its statu
 Maintain provider series in `config/series.json` (override with `SERIES_CONFIG_PATH`):
 
 ```json
-{"joyn": [{"id": "villa-der-versuchung"}], "rtlplus": [], "bbc_iplayer": [{"id": "m002csng", "comment": "The Celebrity Traitors"}], "itvx": [{"id": "im-a-celebrity-get-me-out-of-here/L2649"}, {"id": "big-brother/10a4928"}]}
+{
+  "platforms": [
+    {
+      "id": "joyn",
+      "name": "Joyn.at",
+      "series": [{"id": "villa-der-versuchung"}]
+    },
+    {
+      "id": "bbc_iplayer",
+      "name": "BBC iPlayer",
+      "series": [{"id": "m002csng", "comment": "The Celebrity Traitors"}]
+    }
+  ]
+}
 ```
 
-All provider entries use objects with an `id` field. The optional `comment` field is only
-documentation for humans; it does not configure or override the provider's series title.
-ITVX entries use the programme path shown in the ITVX URL; ITVX does not require a separate
-credential.
-
+Each platform has an `id`, a display `name`, and a `series` list. Optional `run_import` and
+`display` booleans default to `true` at platform and series level. All series entries use an
+`id` field. The optional `comment` field is only documentation for humans; it does not configure
+or override the provider's series title.
 For Joyn, open `joyn.at`, accept consent, open Developer Tools → Network, reload a series
 page, select `api.joyn.de/graphql`, and copy its `x-api-key` header to `JOYN_API_KEY` in
 `.env`. For RTL+, reload `plus.rtl.de`, accept the cookie banner, select the request to
@@ -91,13 +103,13 @@ uv run python -m episode_calendar.importer bbc_iplayer
 # Channel 4
 uv run python -m episode_calendar.importer channel4
 
-# ITVX
-uv run python -m episode_calendar.importer itvx
 ```
 
 Run it after PostgreSQL and migrations are ready, either before or while the API is running. The
-API only shows episodes after the corresponding provider import has completed. Imports are
-sequential, rate-limited, retried with backoff, and idempotent, so the command is safe to repeat.
+API only shows episodes after the corresponding provider import has completed. Imports run in
+parallel, are retried with backoff, and are idempotent, so the command is safe to repeat. A
+failure is isolated to its provider or series; the overall command still exits unsuccessfully
+if any import failed.
 
 Useful API requests:
 

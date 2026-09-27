@@ -9,7 +9,10 @@ Alembic, httpx, pytest, uv, and Docker Compose.
 - Joyn Austria's verified-vs-assumed API contract is documented in `docs/providers/joyn.md`; keep
   its headers, GraphQL details, and API key handling inside the Joyn adapter.
 - The initial provider lists live in `config/series.json` (override with `SERIES_CONFIG_PATH`).
-  Import with `uv run python -m episode_calendar.importer joyn`; imports must remain idempotent.
+  The file uses a top-level `platforms` list; each platform has an `id`, display `name`, optional
+  `run_import` and `display` booleans (both default to true), and a `series` list. Series entries
+  support the same two optional booleans. Import with `uv run python -m episode_calendar.importer
+  joyn`; imports must remain idempotent.
 - Series configuration entries always require an `id`; omit the optional `comment` when the ID is
   already a clear, human-readable slug.
 - Every new provider must get a distinct platform badge color in

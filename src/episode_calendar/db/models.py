@@ -41,7 +41,12 @@ class Series(Base):
 
     @property
     def platform(self) -> str:
-        """Provider slug exposed as the public platform identifier."""
+        """Provider display name exposed by the public API."""
+        return self.provider.name
+
+    @property
+    def platform_id(self) -> str:
+        """Provider identifier exposed for filtering and stable CSS classes."""
         return self.provider.slug
 
 
