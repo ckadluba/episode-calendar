@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, episodeStartLabel, seriesColor } from "./App";
 
 const series = [
-  { id: "series-1", title: "Testserie", platform: "rtlplus", description: null },
-  { id: "series-2", title: "Andere Serie", platform: "joyn", description: null },
+  { id: "series-1", title: "Testserie", platform: "RTL+", platform_id: "rtlplus", description: null },
+  { id: "series-2", title: "Andere Serie", platform: "Joyn.at", platform_id: "joyn", description: null },
 ];
 
 function mockApi() {
@@ -61,10 +61,39 @@ describe("App preferences", () => {
 
     await waitFor(() => expect(screen.getByText("1 von 2 Serien ausgewählt")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Filter" }));
-    expect(screen.getByRole("heading", { name: "Joyn" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "RTL+" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Joyn\.at/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /RTL\+/ })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Andere Serie" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Testserie" })).not.toBeChecked();
+  });
+
+  it("selects or clears all series for one provider", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("2 von 2 Serien ausgewählt")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    const providerCheckbox = screen.getByRole("checkbox", { name: "Alle Serien von Joyn.at auswählen" });
+
+    fireEvent.click(providerCheckbox);
+    expect(screen.getByRole("checkbox", { name: "Andere Serie" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Testserie" })).toBeChecked();
+
+    fireEvent.click(providerCheckbox);
+    expect(screen.getByRole("checkbox", { name: "Andere Serie" })).toBeChecked();
+  });
+
+  it("selects or clears all series globally", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("2 von 2 Serien ausgewählt")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.click(screen.getByRole("button", { name: "Keine auswählen" }));
+    expect(screen.getByRole("checkbox", { name: "Testserie" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Andere Serie" })).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Alle auswählen" }));
+    expect(screen.getByRole("checkbox", { name: "Testserie" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Andere Serie" })).toBeChecked();
   });
 
   it("selects series added since the saved filter", async () => {

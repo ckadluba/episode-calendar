@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.db.session import get_session
+from episode_calendar.series_config import displayable_series_by_platform
 
 router = APIRouter(prefix="/api/v1")
 DEFAULT_TIMEZONE = "Europe/Vienna"
@@ -25,6 +26,7 @@ class SeriesResponse(BaseModel):
     title: str
     description: str | None
     platform: str
+    platform_id: str
 
 
 class EpisodeReleaseResponse(BaseModel):
@@ -47,6 +49,7 @@ class EpisodeResponse(BaseModel):
     description: str | None
     releases: list[EpisodeReleaseResponse]
     platform: str
+    platform_id: str
 
 
 @router.get("/series", response_model=list[SeriesResponse])
@@ -60,7 +63,16 @@ async def list_series(
     if platform is not None:
         statement = statement.join(Series.provider).where(Provider.slug == platform)
     result = await session.scalars(statement)
-    return list(result)
+    displayable_series = displayable_series_by_platform()
+    return [
+        item
+        for item in result
+        if item.provider.slug in displayable_series
+        and (
+            displayable_series[item.provider.slug] is None
+            or item.external_id in displayable_series[item.provider.slug]
+        )
+    ]
 
 
 @router.get("/series/{series_id}", response_model=SeriesResponse)
@@ -91,9 +103,10 @@ async def list_episodes(
         if value is not None and (value.tzinfo is None or value.utcoffset() is None):
             raise HTTPException(status_code=422, detail=f"{name} must be timezone-aware")
     statement = (
-        select(Episode, Season.series_id, Season.number)
+        select(Episode, Season.series_id, Season.number, Series.external_id, Provider.slug)
         .join(Episode.season)
         .join(Series, Series.id == Season.series_id)
+        .join(Provider, Provider.id == Series.provider_id)
         .join(EpisodeRelease, EpisodeRelease.episode_id == Episode.id)
         .options(selectinload(Episode.releases).selectinload(EpisodeRelease.provider))
     )
@@ -107,8 +120,14 @@ async def list_episodes(
         statement = statement.where(Episode.releases.any(EpisodeRelease.release_at <= to))
     statement = statement.order_by(EpisodeRelease.release_at, Episode.id)
     rows = (await session.execute(statement)).all()
+    displayable_series = displayable_series_by_platform()
     unique_rows: dict[uuid.UUID, tuple[Episode, uuid.UUID, int | None]] = {}
-    for episode, series_id, season_number in rows:
+    for episode, series_id, season_number, external_id, provider_slug in rows:
+        if provider_slug not in displayable_series:
+            continue
+        configured_ids = displayable_series[provider_slug]
+        if configured_ids is not None and external_id not in configured_ids:
+            continue
         unique_rows.setdefault(episode.id, (episode, series_id, season_number))
     return [
         EpisodeResponse(
@@ -122,6 +141,9 @@ async def list_episodes(
             description=episode.description,
             releases=[EpisodeReleaseResponse.model_validate(item) for item in episode.releases],
             platform=next(
+                (item.provider.name for item in episode.releases if item.provider), "unknown"
+            ),
+            platform_id=next(
                 (item.provider.slug for item in episode.releases if item.provider), "unknown"
             ),
         )

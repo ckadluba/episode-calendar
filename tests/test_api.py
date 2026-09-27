@@ -10,8 +10,11 @@ from episode_calendar.main import create_app
 
 
 @pytest.mark.asyncio
-async def test_series_and_episode_endpoints(db_session: AsyncSession) -> None:
-    provider = Provider(slug="joyn", name="Joyn")
+async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "episode_calendar.api.displayable_series_by_platform", lambda: {"joyn": None}
+    )
+    provider = Provider(slug="joyn", name="Joyn.at")
     series = Series(provider=provider, external_id="d-series", title="Demo")
     season = Season(series=series, external_id="c-season", number=1)
     episode = Episode(season=season, external_id="e-1", number=1, title="Pilot")
@@ -40,7 +43,8 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession) -> None:
         response = await client.get("/api/v1/series")
         assert response.status_code == 200
         assert response.json()[0]["external_id"] == "d-series"
-        assert response.json()[0]["platform"] == "joyn"
+        assert response.json()[0]["platform"] == "Joyn.at"
+        assert response.json()[0]["platform_id"] == "joyn"
         assert (await client.get("/api/v1/series", params={"platform": "rtlplus"})).json() == []
 
         response = await client.get(
@@ -61,7 +65,8 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession) -> None:
             "/api/v1/episodes/current-week", params={"timezone": "not/a-timezone"}
         )
         assert invalid_timezone.status_code == 422
-        assert response.json()[0]["platform"] == "joyn"
+        assert response.json()[0]["platform"] == "Joyn.at"
+        assert response.json()[0]["platform_id"] == "joyn"
         assert (await client.get("/api/v1/episodes", params={"platform": "rtlplus"})).json() == []
         assert response.json()[0]["releases"][0]["release_at"].endswith("Z")
 
