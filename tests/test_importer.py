@@ -1,12 +1,20 @@
+import asyncio
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.domain import ReleaseType
-from episode_calendar.importer import configured_series, import_series
+from episode_calendar.importer import (
+    ImportResult,
+    configured_series,
+    import_configured,
+    import_series,
+)
 from episode_calendar.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
@@ -124,3 +132,54 @@ def test_configured_bbc_series_accepts_labeled_ids(tmp_path, monkeypatch) -> Non
     )
 
     assert configured_series("bbc_iplayer") == ("m1234567",)
+
+
+@pytest.mark.asyncio
+async def test_configured_imports_run_in_parallel_and_isolate_failures(monkeypatch, caplog) -> None:
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def rollback(self) -> None:
+            pass
+
+    class SessionFactory:
+        def __call__(self):
+            return Session()
+
+    active = 0
+    maximum_active = 0
+
+    async def fake_import_series(session, adapter, external_id, *, provider_name):
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        if external_id == "broken":
+            raise RuntimeError("provider unavailable")
+        return ImportResult(
+            series=SimpleNamespace(title="Working"),
+            seasons=1,
+            episodes=2,
+            new_episodes=1,
+            releases=2,
+        )
+
+    monkeypatch.setattr(
+        "episode_calendar.importer.configured_series", lambda provider: ("working", "broken")
+    )
+    monkeypatch.setattr("episode_calendar.importer.get_session_factory", lambda: SessionFactory())
+    monkeypatch.setattr("episode_calendar.importer.import_series", fake_import_series)
+    caplog.set_level(logging.INFO, logger="episode_calendar.importer")
+
+    with pytest.raises(RuntimeError, match="1 of 2 Test Provider imports failed"):
+        await import_configured("demo", lambda: SimpleNamespace(slug="demo"), "Test Provider")
+
+    assert maximum_active == 2
+    messages = [record.getMessage() for record in caplog.records]
+    assert "Imported Test Provider/Working: 1 seasons, 2 episodes (1 new), 2 releases" in messages
+    assert "Import failed for Test Provider/broken: provider unavailable" in messages

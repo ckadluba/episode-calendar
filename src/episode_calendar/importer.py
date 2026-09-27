@@ -230,33 +230,53 @@ async def import_configured(
     identifiers = configured_series(provider_slug)
     if not identifiers:
         raise RuntimeError(f"No {provider_slug} series configured in the series JSON file")
-    failed = 0
-    adapter = adapter_factory()
-    settings = get_settings()
-    async with get_session_factory()() as session:
-        for identifier in identifiers:
-            if identifier != identifiers[0] and settings.import_delay_seconds > 0:
-                await asyncio.sleep(settings.import_delay_seconds)
+    results = await asyncio.gather(
+        *(
+            _import_identifier(provider_name, adapter_factory, identifier)
+            for identifier in identifiers
+        )
+    )
+    failed = len(identifiers) - sum(results)
+    if failed:
+        raise RuntimeError(f"{failed} of {len(identifiers)} {provider_name} imports failed")
+
+
+async def _import_identifier(
+    provider_name: str,
+    adapter_factory: type[ProviderAdapter],
+    identifier: str,
+) -> bool:
+    """Import one series in an isolated session so sibling imports can continue."""
+
+    try:
+        adapter = adapter_factory()
+        async with get_session_factory()() as session:
             try:
                 result = await import_series(
                     session, adapter, identifier, provider_name=provider_name
                 )
-            except Exception as exc:  # provider failures must not hide later series
+            except Exception as exc:  # one series must not hide the other imports
                 await session.rollback()
-                failed += 1
-                logger.error("Import failed for %s/%s: %s", provider_slug, identifier, exc)
-                print(f"Failed {provider_slug}/{identifier}: {exc}")
-                continue
-            print(
-                f"Imported {result.series.title}: {result.seasons} seasons, "
-                f"{result.episodes} episodes ({result.new_episodes} new), "
-                f"{result.releases} releases"
-            )
-    if failed:
-        raise RuntimeError(f"{failed} of {len(identifiers)} {provider_slug} imports failed")
+                logger.error("Import failed for %s/%s: %s", provider_name, identifier, exc)
+                return False
+    except Exception as exc:  # setup failures should be reported like provider failures
+        logger.error("Import failed for %s/%s: %s", provider_name, identifier, exc)
+        return False
+
+    logger.info(
+        "Imported %s/%s: %s seasons, %s episodes (%s new), %s releases",
+        provider_name,
+        result.series.title,
+        result.seasons,
+        result.episodes,
+        result.new_episodes,
+        result.releases,
+    )
+    return True
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Import configured provider catalogs")
     parser.add_argument(
         "provider", choices=("joyn", "rtlplus", "bbc_iplayer", "channel4", "itvx", "all")
@@ -275,18 +295,24 @@ def main() -> None:
     else:
 
         async def run_all() -> None:
-            failures: list[Exception] = []
-            for provider_slug, factory, name in (
+            providers = (
                 ("joyn", JoynProvider, "Joyn Austria"),
                 ("rtlplus", RTLPlusProvider, "RTL+"),
                 ("bbc_iplayer", BBCIPlayerProvider, "BBC iPlayer"),
                 ("channel4", Channel4Provider, "Channel 4"),
                 ("itvx", ITVXProvider, "ITVX"),
-            ):
-                try:
-                    await import_configured(provider_slug, factory, name)
-                except Exception as exc:
-                    failures.append(exc)
+            )
+            results = await asyncio.gather(
+                *(
+                    import_configured(provider_slug, factory, name)
+                    for provider_slug, factory, name in providers
+                ),
+                return_exceptions=True,
+            )
+            failures = [result for result in results if isinstance(result, Exception)]
+            for (_, _, provider_name), result in zip(providers, results, strict=True):
+                if isinstance(result, Exception):
+                    logger.error("Provider import failed for %s: %s", provider_name, result)
             if failures:
                 raise RuntimeError("one or more provider imports failed") from failures[0]
 
