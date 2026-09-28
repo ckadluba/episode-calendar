@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     channel4_tv_guide_url: str = "https://www.channel4.com/tv-guide"
     channel4_schedule_days: int = 14
     channel4_timeout_seconds: float = 10.0
+    ardmediathek_api_url: str = "https://api.ardmediathek.de/page-gateway/widgets/ard/asset"
+    ardmediathek_timeout_seconds: float = 10.0
+    ardmediathek_program_url: str = "https://programm-api.ard.de/program/api/program"
+    ardmediathek_schedule_days: int = 14
     itvx_base_url: str = "https://www.itv.com/watch"
     import_delay_seconds: float = 1.0
     import_max_retries: int = 3

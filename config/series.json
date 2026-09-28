@@ -84,6 +84,16 @@
       ]
     },
     {
+      "id": "ardmediathek",
+      "name": "ARD Mediathek",
+      "series": [
+        {
+          "id": "Y3JpZDovL2JyLmRlL2Jyb2FkY2FzdFNlcmllcy9GMjAyNVdPMDA4MjY1QTA",
+          "comment": "Werwölfe – Das Spiel von List und Täuschung"
+        }
+      ]
+    },
+    {
       "id": "itvx",
       "name": "ITVX",
       "run_import": false,
