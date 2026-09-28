@@ -1,5 +1,11 @@
 """Provider adapter contracts and normalized data structures."""
 
+from episode_calendar.providers.ardmediathek import (
+    ARDMediathekHTTPError,
+    ARDMediathekMalformedResponseError,
+    ARDMediathekProvider,
+    ARDMediathekProviderError,
+)
 from episode_calendar.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
@@ -27,6 +33,10 @@ __all__ = [
     "NormalizedSeason",
     "NormalizedSeries",
     "ProviderAdapter",
+    "ARDMediathekHTTPError",
+    "ARDMediathekMalformedResponseError",
+    "ARDMediathekProvider",
+    "ARDMediathekProviderError",
     "JoynGraphQLError",
     "JoynHTTPError",
     "JoynMalformedResponseError",

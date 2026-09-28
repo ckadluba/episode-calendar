@@ -11,7 +11,7 @@ separate so an episode can have multiple streaming or broadcast releases. Provid
 scoped by provider and imports use idempotent upserts.
 
 Provider adapters implement the generic abstraction in `providers/base.py`. Joyn Austria, RTL+,
-and Channel 4 are isolated in their provider modules. The importer fetches complete series trees, normalizes
+Channel 4, and ARD Mediathek are isolated in their provider modules. The importer fetches complete series trees, normalizes
 them, and persists them. API requests read PostgreSQL and never call providers directly.
 
 ## Development
@@ -71,6 +71,11 @@ Maintain provider series in `config/series.json` (override with `SERIES_CONFIG_P
       "id": "bbc_iplayer",
       "name": "BBC iPlayer",
       "series": [{"id": "m002csng", "comment": "The Celebrity Traitors"}]
+    },
+    {
+      "id": "ardmediathek",
+      "name": "ARD Mediathek",
+      "series": [{"id": "Y3JpZDovL2JyLmRlL2Jyb2FkY2FzdFNlcmllcy9GMjAyNVdPMDA4MjY1QTA"}]
     }
   ]
 }
@@ -102,6 +107,9 @@ uv run python -m episode_calendar.importer bbc_iplayer
 
 # Channel 4
 uv run python -m episode_calendar.importer channel4
+
+# ARD Mediathek
+uv run python -m episode_calendar.importer ardmediathek
 
 ```
 

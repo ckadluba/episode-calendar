@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, episodeStartLabel, seriesColor } from "./App";
+import { App, calendarItems, episodeStartLabel, seriesColor } from "./App";
 
 const series = [
   { id: "series-1", title: "Testserie", platform: "RTL+", platform_id: "rtlplus", description: null },
@@ -141,5 +141,29 @@ describe("episode start labels", () => {
     expect(episodeStartLabel({ season_number: null, number: 1 })).toBe("Neue Serie");
     expect(episodeStartLabel({ season_number: 2, number: 1 })).toBe("Neue Staffel");
     expect(episodeStartLabel({ season_number: 2, number: 2 })).toBeNull();
+  });
+});
+
+describe("calendar releases", () => {
+  it("keeps every release date of an episode", () => {
+    const episode = {
+      id: "episode-1",
+      series_id: "series-1",
+      season_number: 1,
+      number: 1,
+      title: "Pilot",
+      description: null,
+      platform: "ARD Mediathek",
+      platform_id: "ardmediathek",
+      releases: [
+        { release_type: "streaming", release_at: "2026-09-28T18:00:00Z", url: null },
+        { release_type: "tv_broadcast", release_at: "2026-10-01T17:15:00Z", url: null },
+      ],
+    };
+
+    expect(calendarItems([episode]).map((item) => item.release.release_at)).toEqual([
+      "2026-09-28T18:00:00Z",
+      "2026-10-01T17:15:00Z",
+    ]);
   });
 });

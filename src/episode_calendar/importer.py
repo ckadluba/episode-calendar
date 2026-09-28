@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.db.session import get_session_factory
+from episode_calendar.providers.ardmediathek import ARDMediathekProvider
 from episode_calendar.providers.base import ProviderAdapter
 from episode_calendar.providers.bbc_iplayer import BBCIPlayerProvider
 from episode_calendar.providers.channel4 import Channel4Provider
@@ -193,6 +194,10 @@ async def import_configured_channel4() -> None:
     await import_configured("channel4", Channel4Provider)
 
 
+async def import_configured_ardmediathek() -> None:
+    await import_configured("ardmediathek", ARDMediathekProvider)
+
+
 async def import_configured_itvx() -> None:
     await import_configured("itvx", ITVXProvider)
 
@@ -266,7 +271,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Import configured provider catalogs")
     parser.add_argument(
-        "provider", choices=("joyn", "rtlplus", "bbc_iplayer", "channel4", "itvx", "all")
+        "provider",
+        choices=("joyn", "rtlplus", "bbc_iplayer", "channel4", "ardmediathek", "itvx", "all"),
     )
     args = parser.parse_args()
     if args.provider == "joyn":
@@ -277,6 +283,8 @@ def main() -> None:
         asyncio.run(import_configured_bbc_iplayer())
     elif args.provider == "channel4":
         asyncio.run(import_configured_channel4())
+    elif args.provider == "ardmediathek":
+        asyncio.run(import_configured_ardmediathek())
     elif args.provider == "itvx":
         asyncio.run(import_configured_itvx())
     else:
@@ -287,6 +295,7 @@ def main() -> None:
                 ("rtlplus", RTLPlusProvider),
                 ("bbc_iplayer", BBCIPlayerProvider),
                 ("channel4", Channel4Provider),
+                ("ardmediathek", ARDMediathekProvider),
                 ("itvx", ITVXProvider),
             )
             results = await asyncio.gather(
