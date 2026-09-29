@@ -80,4 +80,15 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
         assert response.status_code == 200
         assert response.json() == []
 
+        last_week_window = (release_at - timedelta(hours=1), release_at + timedelta(hours=1))
+        monkeypatch.setattr(
+            "episode_calendar.api._calendar_week_window",
+            lambda offset=0, timezone_name="Europe/Vienna": (
+                last_week_window if offset == -1 else (release_at, release_at + timedelta(days=7))
+            ),
+        )
+        response = await client.get("/api/v1/episodes/last-week", params={"series": str(series.id)})
+        assert response.status_code == 200
+        assert response.json()[0]["title"] == "Pilot"
+
     app.dependency_overrides.clear()
