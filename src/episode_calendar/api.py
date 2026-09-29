@@ -185,6 +185,23 @@ async def list_current_week_episodes(
     )
 
 
+@router.get("/episodes/last-week", response_model=list[EpisodeResponse])
+async def list_last_week_episodes(
+    series: uuid.UUID | None = None,
+    platform: str | None = None,
+    timezone: str = DEFAULT_TIMEZONE,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> list[EpisodeResponse]:
+    start, end = _calendar_week_window(offset=-1, timezone_name=timezone)
+    return await list_episodes(
+        from_=start,
+        to=end - timedelta(microseconds=1),
+        series=series,
+        platform=platform,
+        session=session,
+    )
+
+
 @router.get("/episodes/next-week", response_model=list[EpisodeResponse])
 async def list_next_week_episodes(
     series: uuid.UUID | None = None,

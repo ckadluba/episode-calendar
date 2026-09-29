@@ -35,6 +35,31 @@ describe("App preferences", () => {
     await waitFor(() => expect(screen.queryByText("Kalender wird geladen …")).not.toBeInTheDocument());
   });
 
+  it("supports switching to last week", async () => {
+    render(<App />);
+
+    expect(screen.getByRole("button", { name: "Letzte Woche" })).not.toHaveClass("active");
+    fireEvent.click(screen.getByRole("button", { name: "Letzte Woche" }));
+    expect(screen.getByRole("button", { name: "Letzte Woche" })).toHaveClass("active");
+    await waitFor(() => expect(screen.queryByText("Kalender wird geladen …")).not.toBeInTheDocument());
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/episodes/last-week?"));
+  });
+
+  it("uses a future-oriented heading for next week", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Nächste Woche" }));
+    expect(screen.getByRole("heading", { name: "Was läuft nächste Woche?" })).toBeInTheDocument();
+    expect(screen.getByText(/Neue Episoden deiner Serien.*Zukünftige Daten können unvollständig sein\./)).toBeInTheDocument();
+  });
+
+  it("uses abbreviated weekday labels in the calendar", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.queryByText("Kalender wird geladen …")).not.toBeInTheDocument());
+    expect(screen.getAllByRole("heading", { level: 2 })[0]).toHaveTextContent(/^(Mo|Di|Mi|Do|Fr|Sa|So)\., \d{1,2}\. /);
+  });
+
   it("persists an arbitrary series selection", async () => {
     render(<App />);
 

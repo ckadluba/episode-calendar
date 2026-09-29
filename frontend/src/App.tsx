@@ -46,17 +46,20 @@ function writeCache<T>(key: string, data: T) {
   }
 }
 
-function weekDays(week: "current" | "next") {
+type CalendarWeek = "last" | "current" | "next";
+
+function weekDays(week: CalendarWeek) {
   const now = new Date();
   const day = (now.getDay() + 6) % 7;
-  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + (week === "next" ? 7 : 0));
+  const weekOffset = week === "last" ? -7 : week === "next" ? 7 : 0;
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + weekOffset);
   return Array.from({ length: 7 }, (_, offset) => {
     const date = new Date(monday); date.setDate(monday.getDate() + offset); return date;
   });
 }
 
 const dateKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-const dayLabel = new Intl.DateTimeFormat("de-AT", { weekday: "long", day: "numeric", month: "short" });
+const dayLabel = new Intl.DateTimeFormat("de-AT", { weekday: "short", day: "numeric", month: "short" });
 const timeLabel = new Intl.DateTimeFormat("de-AT", { hour: "2-digit", minute: "2-digit" });
 
 const SERIES_COLORS = [
@@ -149,7 +152,7 @@ function SeriesFilterPage({ series, selectedIds, onSave, onDiscard }: {
 }
 
 export function App() {
-  const [week, setWeek] = useState<"current" | "next">(() => readLocal<"current" | "next">("episode-calendar-week", "current"));
+  const [week, setWeek] = useState<CalendarWeek>(() => readLocal<CalendarWeek>("episode-calendar-week", "current"));
   const [series, setSeries] = useState<Series[]>([]);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [selectedSeriesIds, setSelectedSeriesIds] = useState<string[]>([]);
@@ -239,8 +242,8 @@ export function App() {
   />;
 
  return <main className="app-shell">
-    <header className="hero"><p className="eyebrow">EPISODE CALENDAR</p><h1>Was läuft diese Woche?</h1><p className="subtitle">Neue Episoden deiner Serien auf einen Blick.</p></header>
-    <nav className="week-switch" aria-label="Woche"><button className={week === "current" ? "active" : ""} onClick={() => setWeek("current")}>Diese Woche</button><button className={week === "next" ? "active" : ""} onClick={() => setWeek("next")}>Nächste Woche</button></nav>
+    <header className="hero"><p className="eyebrow">EPISODE CALENDAR</p><h1>{week === "last" ? "Was lief letzte Woche?" : week === "next" ? "Was läuft nächste Woche?" : "Was läuft diese Woche?"}</h1><p className="subtitle">Neue Episoden deiner Serien auf einen Blick. Zukünftige Daten können unvollständig sein.</p></header>
+    <nav className="week-switch" aria-label="Woche"><button className={week === "last" ? "active" : ""} onClick={() => setWeek("last")}>Letzte Woche</button><button className={week === "current" ? "active" : ""} onClick={() => setWeek("current")}>Diese Woche</button><button className={week === "next" ? "active" : ""} onClick={() => setWeek("next")}>Nächste Woche</button></nav>
     <section className="filters" aria-label="Filter"><button className="filter-button" type="button" disabled={!seriesSelectionInitialized} onClick={() => setFilterOpen(true)}>Filter</button><span>{selectedSeriesIds.length} von {series.length} Serien ausgewählt</span></section>
     {loading && <p className="status">Kalender wird geladen …</p>}
     {error && <p className="status error">{error}<br /><small>Prüfe, ob die API unter {API_URL} läuft.</small></p>}
