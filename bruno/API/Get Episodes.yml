@@ -5,16 +5,16 @@ info:
 
 http:
   method: GET
-  url: "{{base_url}}/api/v1/episodes?from=2026-09-28T00:00:00Z&to=2026-10-04T23:59:59Z&platform=bbc_iplayer"
+  url: "{{base_url}}/api/v1/episodes?from=2026-09-01T00:00:00Z&to=2026-09-15T23:59:59Z&platform=amazon_prime_de"
   params:
     - name: from
-      value: 2026-09-28T00:00:00Z
+      value: 2026-09-01T00:00:00Z
       type: query
     - name: to
-      value: 2026-10-04T23:59:59Z
+      value: 2026-09-15T23:59:59Z
       type: query
     - name: platform
-      value: bbc_iplayer
+      value: amazon_prime_de
       type: query
   auth: inherit
 
