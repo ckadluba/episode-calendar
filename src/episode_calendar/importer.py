@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.db.session import get_session_factory
+from episode_calendar.providers.amazon_prime_de import AmazonPrimeDEProvider
+from episode_calendar.providers.amazon_prime_uk import AmazonPrimeUKProvider
 from episode_calendar.providers.ardmediathek import ARDMediathekProvider
 from episode_calendar.providers.base import ProviderAdapter
 from episode_calendar.providers.bbc_iplayer import BBCIPlayerProvider
@@ -202,6 +204,14 @@ async def import_configured_itvx() -> None:
     await import_configured("itvx", ITVXProvider)
 
 
+async def import_configured_amazon_prime_de() -> None:
+    await import_configured("amazon_prime_de", AmazonPrimeDEProvider)
+
+
+async def import_configured_amazon_prime_uk() -> None:
+    await import_configured("amazon_prime_uk", AmazonPrimeUKProvider)
+
+
 async def import_configured(
     provider_slug: str,
     adapter_factory: type[ProviderAdapter],
@@ -272,7 +282,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Import configured provider catalogs")
     parser.add_argument(
         "provider",
-        choices=("joyn", "rtlplus", "bbc_iplayer", "channel4", "ardmediathek", "itvx", "all"),
+        choices=(
+            "joyn",
+            "rtlplus",
+            "bbc_iplayer",
+            "channel4",
+            "ardmediathek",
+            "itvx",
+            "amazon_prime_de",
+            "amazon_prime_uk",
+            "all",
+        ),
     )
     args = parser.parse_args()
     if args.provider == "joyn":
@@ -287,6 +307,10 @@ def main() -> None:
         asyncio.run(import_configured_ardmediathek())
     elif args.provider == "itvx":
         asyncio.run(import_configured_itvx())
+    elif args.provider == "amazon_prime_de":
+        asyncio.run(import_configured_amazon_prime_de())
+    elif args.provider == "amazon_prime_uk":
+        asyncio.run(import_configured_amazon_prime_uk())
     else:
 
         async def run_all() -> None:
@@ -297,6 +321,8 @@ def main() -> None:
                 ("channel4", Channel4Provider),
                 ("ardmediathek", ARDMediathekProvider),
                 ("itvx", ITVXProvider),
+                ("amazon_prime_de", AmazonPrimeDEProvider),
+                ("amazon_prime_uk", AmazonPrimeUKProvider),
             )
             results = await asyncio.gather(
                 *(

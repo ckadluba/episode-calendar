@@ -103,6 +103,34 @@
         {"id": "im-a-celebrity-get-me-out-of-here/L2649"},
         {"id": "big-brother/10a4928"}
       ]
+    },
+    {
+      "id": "amazon_prime_de",
+      "name": "Amazon Prime DE",
+      "series": [
+        {
+          "id": "0T95E4JDS01YBSJEKTAH97YIZK",
+          "comment": "LOL: Last One Laughing Germany"
+        },
+        {
+          "id": "0NC2KW152Y9W1X3TIXRYC8U1KM",
+          "comment": "LOL Next – Last One Laughing: Next Generation"
+        }
+      ]
+    },
+    {
+      "id": "amazon_prime_uk",
+      "name": "Amazon Prime UK",
+      "series": [
+        {
+          "id": "0JAJ59KRPSJY5QIDTK0WTBWMR6",
+          "comment": "LOL: Last One Laughing UK"
+        },
+        {
+          "id": "0HJALB095O1KZ90Z1DO6N7Q37P",
+          "comment": "The Grand Tour"
+        }
+      ]
     }
   ]
 }
