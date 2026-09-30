@@ -175,6 +175,8 @@ def test_configured_bbc_series_accepts_labeled_ids(tmp_path, monkeypatch) -> Non
 @pytest.mark.asyncio
 async def test_configured_imports_run_in_parallel_and_isolate_failures(monkeypatch, caplog) -> None:
     class Session:
+        provider = None
+
         async def __aenter__(self):
             return self
 
@@ -182,6 +184,15 @@ async def test_configured_imports_run_in_parallel_and_isolate_failures(monkeypat
             return None
 
         async def rollback(self) -> None:
+            pass
+
+        async def scalar(self, statement):
+            return self.provider
+
+        def add(self, provider) -> None:
+            self.provider = provider
+
+        async def commit(self) -> None:
             pass
 
     class SessionFactory:

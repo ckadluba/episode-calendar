@@ -232,6 +232,7 @@ async def import_configured(
         )
         return
     provider_name = provider_name or platform.name
+    await _ensure_provider(provider_slug, provider_name)
     results = await asyncio.gather(
         *(
             _import_identifier(provider_name, adapter_factory, identifier)
@@ -241,6 +242,18 @@ async def import_configured(
     failed = len(identifiers) - sum(results)
     if failed:
         raise RuntimeError(f"{failed} of {len(identifiers)} {provider_name} imports failed")
+
+
+async def _ensure_provider(provider_slug: str, provider_name: str) -> None:
+    """Create the shared provider row before series imports run concurrently."""
+
+    async with get_session_factory()() as session:
+        provider = await session.scalar(select(Provider).where(Provider.slug == provider_slug))
+        if provider is None:
+            session.add(Provider(slug=provider_slug, name=provider_name))
+        else:
+            provider.name = provider_name
+        await session.commit()
 
 
 async def _import_identifier(
