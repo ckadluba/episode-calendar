@@ -95,10 +95,8 @@
       ]
     },
     {
-      "id": "itvx",
-      "name": "ITVX",
-      "run_import": false,
-      "display": false,
+      "id": "stv",
+      "name": "STV Player",
       "series": [
         {"id": "im-a-celebrity-get-me-out-of-here/L2649"},
         {"id": "big-brother/10a4928"}

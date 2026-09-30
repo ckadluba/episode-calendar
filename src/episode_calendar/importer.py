@@ -18,9 +18,9 @@ from episode_calendar.providers.ardmediathek import ARDMediathekProvider
 from episode_calendar.providers.base import ProviderAdapter
 from episode_calendar.providers.bbc_iplayer import BBCIPlayerProvider
 from episode_calendar.providers.channel4 import Channel4Provider
-from episode_calendar.providers.itvx import ITVXProvider
 from episode_calendar.providers.joyn import JoynProvider
 from episode_calendar.providers.rtlplus import RTLPlusProvider
+from episode_calendar.providers.stv import STVProvider
 from episode_calendar.series_config import configured_platform
 from episode_calendar.series_config import configured_series as _configured_series
 
@@ -200,8 +200,8 @@ async def import_configured_ardmediathek() -> None:
     await import_configured("ardmediathek", ARDMediathekProvider)
 
 
-async def import_configured_itvx() -> None:
-    await import_configured("itvx", ITVXProvider)
+async def import_configured_stv() -> None:
+    await import_configured("stv", STVProvider)
 
 
 async def import_configured_amazon_prime_de() -> None:
@@ -301,7 +301,7 @@ def main() -> None:
             "bbc_iplayer",
             "channel4",
             "ardmediathek",
-            "itvx",
+            "stv",
             "amazon_prime_de",
             "amazon_prime_uk",
             "all",
@@ -318,8 +318,8 @@ def main() -> None:
         asyncio.run(import_configured_channel4())
     elif args.provider == "ardmediathek":
         asyncio.run(import_configured_ardmediathek())
-    elif args.provider == "itvx":
-        asyncio.run(import_configured_itvx())
+    elif args.provider == "stv":
+        asyncio.run(import_configured_stv())
     elif args.provider == "amazon_prime_de":
         asyncio.run(import_configured_amazon_prime_de())
     elif args.provider == "amazon_prime_uk":
@@ -333,7 +333,7 @@ def main() -> None:
                 ("bbc_iplayer", BBCIPlayerProvider),
                 ("channel4", Channel4Provider),
                 ("ardmediathek", ARDMediathekProvider),
-                ("itvx", ITVXProvider),
+                ("stv", STVProvider),
                 ("amazon_prime_de", AmazonPrimeDEProvider),
                 ("amazon_prime_uk", AmazonPrimeUKProvider),
             )

@@ -15,7 +15,7 @@ button, select { font: inherit; }
 .badge.bbc_iplayer { background: #3656a8; }
 .badge.channel4 { background: #a84b35; }
 .badge.ardmediathek { background: #1d7891; }
-.badge.itvx { background: #6b3fa0; }
+.badge.stv { background: #477b45; }
 .badge.amazon_prime_de { background: #2874a6; }
 .badge.amazon_prime_uk { background: #8a5a24; }
 @media (max-width: 1050px) { .calendar { grid-template-columns: repeat(4, minmax(0, 1fr)); } }

@@ -36,7 +36,9 @@ class Settings(BaseSettings):
     ardmediathek_timeout_seconds: float = 10.0
     ardmediathek_program_url: str = "https://programm-api.ard.de/program/api/program"
     ardmediathek_schedule_days: int = 14
-    itvx_base_url: str = "https://www.itv.com/watch"
+    stv_player_url: str = "https://player.stv.tv"
+    stv_api_url: str = "https://player.api.stv.tv/v1"
+    stv_timeout_seconds: float = 10.0
     amazon_prime_de_base_url: str = "https://www.primevideo.com/-/de"
     amazon_prime_de_timeout_seconds: float = 10.0
     amazon_prime_uk_base_url: str = "https://www.primevideo.com/-/gb"
