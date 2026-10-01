@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -36,6 +36,7 @@ class EpisodeReleaseResponse(BaseModel):
     release_at: datetime
     available_until: datetime | None
     url: str | None
+    rerun: bool
 
 
 class EpisodeResponse(BaseModel):
@@ -97,6 +98,7 @@ async def list_episodes(
     to: datetime | None = None,
     series: uuid.UUID | None = None,
     platform: str | None = None,
+    include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     for value, name in ((from_, "from"), (to, "to")):
@@ -110,14 +112,30 @@ async def list_episodes(
         .join(EpisodeRelease, EpisodeRelease.episode_id == Episode.id)
         .options(selectinload(Episode.releases).selectinload(EpisodeRelease.provider))
     )
+    if not include_reruns:
+        statement = statement.where(EpisodeRelease.rerun.is_(False))
     if series is not None:
         statement = statement.where(Season.series_id == series)
     if platform is not None:
         statement = statement.where(Series.provider.has(Provider.slug == platform))
     if from_ is not None:
-        statement = statement.where(Episode.releases.any(EpisodeRelease.release_at >= from_))
+        statement = statement.where(
+            Episode.releases.any(
+                and_(
+                    EpisodeRelease.release_at >= from_,
+                    EpisodeRelease.rerun.is_(False) if not include_reruns else True,
+                )
+            )
+        )
     if to is not None:
-        statement = statement.where(Episode.releases.any(EpisodeRelease.release_at <= to))
+        statement = statement.where(
+            Episode.releases.any(
+                and_(
+                    EpisodeRelease.release_at <= to,
+                    EpisodeRelease.rerun.is_(False) if not include_reruns else True,
+                )
+            )
+        )
     statement = statement.order_by(EpisodeRelease.release_at, Episode.id)
     rows = (await session.execute(statement)).all()
     displayable_series = displayable_series_by_platform()
@@ -139,7 +157,11 @@ async def list_episodes(
             number=episode.number,
             title=episode.title,
             description=episode.description,
-            releases=[EpisodeReleaseResponse.model_validate(item) for item in episode.releases],
+            releases=[
+                EpisodeReleaseResponse.model_validate(item)
+                for item in episode.releases
+                if include_reruns or not item.rerun
+            ],
             platform=next(
                 (item.provider.name for item in episode.releases if item.provider), "unknown"
             ),
@@ -173,6 +195,7 @@ async def list_current_week_episodes(
     series: uuid.UUID | None = None,
     platform: str | None = None,
     timezone: str = DEFAULT_TIMEZONE,
+    include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     start, end = _calendar_week_window(timezone_name=timezone)
@@ -181,6 +204,7 @@ async def list_current_week_episodes(
         to=end - timedelta(microseconds=1),
         series=series,
         platform=platform,
+        include_reruns=include_reruns,
         session=session,
     )
 
@@ -190,6 +214,7 @@ async def list_last_week_episodes(
     series: uuid.UUID | None = None,
     platform: str | None = None,
     timezone: str = DEFAULT_TIMEZONE,
+    include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     start, end = _calendar_week_window(offset=-1, timezone_name=timezone)
@@ -198,6 +223,7 @@ async def list_last_week_episodes(
         to=end - timedelta(microseconds=1),
         series=series,
         platform=platform,
+        include_reruns=include_reruns,
         session=session,
     )
 
@@ -207,6 +233,7 @@ async def list_next_week_episodes(
     series: uuid.UUID | None = None,
     platform: str | None = None,
     timezone: str = DEFAULT_TIMEZONE,
+    include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     start, end = _calendar_week_window(offset=1, timezone_name=timezone)
@@ -215,5 +242,6 @@ async def list_next_week_episodes(
         to=end - timedelta(microseconds=1),
         series=series,
         platform=platform,
+        include_reruns=include_reruns,
         session=session,
     )

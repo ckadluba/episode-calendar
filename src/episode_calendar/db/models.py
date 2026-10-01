@@ -108,6 +108,7 @@ class EpisodeRelease(Base):
     release_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
     available_until: Mapped[datetime | None] = mapped_column(UTCDateTime)
     url: Mapped[str | None] = mapped_column(String(2000))
+    rerun: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
 
     episode: Mapped[Episode] = relationship(back_populates="releases")
     provider: Mapped[Provider] = relationship(back_populates="releases")
