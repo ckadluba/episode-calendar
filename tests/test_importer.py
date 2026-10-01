@@ -108,6 +108,102 @@ async def test_reimport_removes_releases_missing_from_provider(db_session: Async
     assert (await db_session.scalar(select(func.count()).select_from(EpisodeRelease))) == 0
 
 
+async def test_import_ignores_older_seasons_when_newer_season_exists(
+    db_session: AsyncSession,
+) -> None:
+    def normalized(seasons: tuple[NormalizedSeason, ...]) -> NormalizedSeries:
+        return NormalizedSeries(external_id="ard-series", title="Demo", seasons=seasons)
+
+    def season(number: int, release_at: datetime) -> NormalizedSeason:
+        return NormalizedSeason(
+            external_id=f"ard-season-{number}",
+            number=number,
+            episodes=(
+                NormalizedEpisode(
+                    external_id=f"ard-episode-{number}",
+                    number=1,
+                    title=f"Episode {number}",
+                    releases=(
+                        NormalizedEpisodeRelease(
+                            release_type=ReleaseType.TV_BROADCAST,
+                            release_at=release_at,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    class ChangingProvider:
+        slug = "ardmediathek"
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            if self.calls == 1:
+                return normalized((season(1, datetime(2026, 9, 24, tzinfo=UTC)),))
+            return normalized(
+                (
+                    season(1, datetime(2026, 10, 8, tzinfo=UTC)),
+                    season(2, datetime(2026, 10, 1, tzinfo=UTC)),
+                )
+            )
+
+    provider = ChangingProvider()
+    await import_series(db_session, provider, "configured-id")
+    result = await import_series(db_session, provider, "configured-id")
+
+    assert result.seasons == 1
+    seasons = list(await db_session.scalars(select(Season).order_by(Season.number)))
+    assert [item.number for item in seasons] == [1, 2]
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    assert [release.release_at for release in releases] == [datetime(2026, 10, 1, tzinfo=UTC)]
+
+
+async def test_import_preserves_newer_season_when_only_rerun_is_returned(
+    db_session: AsyncSession,
+) -> None:
+    class RerunProvider:
+        slug = "ardmediathek"
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            number = 2 if self.calls == 1 else 1
+            return NormalizedSeries(
+                external_id="ard-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id=f"ard-season-{number}",
+                        number=number,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id=f"ard-episode-{number}",
+                                number=1,
+                                title=f"Episode {number}",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, number, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    provider = RerunProvider()
+    await import_series(db_session, provider, "configured-id")
+    await import_series(db_session, provider, "configured-id")
+
+    releases = list(await db_session.scalars(select(EpisodeRelease)))
+    assert len(releases) == 1
+    assert releases[0].release_at == datetime(2026, 10, 2, tzinfo=UTC)
+
+
 def test_configured_series_reads_provider_lists(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "series.json"
     config_path.write_text(
