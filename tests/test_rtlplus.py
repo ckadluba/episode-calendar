@@ -35,6 +35,48 @@ def test_normalizes_layout_items_and_schedule() -> None:
     assert episode.releases[0].release_at == datetime(2026, 9, 1, tzinfo=ZoneInfo("Europe/Vienna"))
 
 
+def test_normalize_adds_public_series_url_to_releases() -> None:
+    payload = {
+        "entity": {"id": "6838", "metadata": {"title": "Are You The One"}},
+        "seo": {"metadata": {"text": "| **Folge 1** | Mi., 23.9. um 0:00 Uhr |"}},
+        "blocks": [
+            {
+                "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                "content": {
+                    "title": {"short": "Staffel 6"},
+                    "items": [
+                        {
+                            "itemContent": {
+                                "id": "clip_1",
+                                "title": "Folge 1",
+                                "highlight": "Staffel 6 • Folge 1",
+                            }
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+
+    result = RTLPlusProvider._normalize(
+        RTLPlusProvider.__new__(RTLPlusProvider),
+        "6838",
+        [payload],
+        series_url="https://plus.rtl.de/are-you-the-one-reality-stars-in-love-p_6838",
+    )
+
+    assert str(result.seasons[0].episodes[0].releases[0].url) == (
+        "https://plus.rtl.de/are-you-the-one-reality-stars-in-love-p_6838"
+    )
+
+
+def test_series_url_is_only_created_for_slug_identifiers() -> None:
+    assert RTLPlusProvider._series_url("are-you-the-one-reality-stars-in-love-p_6838") == (
+        "https://plus.rtl.de/are-you-the-one-reality-stars-in-love-p_6838"
+    )
+    assert RTLPlusProvider._series_url("6838") is None
+
+
 def test_schedule_supports_current_weekly_rtl_format() -> None:
     schedule = RTLPlusProvider._schedule({"metadata": {"text": "Mittwochs, ab 12. August"}})
 
