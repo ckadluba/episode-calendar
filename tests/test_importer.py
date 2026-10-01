@@ -77,7 +77,7 @@ async def test_import_updates_existing_metadata(db_session: AsyncSession) -> Non
     assert persisted.provider.slug == "joyn"
 
 
-async def test_reimport_removes_releases_missing_from_provider(db_session: AsyncSession) -> None:
+async def test_reimport_preserves_known_episode_releases(db_session: AsyncSession) -> None:
     class ChangingProvider(FakeProvider):
         calls = 0
 
@@ -102,13 +102,213 @@ async def test_reimport_removes_releases_missing_from_provider(db_session: Async
             return normalized
 
     provider = ChangingProvider()
-    await import_series(db_session, provider, "ignored")
-    await import_series(db_session, provider, "ignored")
+    reference_time = datetime(2027, 5, 1, tzinfo=UTC)
+    await import_series(db_session, provider, "ignored", reference_time=reference_time)
+    await import_series(db_session, provider, "ignored", reference_time=reference_time)
 
-    assert (await db_session.scalar(select(func.count()).select_from(EpisodeRelease))) == 0
+    assert (await db_session.scalar(select(func.count()).select_from(EpisodeRelease))) == 1
 
 
-async def test_import_ignores_older_seasons_when_newer_season_exists(
+async def test_import_adds_new_episode_without_replacing_known_episode(
+    db_session: AsyncSession,
+) -> None:
+    class ChangingProvider(FakeProvider):
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            normalized = await super().fetch_series(external_id)
+            if self.calls == 1:
+                return normalized
+            season = normalized.seasons[0]
+            return normalized.model_copy(
+                update={
+                    "seasons": (
+                        season.model_copy(
+                            update={
+                                "episodes": (
+                                    *season.episodes,
+                                    NormalizedEpisode(
+                                        external_id="joyn-episode-2",
+                                        number=2,
+                                        title="Second episode",
+                                        releases=(
+                                            NormalizedEpisodeRelease(
+                                                release_type=ReleaseType.STREAMING,
+                                                release_at=datetime(2026, 9, 7, 18, 30, tzinfo=UTC),
+                                            ),
+                                        ),
+                                    ),
+                                )
+                            }
+                        ),
+                    )
+                }
+            )
+
+    provider = ChangingProvider()
+    reference_time = datetime(2027, 5, 1, tzinfo=UTC)
+    await import_series(db_session, provider, "ignored", reference_time=reference_time)
+    result = await import_series(db_session, provider, "ignored", reference_time=reference_time)
+
+    assert result.episodes == 2
+    assert (await db_session.scalar(select(func.count()).select_from(Episode))) == 2
+    assert (await db_session.scalar(select(func.count()).select_from(EpisodeRelease))) == 2
+
+
+async def test_import_updates_known_recent_episode(db_session: AsyncSession) -> None:
+    class CorrectingProvider(FakeProvider):
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            normalized = await super().fetch_series(external_id)
+            if self.calls > 1:
+                episode = normalized.seasons[0].episodes[0]
+                normalized = normalized.model_copy(
+                    update={
+                        "seasons": (
+                            normalized.seasons[0].model_copy(
+                                update={
+                                    "episodes": (
+                                        episode.model_copy(
+                                            update={
+                                                "title": "Corrected pilot",
+                                                "releases": (
+                                                    episode.releases[0].model_copy(
+                                                        update={
+                                                            "release_at": datetime(
+                                                                2026, 9, 7, 18, 30, tzinfo=UTC
+                                                            )
+                                                        }
+                                                    ),
+                                                ),
+                                            }
+                                        ),
+                                    )
+                                }
+                            ),
+                        )
+                    }
+                )
+            return normalized
+
+    provider = CorrectingProvider()
+    reference_time = datetime(2026, 9, 10, tzinfo=UTC)
+    await import_series(db_session, provider, "ignored", reference_time=reference_time)
+    await import_series(db_session, provider, "ignored", reference_time=reference_time)
+
+    episode = await db_session.scalar(select(Episode))
+    release = await db_session.scalar(select(EpisodeRelease))
+    assert episode is not None
+    assert episode.title == "Corrected pilot"
+    assert release is not None
+    assert release.release_at == datetime(2026, 9, 7, 18, 30, tzinfo=UTC)
+
+
+async def test_three_week_comparison_with_and_without_rerun_filter(
+    db_session: AsyncSession,
+) -> None:
+    class ComparisonProvider:
+        calls = 0
+
+        def __init__(self, slug: str) -> None:
+            self.slug = slug
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            if self.calls == 1:
+                episodes = (
+                    NormalizedEpisode(
+                        external_id="episode-1",
+                        number=1,
+                        title="Episode 1",
+                        releases=(
+                            NormalizedEpisodeRelease(
+                                release_type=ReleaseType.TV_BROADCAST,
+                                release_at=datetime(2026, 1, 8, tzinfo=UTC),
+                            ),
+                        ),
+                    ),
+                )
+            else:
+                episodes = (
+                    NormalizedEpisode(
+                        external_id="episode-1",
+                        number=1,
+                        title="Episode 1",
+                        releases=(
+                            NormalizedEpisodeRelease(
+                                release_type=ReleaseType.TV_BROADCAST,
+                                release_at=datetime(2026, 10, 8, tzinfo=UTC),
+                            ),
+                        ),
+                    ),
+                    NormalizedEpisode(
+                        external_id="episode-2",
+                        number=2,
+                        title="Episode 2",
+                        releases=(
+                            NormalizedEpisodeRelease(
+                                release_type=ReleaseType.TV_BROADCAST,
+                                release_at=datetime(2026, 10, 15, tzinfo=UTC),
+                            ),
+                        ),
+                    ),
+                )
+            return NormalizedSeries(
+                external_id=external_id,
+                title="Comparison series",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="season-1",
+                        number=1,
+                        episodes=episodes,
+                    ),
+                ),
+            )
+
+    async def imported_episode_numbers(
+        provider: ComparisonProvider,
+        external_id: str,
+        reference_time: datetime,
+        *,
+        include_reruns: bool,
+    ) -> set[int | None]:
+        await import_series(db_session, provider, external_id, reference_time=reference_time)
+        await import_series(db_session, provider, external_id, reference_time=reference_time)
+        rows = await db_session.execute(
+            select(Episode.number)
+            .join(Season)
+            .join(Series)
+            .join(EpisodeRelease)
+            .where(
+                Series.external_id == external_id,
+                EpisodeRelease.release_at >= datetime(2026, 10, 1, tzinfo=UTC),
+                EpisodeRelease.release_at < datetime(2026, 10, 22, tzinfo=UTC),
+                EpisodeRelease.rerun.is_(False) if not include_reruns else True,
+            )
+        )
+        return {number for (number,) in rows}
+
+    with_filter = await imported_episode_numbers(
+        ComparisonProvider("comparison-with-filter"),
+        "comparison-with-filter",
+        datetime(2026, 10, 1, tzinfo=UTC),
+        include_reruns=False,
+    )
+    without_filter = await imported_episode_numbers(
+        ComparisonProvider("comparison-without-filter"),
+        "comparison-without-filter",
+        datetime(2025, 1, 1, tzinfo=UTC),
+        include_reruns=True,
+    )
+
+    assert with_filter == {2}
+    assert without_filter == {1, 2}
+
+
+async def test_import_marks_older_seasons_as_reruns(
     db_session: AsyncSession,
 ) -> None:
     def normalized(seasons: tuple[NormalizedSeason, ...]) -> NormalizedSeries:
@@ -140,7 +340,7 @@ async def test_import_ignores_older_seasons_when_newer_season_exists(
         async def fetch_series(self, external_id: str) -> NormalizedSeries:
             self.calls += 1
             if self.calls == 1:
-                return normalized((season(1, datetime(2026, 9, 24, tzinfo=UTC)),))
+                return normalized((season(2, datetime(2026, 9, 24, tzinfo=UTC)),))
             return normalized(
                 (
                     season(1, datetime(2026, 10, 8, tzinfo=UTC)),
@@ -152,13 +352,17 @@ async def test_import_ignores_older_seasons_when_newer_season_exists(
     await import_series(db_session, provider, "configured-id")
     result = await import_series(db_session, provider, "configured-id")
 
-    assert result.seasons == 1
+    assert result.seasons == 2
     seasons = list(await db_session.scalars(select(Season).order_by(Season.number)))
     assert [item.number for item in seasons] == [1, 2]
     releases = list(
         await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
     )
-    assert [release.release_at for release in releases] == [datetime(2026, 10, 1, tzinfo=UTC)]
+    assert [release.release_at for release in releases] == [
+        datetime(2026, 10, 1, tzinfo=UTC),
+        datetime(2026, 10, 8, tzinfo=UTC),
+    ]
+    assert [release.rerun for release in releases] == [False, True]
 
 
 async def test_import_preserves_newer_season_when_only_rerun_is_returned(
@@ -200,8 +404,12 @@ async def test_import_preserves_newer_season_when_only_rerun_is_returned(
     await import_series(db_session, provider, "configured-id")
 
     releases = list(await db_session.scalars(select(EpisodeRelease)))
-    assert len(releases) == 1
-    assert releases[0].release_at == datetime(2026, 10, 2, tzinfo=UTC)
+    assert len(releases) == 2
+    assert {release.release_at for release in releases} == {
+        datetime(2026, 10, 1, tzinfo=UTC),
+        datetime(2026, 10, 2, tzinfo=UTC),
+    }
+    assert sum(release.rerun for release in releases) == 1
 
 
 def test_configured_series_reads_provider_lists(tmp_path, monkeypatch) -> None:

@@ -26,6 +26,14 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
             release_at=release_at,
         )
     )
+    episode.releases.append(
+        EpisodeRelease(
+            provider=provider,
+            release_type=ReleaseType.STREAMING,
+            release_at=release_at + timedelta(days=1),
+            rerun=True,
+        )
+    )
     db_session.add(episode)
     await db_session.commit()
 
@@ -56,6 +64,21 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
         )
         assert response.status_code == 200
         assert response.json()[0]["title"] == "Pilot"
+        assert len(response.json()[0]["releases"]) == 1
+        assert response.json()[0]["releases"][0]["rerun"] is False
+        rerun_response = await client.get(
+            "/api/v1/episodes",
+            params={
+                "series": str(series.id),
+                "includeReruns": "true",
+            },
+        )
+        assert rerun_response.status_code == 200
+        assert len(rerun_response.json()[0]["releases"]) == 2
+        assert {release["rerun"] for release in rerun_response.json()[0]["releases"]} == {
+            False,
+            True,
+        }
         timezone_response = await client.get(
             "/api/v1/episodes/current-week",
             params={"series": str(series.id), "timezone": "UTC"},

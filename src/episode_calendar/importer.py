@@ -6,10 +6,12 @@ import argparse
 import asyncio
 import logging
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
@@ -17,7 +19,7 @@ from episode_calendar.db.session import get_session_factory
 from episode_calendar.providers.amazon_prime_de import AmazonPrimeDEProvider
 from episode_calendar.providers.amazon_prime_uk import AmazonPrimeUKProvider
 from episode_calendar.providers.ardmediathek import ARDMediathekProvider
-from episode_calendar.providers.base import NormalizedSeason, ProviderAdapter
+from episode_calendar.providers.base import NormalizedSeries, ProviderAdapter
 from episode_calendar.providers.bbc_iplayer import BBCIPlayerProvider
 from episode_calendar.providers.channel4 import Channel4Provider
 from episode_calendar.providers.joyn import JoynProvider
@@ -27,6 +29,12 @@ from episode_calendar.series_config import configured_platform
 from episode_calendar.series_config import configured_series as _configured_series
 
 logger = logging.getLogger(__name__)
+
+# Linear TV providers often publish the same episode again with a new broadcast date.
+# Keep accepting corrections for currently running episodes, but do not replace old
+# first-release data with a rerun. The fixed window also makes the policy predictable
+# across all providers instead of duplicating provider-specific date heuristics.
+KNOWN_EPISODE_RELEASE_MAX_AGE = timedelta(days=180)
 
 
 def configured_series(provider: str) -> tuple[str, ...]:
@@ -44,14 +52,85 @@ class ImportResult:
     releases: int
 
 
+@dataclass(frozen=True)
+class RerunDetection:
+    """Episodes identified as repeat broadcasts by the central import policy."""
+
+    episode_keys: frozenset[tuple[str, str, int | None]]
+    existing_episode_ids: frozenset[UUID]
+
+
+def detect_reruns(
+    normalized: NormalizedSeries,
+    *,
+    newest_existing_season: int | None,
+    highest_existing_episode: Mapping[str, int],
+    existing_episode_ids: Mapping[str, Mapping[tuple[str, int | None], UUID]],
+    existing_release_dates: Mapping[UUID, datetime],
+    reference_time: datetime,
+) -> RerunDetection:
+    """Classify provider releases that should be stored as reruns.
+
+    This policy is deliberately centralized because catalog providers can expose old
+    seasons and episodes again as upcoming TV broadcasts. Existing recent episodes
+    remain updateable for provider corrections; old or superseded episodes get a new
+    ``rerun`` release instead of replacing their first-release data.
+    """
+
+    rerun_episode_keys: set[tuple[str, str, int | None]] = set()
+    rerun_episode_ids: set[UUID] = set()
+    for normalized_season in normalized.seasons:
+        season_is_obsolete = (
+            newest_existing_season is not None
+            and normalized_season.number is not None
+            and normalized_season.number < newest_existing_season
+        )
+        for normalized_episode in normalized_season.episodes:
+            episode_key = (
+                normalized_season.external_id,
+                normalized_episode.external_id,
+                normalized_episode.number,
+            )
+            episode_id = existing_episode_ids.get(normalized_season.external_id, {}).get(
+                episode_key[1:]
+            )
+            release_at = existing_release_dates.get(episode_id) if episode_id else None
+            higher_episode_exists = (
+                normalized_episode.number is not None
+                and highest_existing_episode.get(normalized_season.external_id, 0)
+                > normalized_episode.number
+            )
+            old_known_episode = (
+                release_at is not None
+                and reference_time - release_at > KNOWN_EPISODE_RELEASE_MAX_AGE
+            )
+            if (
+                season_is_obsolete
+                or (episode_id is None and higher_episode_exists)
+                or old_known_episode
+            ):
+                rerun_episode_keys.add(episode_key)
+                if episode_id:
+                    rerun_episode_ids.add(episode_id)
+    return RerunDetection(
+        episode_keys=frozenset(rerun_episode_keys),
+        existing_episode_ids=frozenset(rerun_episode_ids),
+    )
+
+
 async def import_series(
     session: AsyncSession,
     adapter: ProviderAdapter,
     external_id: str,
     *,
     provider_name: str | None = None,
+    reference_time: datetime | None = None,
 ) -> ImportResult:
-    """Fetch one complete series and idempotently upsert its normalized tree."""
+    """Fetch one complete series and idempotently upsert its normalized tree.
+
+    ``reference_time`` is injectable for deterministic tests and diagnostics; normal
+    imports use the current UTC time.
+    """
 
     normalized = await adapter.fetch_series(external_id)
     provider = await session.scalar(select(Provider).where(Provider.slug == adapter.slug))
@@ -89,56 +168,70 @@ async def import_series(
         (season.number for season in existing_seasons if season.number is not None),
         default=None,
     )
-    existing_release_dates: dict[str, list[datetime]] = defaultdict(list)
-    release_rows = await session.execute(
-        select(Season.external_id, EpisodeRelease.release_at)
+    existing_episode_ids: dict[str, dict[tuple[str, int | None], object]] = defaultdict(dict)
+    highest_existing_episode: dict[str, int] = {}
+    episode_rows = await session.execute(
+        select(Season.external_id, Episode.external_id, Episode.number, Episode.id)
         .join(Episode, Episode.season_id == Season.id)
+        .where(Season.series_id == series.id)
+    )
+    for season_external_id, episode_external_id, episode_number, episode_id in episode_rows:
+        existing_episode_ids[season_external_id][(episode_external_id, episode_number)] = episode_id
+        if episode_number is not None:
+            highest_existing_episode[season_external_id] = max(
+                highest_existing_episode.get(season_external_id, episode_number),
+                episode_number,
+            )
+
+    existing_release_dates: dict[UUID, datetime] = {}
+    release_rows = await session.execute(
+        select(Episode.id, func.max(EpisodeRelease.release_at))
         .join(EpisodeRelease, EpisodeRelease.episode_id == Episode.id)
-        .where(
-            Season.series_id == series.id,
-            EpisodeRelease.provider_id == provider.id,
-        )
+        .where(EpisodeRelease.provider_id == provider.id)
+        .group_by(Episode.id)
     )
-    for season_external_id, release_at in release_rows:
-        existing_release_dates[season_external_id].append(release_at)
+    for episode_id, release_at in release_rows:
+        if release_at is not None:
+            existing_release_dates[episode_id] = release_at
+    import_time = (reference_time or datetime.now(UTC)).astimezone(UTC)
 
-    def is_obsolete_season(season: NormalizedSeason) -> bool:
-        season_number = season.number
-        if (
-            newest_existing_season is not None
-            and season_number is not None
-            and season_number < newest_existing_season
-        ):
-            return True
-        previous_releases = existing_release_dates.get(season.external_id, [])
-        incoming_releases = [
-            release.release_at for episode in season.episodes for release in episode.releases
-        ]
-        return bool(previous_releases and incoming_releases) and min(incoming_releases) > max(
-            previous_releases
-        )
-
-    imported_seasons = tuple(
-        season for season in normalized.seasons if not is_obsolete_season(season)
+    imported_seasons = normalized.seasons
+    obsolete_seasons = tuple(
+        season
+        for season in normalized.seasons
+        if newest_existing_season is not None
+        and season.number is not None
+        and season.number < newest_existing_season
     )
-    if len(imported_seasons) != len(normalized.seasons):
+    if obsolete_seasons:
         logger.info(
-            "Skipped %s obsolete season(s) for %s/%s; newer season %s already exists",
-            len(normalized.seasons) - len(imported_seasons),
+            "Marked %s rerun season(s) for %s/%s; newer season %s already exists",
+            len(obsolete_seasons),
             provider_name or adapter.slug,
             external_id,
             newest_existing_season,
         )
 
-    # A provider response is the source of truth for releases. Remove releases from
-    # the previous import first so obsolete inferred dates cannot remain in the calendar.
-    # Only seasons present in the provider response are touched: this preserves a newer
-    # season when a provider temporarily returns only an older rerun season.
+    reruns = detect_reruns(
+        normalized,
+        newest_existing_season=newest_existing_season,
+        highest_existing_episode=highest_existing_episode,
+        existing_episode_ids=existing_episode_ids,
+        existing_release_dates=existing_release_dates,
+        reference_time=import_time,
+    )
+
+    # Preserve first-release records while allowing the provider to add a separate rerun
+    # release. Non-rerun episodes still replace their previous releases so removed provider
+    # data does not remain in the calendar.
     imported_season_ids = select(Season.id).where(
         Season.series_id == series.id,
         Season.external_id.in_(season.external_id for season in normalized.seasons),
     )
-    episode_ids = select(Episode.id).where(Episode.season_id.in_(imported_season_ids))
+    episode_ids = select(Episode.id).where(
+        Episode.season_id.in_(imported_season_ids),
+        Episode.id.not_in(reruns.existing_episode_ids),
+    )
     await session.execute(
         delete(EpisodeRelease).where(
             EpisodeRelease.provider_id == provider.id,
@@ -169,6 +262,12 @@ async def import_series(
         season_count += 1
 
         for normalized_episode in normalized_season.episodes:
+            episode_key = (
+                normalized_season.external_id,
+                normalized_episode.external_id,
+                normalized_episode.number,
+            )
+            is_rerun = episode_key in reruns.episode_keys
             episode = await session.scalar(
                 select(Episode).where(
                     Episode.season_id == season.id,
@@ -219,6 +318,7 @@ async def import_series(
                         release_at=normalized_release.release_at,
                         available_until=normalized_release.available_until,
                         url=str(normalized_release.url) if normalized_release.url else None,
+                        rerun=is_rerun,
                     )
                     session.add(release)
                 else:
