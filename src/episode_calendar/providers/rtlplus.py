@@ -23,15 +23,10 @@ from episode_calendar.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
-    episode_title_from_description,
 )
 
 _SEASON_RE = re.compile(r"Staffel\s+(\d+)", re.IGNORECASE)
 _EPISODE_RE = re.compile(r"Folge\s+(\d+)", re.IGNORECASE)
-_GENERIC_EPISODE_TITLE_RE = re.compile(r"^(?:folge|episode|ep\.?|week)\s+\d+$", re.IGNORECASE)
-_GENERIC_EPISODE_DESCRIPTION_RE = re.compile(
-    r"^staffel\s+\d+\s*[•|·-]\s*folge\s+\d+", re.IGNORECASE
-)
 _DATE_RE = re.compile(
     r"\*\*Folge\s+(\d+)\*\*\s*\|[^|]*\|[^|]*?\s*(?:Di\.|Do\.|Mi\.|Mo\.|Sa\.|So\.)?\s*(\d{1,2})\.(\d{1,2})\.,?\s*(\d{1,2}):(\d{2})\s*Uhr",
     re.IGNORECASE,
@@ -120,15 +115,14 @@ class RTLPlusProvider:
         program_id = match.group(1) if match else str(external_id)
         if not program_id.isdigit():
             raise ValueError("RTL+ program identifier must be numeric or end in _p_<id>")
-        series_url = self._series_url(external_id)
         if self._client is not None:
             if not self._bedrock_token or not self._authorization:
                 self._authorization, self._bedrock_token = await self._authenticate(self._client)
-            return await self._fetch(self._client, program_id, series_url)
+            return await self._fetch(self._client, program_id)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             if not self._bedrock_token or not self._authorization:
                 self._authorization, self._bedrock_token = await self._authenticate(client)
-            return await self._fetch(client, program_id, series_url)
+            return await self._fetch(client, program_id)
 
     async def _authenticate(self, client: httpx.AsyncClient) -> tuple[str, str]:
         if not self._oidc_client_secret:
@@ -181,9 +175,7 @@ class RTLPlusProvider:
                 "RTL+ authentication response was not JSON"
             ) from exc
 
-    async def _fetch(
-        self, client: httpx.AsyncClient, program_id: str, series_url: str | None
-    ) -> NormalizedSeries:
+    async def _fetch(self, client: httpx.AsyncClient, program_id: str) -> NormalizedSeries:
         pages: list[dict[str, Any]] = []
         page = 1
         seen_pages: set[int] = set()
@@ -197,7 +189,7 @@ class RTLPlusProvider:
             if not isinstance(next_page, int) or next_page <= page:
                 raise RTLPlusMalformedResponseError("invalid RTL+ pagination")
             page = next_page
-        return self._normalize(program_id, pages, series_url=series_url)
+        return self._normalize(program_id, pages)
 
     async def _request(
         self, client: httpx.AsyncClient, program_id: str, page: int
@@ -247,13 +239,7 @@ class RTLPlusProvider:
             raise RTLPlusMalformedResponseError("RTL+ response lacks blocks")
         return payload
 
-    def _normalize(
-        self,
-        program_id: str,
-        pages: list[dict[str, Any]],
-        *,
-        series_url: str | None = None,
-    ) -> NormalizedSeries:
+    def _normalize(self, program_id: str, pages: list[dict[str, Any]]) -> NormalizedSeries:
         first = pages[0]
         entity = first.get("entity")
         if not isinstance(entity, dict) or entity.get("id") is None:
@@ -382,40 +368,15 @@ class RTLPlusProvider:
                         if release_at is None
                         else (
                             NormalizedEpisodeRelease(
-                                release_type=ReleaseType.STREAMING,
-                                release_at=release_at,
-                                url=series_url,
+                                release_type=ReleaseType.STREAMING, release_at=release_at
                             ),
                         )
                     )
-                    description = self._description(raw)
-                    raw_title = raw.get("title")
-                    title = (
-                        raw_title.strip()
-                        if isinstance(raw_title, str) and raw_title.strip()
-                        else ""
-                    )
-                    if (
-                        not title
-                        or _GENERIC_EPISODE_TITLE_RE.fullmatch(title)
-                        or title.casefold() == str(metadata.get("title", "")).casefold()
-                    ):
-                        meaningful_description = (
-                            description
-                            if description
-                            and not _GENERIC_EPISODE_DESCRIPTION_RE.match(description)
-                            else None
-                        )
-                        title = episode_title_from_description(
-                            meaningful_description,
-                            self._episode_label(raw, f"Folge {episode_number}"),
-                        )
                     try:
                         episode = NormalizedEpisode(
                             external_id=str(raw["id"]),
                             number=episode_number,
-                            title=title,
-                            description=description,
+                            title=str(raw.get("title") or f"Folge {episode_number}"),
                             releases=release_tuple,
                         )
                     except ValidationError as exc:
@@ -443,9 +404,7 @@ class RTLPlusProvider:
                         title=f"Folge {next_episode_number}",
                         releases=(
                             NormalizedEpisodeRelease(
-                                release_type=ReleaseType.STREAMING,
-                                release_at=release_at,
-                                url=series_url,
+                                release_type=ReleaseType.STREAMING, release_at=release_at
                             ),
                         ),
                     )
@@ -460,45 +419,6 @@ class RTLPlusProvider:
             for number, episodes in sorted(seasons.items())
         )
         return NormalizedSeries(external_id=program_id, title=title, seasons=normalized_seasons)
-
-    @staticmethod
-    def _description(raw: dict[str, Any]) -> str | None:
-        for key in ("description", "summary", "synopsis", "shortDescription", "longDescription"):
-            value = raw.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return None
-
-    @staticmethod
-    def _episode_label(raw: dict[str, Any], fallback: str) -> str:
-        image = raw.get("image")
-        if isinstance(image, dict):
-            caption = image.get("caption")
-            if isinstance(caption, str) and caption.strip():
-                return caption.strip()
-        analytics = raw.get("analytics")
-        if isinstance(analytics, dict):
-            tealium = analytics.get("tealium")
-            if isinstance(tealium, dict):
-                clip_title = tealium.get("clip_title")
-                if isinstance(clip_title, str) and clip_title.strip():
-                    return clip_title.strip()
-        return fallback
-
-    @staticmethod
-    def _series_url(external_id: str) -> str | None:
-        """Return the public RTL+ series page for a configured slug identifier.
-
-        The layout response contains episode metadata but no public URL for the
-        episode cards. Configured identifiers with the ``-p_<id>`` or ``_p_<id>`` form are the
-        canonical RTL+ series paths, so linking to that page is both stable and
-        more useful than fabricating an episode URL. Numeric legacy identifiers
-        deliberately remain without a link because their slug is unknown.
-        """
-
-        if re.fullmatch(r"[a-z0-9][a-z0-9-]*(?:-p|_p)_\d+", external_id):
-            return f"https://plus.rtl.de/{external_id}"
-        return None
 
     @staticmethod
     def _diffusion_release(seo: Any) -> datetime | None:
