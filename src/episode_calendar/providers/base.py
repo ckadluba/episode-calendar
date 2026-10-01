@@ -6,6 +6,15 @@ from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator
 from episode_calendar.domain import ReleaseType
 
 
+def episode_title_from_description(description: str | None, fallback: str) -> str:
+    """Use a short description as the visible episode title when no title exists."""
+
+    if not description or not description.strip():
+        return fallback
+    text = description.strip()
+    return f"{text[:100]}..." if len(text) > 100 else text
+
+
 class NormalizedEpisodeRelease(BaseModel):
     model_config = ConfigDict(frozen=True)
 

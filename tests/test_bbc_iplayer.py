@@ -152,3 +152,29 @@ async def test_rejects_incomplete_pagination() -> None:
             await BBCIPlayerProvider(client=client).fetch_series("m1234567")
     finally:
         await client.aclose()
+
+
+def test_uses_truncated_description_when_episode_has_no_specific_title() -> None:
+    description = "A" * 101
+    raw = episode("e1", "Demo", "Series 2: Episode 1")
+    raw["synopses"] = {"small": description}
+
+    normalized = BBCIPlayerProvider._episode(raw, programme_title="Demo")
+
+    assert normalized is not None
+    assert normalized.title == f"{'A' * 100}..."
+    assert normalized.description == description
+
+
+def test_uses_description_when_bbc_episode_title_is_missing() -> None:
+    description = "An episode without a title"
+    raw = episode("e1", "Demo", "Special")
+    raw.pop("title")
+    raw.pop("subtitle")
+    raw["synopses"] = {"small": description}
+
+    normalized = BBCIPlayerProvider._episode(raw, programme_title="Demo")
+
+    assert normalized is not None
+    assert normalized.title == description
+    assert normalized.description == description
