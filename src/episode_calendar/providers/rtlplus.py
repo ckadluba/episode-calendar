@@ -115,14 +115,15 @@ class RTLPlusProvider:
         program_id = match.group(1) if match else str(external_id)
         if not program_id.isdigit():
             raise ValueError("RTL+ program identifier must be numeric or end in _p_<id>")
+        series_url = self._series_url(external_id)
         if self._client is not None:
             if not self._bedrock_token or not self._authorization:
                 self._authorization, self._bedrock_token = await self._authenticate(self._client)
-            return await self._fetch(self._client, program_id)
+            return await self._fetch(self._client, program_id, series_url)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             if not self._bedrock_token or not self._authorization:
                 self._authorization, self._bedrock_token = await self._authenticate(client)
-            return await self._fetch(client, program_id)
+            return await self._fetch(client, program_id, series_url)
 
     async def _authenticate(self, client: httpx.AsyncClient) -> tuple[str, str]:
         if not self._oidc_client_secret:
@@ -175,7 +176,9 @@ class RTLPlusProvider:
                 "RTL+ authentication response was not JSON"
             ) from exc
 
-    async def _fetch(self, client: httpx.AsyncClient, program_id: str) -> NormalizedSeries:
+    async def _fetch(
+        self, client: httpx.AsyncClient, program_id: str, series_url: str | None
+    ) -> NormalizedSeries:
         pages: list[dict[str, Any]] = []
         page = 1
         seen_pages: set[int] = set()
@@ -189,7 +192,7 @@ class RTLPlusProvider:
             if not isinstance(next_page, int) or next_page <= page:
                 raise RTLPlusMalformedResponseError("invalid RTL+ pagination")
             page = next_page
-        return self._normalize(program_id, pages)
+        return self._normalize(program_id, pages, series_url=series_url)
 
     async def _request(
         self, client: httpx.AsyncClient, program_id: str, page: int
@@ -239,7 +242,13 @@ class RTLPlusProvider:
             raise RTLPlusMalformedResponseError("RTL+ response lacks blocks")
         return payload
 
-    def _normalize(self, program_id: str, pages: list[dict[str, Any]]) -> NormalizedSeries:
+    def _normalize(
+        self,
+        program_id: str,
+        pages: list[dict[str, Any]],
+        *,
+        series_url: str | None = None,
+    ) -> NormalizedSeries:
         first = pages[0]
         entity = first.get("entity")
         if not isinstance(entity, dict) or entity.get("id") is None:
@@ -368,7 +377,9 @@ class RTLPlusProvider:
                         if release_at is None
                         else (
                             NormalizedEpisodeRelease(
-                                release_type=ReleaseType.STREAMING, release_at=release_at
+                                release_type=ReleaseType.STREAMING,
+                                release_at=release_at,
+                                url=series_url,
                             ),
                         )
                     )
@@ -404,7 +415,9 @@ class RTLPlusProvider:
                         title=f"Folge {next_episode_number}",
                         releases=(
                             NormalizedEpisodeRelease(
-                                release_type=ReleaseType.STREAMING, release_at=release_at
+                                release_type=ReleaseType.STREAMING,
+                                release_at=release_at,
+                                url=series_url,
                             ),
                         ),
                     )
@@ -419,6 +432,14 @@ class RTLPlusProvider:
             for number, episodes in sorted(seasons.items())
         )
         return NormalizedSeries(external_id=program_id, title=title, seasons=normalized_seasons)
+
+    @staticmethod
+    def _series_url(external_id: str) -> str | None:
+        """Return the public RTL+ series page for a configured slug identifier."""
+
+        if re.fullmatch(r"[a-z0-9][a-z0-9-]*(?:-p|_p)_\d+", external_id):
+            return f"https://plus.rtl.de/{external_id}"
+        return None
 
     @staticmethod
     def _diffusion_release(seo: Any) -> datetime | None:
