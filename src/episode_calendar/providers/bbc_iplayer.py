@@ -20,6 +20,7 @@ from episode_calendar.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    episode_title_from_description,
 )
 
 _SEASON_RE = re.compile(r"(?:series|cyfres)\s+(\d+)", re.IGNORECASE)
@@ -27,6 +28,7 @@ _EPISODE_RE = re.compile(
     r"(?:series|cyfres)\s+\d+\s*:\s*(?:(?:episode|folge|week)\s+)?(\d+)",
     re.IGNORECASE,
 )
+_GENERIC_EPISODE_TITLE_RE = re.compile(r"^(?:episode|folge|ep\.?)\s+\d+$", re.IGNORECASE)
 
 
 class BBCIPlayerProviderError(RuntimeError):
@@ -219,7 +221,7 @@ class BBCIPlayerProvider:
     ) -> NormalizedSeries:
         seasons: dict[int | None, list[NormalizedEpisode]] = defaultdict(list)
         for raw in raw_episodes:
-            episode = cls._episode(raw)
+            episode = cls._episode(raw, programme_title=programme.get("title"))
             if episode is None:
                 continue
             season_number = cls._season_number(raw.get("subtitle"))
@@ -248,18 +250,31 @@ class BBCIPlayerProvider:
             ) from exc
 
     @classmethod
-    def _episode(cls, raw: Mapping[str, Any]) -> NormalizedEpisode | None:
+    def _episode(
+        cls, raw: Mapping[str, Any], *, programme_title: Any = None
+    ) -> NormalizedEpisode | None:
         episode_id = cls._required_string(raw.get("id"), "episode.id")
-        title = cls._required_string(raw.get("title"), "episode.title")
+        raw_title = raw.get("title")
+        title = raw_title.strip() if isinstance(raw_title, str) else ""
         release = cls._release(raw)
         if release is None:
             return None
         subtitle = raw.get("subtitle")
+        description = cls._description(raw)
+        episode_title = cls._episode_title(
+            raw, title or episode_title_from_description(description, "Episode")
+        )
+        if (
+            not episode_title
+            or episode_title.casefold() == str(programme_title).casefold()
+            or _GENERIC_EPISODE_TITLE_RE.fullmatch(episode_title)
+        ):
+            episode_title = episode_title_from_description(description, title or "Episode")
         return NormalizedEpisode(
             external_id=episode_id,
             number=cls._episode_number(subtitle),
-            title=cls._episode_title(raw, title),
-            description=cls._description(raw),
+            title=episode_title,
+            description=description,
             releases=(
                 NormalizedEpisodeRelease(
                     external_id=episode_id,

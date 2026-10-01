@@ -1,26 +1,24 @@
 info:
-  name: Get Episodes current Week
+  name: Get Episodes next Week (include reruns)
   type: http
-  seq: 6
+  seq: 9
 
 http:
   method: GET
-  url: "{{base_url}}/api/v1/episodes/current-week"
+  url: "{{base_url}}/api/v1/episodes/next-week?timezone=Europe/London&includeReruns=true"
   params:
     - name: platform
-      value: joyn
+      value: rtlplus
       type: query
       disabled: true
     - name: timezone
       value: Europe/London
       type: query
       description: "Default: Europe/Vienna"
-      disabled: true
     - name: includeReruns
       value: "true"
       type: query
       description: "Default: false"
-      disabled: true
   auth: inherit
 
 settings:
