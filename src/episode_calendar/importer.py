@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +17,7 @@ from episode_calendar.db.session import get_session_factory
 from episode_calendar.providers.amazon_prime_de import AmazonPrimeDEProvider
 from episode_calendar.providers.amazon_prime_uk import AmazonPrimeUKProvider
 from episode_calendar.providers.ardmediathek import ARDMediathekProvider
-from episode_calendar.providers.base import ProviderAdapter
+from episode_calendar.providers.base import NormalizedSeason, ProviderAdapter
 from episode_calendar.providers.bbc_iplayer import BBCIPlayerProvider
 from episode_calendar.providers.channel4 import Channel4Provider
 from episode_calendar.providers.joyn import JoynProvider
@@ -80,9 +82,63 @@ async def import_series(
         series.title = normalized.title
         series.description = normalized.description
 
+    existing_seasons = list(
+        await session.scalars(select(Season).where(Season.series_id == series.id))
+    )
+    newest_existing_season = max(
+        (season.number for season in existing_seasons if season.number is not None),
+        default=None,
+    )
+    existing_release_dates: dict[str, list[datetime]] = defaultdict(list)
+    release_rows = await session.execute(
+        select(Season.external_id, EpisodeRelease.release_at)
+        .join(Episode, Episode.season_id == Season.id)
+        .join(EpisodeRelease, EpisodeRelease.episode_id == Episode.id)
+        .where(
+            Season.series_id == series.id,
+            EpisodeRelease.provider_id == provider.id,
+        )
+    )
+    for season_external_id, release_at in release_rows:
+        existing_release_dates[season_external_id].append(release_at)
+
+    def is_obsolete_season(season: NormalizedSeason) -> bool:
+        season_number = season.number
+        if (
+            newest_existing_season is not None
+            and season_number is not None
+            and season_number < newest_existing_season
+        ):
+            return True
+        previous_releases = existing_release_dates.get(season.external_id, [])
+        incoming_releases = [
+            release.release_at for episode in season.episodes for release in episode.releases
+        ]
+        return bool(previous_releases and incoming_releases) and min(incoming_releases) > max(
+            previous_releases
+        )
+
+    imported_seasons = tuple(
+        season for season in normalized.seasons if not is_obsolete_season(season)
+    )
+    if len(imported_seasons) != len(normalized.seasons):
+        logger.info(
+            "Skipped %s obsolete season(s) for %s/%s; newer season %s already exists",
+            len(normalized.seasons) - len(imported_seasons),
+            provider_name or adapter.slug,
+            external_id,
+            newest_existing_season,
+        )
+
     # A provider response is the source of truth for releases. Remove releases from
     # the previous import first so obsolete inferred dates cannot remain in the calendar.
-    episode_ids = select(Episode.id).join(Season).where(Season.series_id == series.id)
+    # Only seasons present in the provider response are touched: this preserves a newer
+    # season when a provider temporarily returns only an older rerun season.
+    imported_season_ids = select(Season.id).where(
+        Season.series_id == series.id,
+        Season.external_id.in_(season.external_id for season in normalized.seasons),
+    )
+    episode_ids = select(Episode.id).where(Episode.season_id.in_(imported_season_ids))
     await session.execute(
         delete(EpisodeRelease).where(
             EpisodeRelease.provider_id == provider.id,
@@ -91,7 +147,7 @@ async def import_series(
     )
 
     season_count = episode_count = new_episode_count = release_count = 0
-    for normalized_season in normalized.seasons:
+    for normalized_season in imported_seasons:
         season = await session.scalar(
             select(Season).where(
                 Season.series_id == series.id,
