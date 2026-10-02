@@ -19,6 +19,11 @@ http:
       value: "true"
       type: query
       description: "Default: false"
+    - name: includePreviews
+      value: "false"
+      type: query
+      description: "Default: true"
+      disabled: true
   auth: inherit
 
 settings:

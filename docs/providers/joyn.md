@@ -19,11 +19,15 @@ using the public series page at [joyn.at](https://www.joyn.at/serien/so-denkt-oe
 - The series query uses `page(path: ...)` and returns a `SeriesPage` containing `series.id`,
   `title`, `description`, and `seasons`.
 - Season results contain `id`, `number`, `numberOfEpisodes`, and `episodes`. Episode fields used
-here are `id`, `number`, `title`, `airdate`, `endsAt`, and `path`.
+  here are `id`, `number`, `title`, `startsAt`, `airdate`, `endsAt`, `path`, and `markings`.
 - The web client requests episodes in pages of 20 with an offset. `JoynProvider` follows every
   page until `numberOfEpisodes` is reached and fails if a page is missing or inconsistent.
-- Current responses expose `airdate` as a Unix timestamp; it is converted to a timezone-aware UTC
-  datetime (preserving the instant). ISO-8601 values with an offset are also accepted.
+- Current responses expose `startsAt` and `airdate` as Unix timestamps. `startsAt` is used as the
+  streaming release time because it represents when the episode becomes available on Joyn;
+  `airdate` remains the fallback when `startsAt` is missing. Both are converted to timezone-aware
+  UTC datetimes (preserving the instant). ISO-8601 values with an offset are also accepted.
+- Joyn marks advance releases with `markings: ["PREVIEW"]`; this is exposed as the generic
+  `preview` release flag and displayed as `Vorab` in the calendar.
 
 The website currently uses persisted GET operations named `SeriesDetailNewPageStatic` and
 `Season`. Their hashes and the web bundle's client version are deployment details that can change.
@@ -32,9 +36,10 @@ that form when a persisted query is unavailable.
 
 ## Assumptions and limitations
 
-Mapping `airdate` to a `streaming` release is a domain interpretation; Joyn labels the field
-`airdate` rather than documenting it as a release contract. `endsAt`, when present, is mapped to
-`available_until`; missing `airdate` produces no release.
+Mapping Joyn's `startsAt` to a `streaming` release is a domain interpretation based on the public
+website behavior. `airdate` is the linear broadcast date, not a guaranteed general free-streaming
+date. `endsAt`, when present, is mapped to `available_until`; missing both `startsAt` and
+`airdate` produces no release.
 Episode URLs are derived from the returned relative `path`, and no separate release identifier is
 currently exposed, so release `external_id` remains unset. These behaviors are isolated here and
 may need adjustment if Joyn changes its schema.

@@ -181,8 +181,8 @@ describe("calendar releases", () => {
       platform: "ARD Mediathek",
       platform_id: "ardmediathek",
       releases: [
-        { release_type: "streaming", release_at: "2026-09-28T18:00:00Z", url: null },
-        { release_type: "tv_broadcast", release_at: "2026-10-01T17:15:00Z", url: null },
+        { release_type: "streaming", release_at: "2026-09-28T18:00:00Z", url: null, preview: false },
+        { release_type: "tv_broadcast", release_at: "2026-10-01T17:15:00Z", url: null, preview: false },
       ],
     };
 

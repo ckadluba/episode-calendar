@@ -319,11 +319,13 @@ async def import_series(
                         available_until=normalized_release.available_until,
                         url=str(normalized_release.url) if normalized_release.url else None,
                         rerun=is_rerun,
+                        preview=normalized_release.preview,
                     )
                     session.add(release)
                 else:
                     release.available_until = normalized_release.available_until
                     release.url = str(normalized_release.url) if normalized_release.url else None
+                    release.preview = normalized_release.preview
                 release_count += 1
 
     await session.commit()

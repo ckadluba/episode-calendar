@@ -36,10 +36,12 @@ query EpisodeCalendarSeries($path: String!) {
                     episodes(first: 20, offset: 0) {
                         id
                         number
+                        startsAt
                         airdate
                         endsAt
                         title
                         path
+                        markings
                     }
                 }
             }
@@ -57,10 +59,12 @@ query EpisodeCalendarSeason($id: ID!, $first: Int!, $offset: Int!) {
         episodes(first: $first, offset: $offset) {
             id
             number
+            startsAt
             airdate
             endsAt
             title
             path
+            markings
         }
     }
 }
@@ -264,8 +268,15 @@ class JoynProvider:
     def _episode(self, raw: Any) -> NormalizedEpisode:
         episode = self._mapping(raw, "episode")
         episode_id = self._required_string(episode.get("id"), "episode.id")
-        release_at = self._timestamp(episode.get("airdate"), "episode.airdate")
+        starts_at = self._timestamp(episode.get("startsAt"), "episode.startsAt")
+        release_at = (
+            starts_at
+            if starts_at is not None
+            else self._timestamp(episode.get("airdate"), "episode.airdate")
+        )
         available_until = self._timestamp(episode.get("endsAt"), "episode.endsAt")
+        markings = episode.get("markings")
+        preview = isinstance(markings, list) and "PREVIEW" in markings
         releases = ()
         if release_at is not None:
             path = episode.get("path")
@@ -276,6 +287,7 @@ class JoynProvider:
                     release_at=release_at,
                     available_until=available_until,
                     url=url,
+                    preview=preview,
                 ),
             )
         try:
