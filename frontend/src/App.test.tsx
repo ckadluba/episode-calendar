@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, calendarItems, episodeStartLabel, seriesColor } from "./App";
+import { App, calendarItems, episodeStartLabel, seriesColor, sortCalendarItems } from "./App";
 
 const series = [
   { id: "series-1", title: "Testserie", platform: "RTL+", platform_id: "rtlplus", description: null },
@@ -190,5 +190,38 @@ describe("calendar releases", () => {
       "2026-09-28T18:00:00Z",
       "2026-10-01T17:15:00Z",
     ]);
+  });
+
+  it("sorts episodes by release time, series title, season, then episode", () => {
+    const makeItem = (
+      id: string,
+      seriesId: string,
+      releaseAt: string,
+      seasonNumber: number | null,
+      episodeNumber: number | null,
+    ) => ({
+      episode: {
+        id,
+        series_id: seriesId,
+        season_number: seasonNumber,
+        number: episodeNumber,
+        title: id,
+        description: null,
+        platform: "Test",
+        platform_id: "test",
+        releases: [],
+      },
+      release: { release_type: "streaming", release_at: releaseAt, url: null, preview: false },
+    });
+    const items = [
+      makeItem("later-time", "series-2", "2026-10-01T10:01:00Z", 1, 1),
+      makeItem("series-b", "series-2", "2026-10-01T10:00:00Z", 1, 1),
+      makeItem("season-2", "series-1", "2026-10-01T10:00:00Z", 2, 1),
+      makeItem("episode-10", "series-1", "2026-10-01T10:00:00Z", 1, 10),
+      makeItem("episode-2", "series-1", "2026-10-01T10:00:00Z", 1, 2),
+    ];
+
+    expect(sortCalendarItems(items, new Map(series.map((item) => [item.id, item]))).map(({ episode }) => episode.id))
+      .toEqual(["series-b", "episode-2", "episode-10", "season-2", "later-time"]);
   });
 });

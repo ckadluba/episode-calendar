@@ -82,6 +82,29 @@ export function calendarItems(episodes: Episode[]): CalendarItem[] {
   return episodes.flatMap((episode) => episode.releases.map((release) => ({ episode, release })));
 }
 
+function compareNullableNumbers(left: number | null, right: number | null) {
+  if (left === right) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return left - right;
+}
+
+export function sortCalendarItems(items: CalendarItem[], seriesById: ReadonlyMap<string, Series>) {
+  return [...items].sort((left, right) => {
+    const byTime = Date.parse(left.release.release_at) - Date.parse(right.release.release_at);
+    if (byTime !== 0) return byTime;
+
+    const leftSeries = seriesById.get(left.episode.series_id)?.title ?? "Unbekannte Serie";
+    const rightSeries = seriesById.get(right.episode.series_id)?.title ?? "Unbekannte Serie";
+    const bySeries = leftSeries.localeCompare(rightSeries, "de");
+    if (bySeries !== 0) return bySeries;
+
+    const bySeason = compareNullableNumbers(left.episode.season_number, right.episode.season_number);
+    if (bySeason !== 0) return bySeason;
+    return compareNullableNumbers(left.episode.number, right.episode.number);
+  });
+}
+
 function SeriesFilterPage({ series, selectedIds, onSave, onDiscard }: {
   series: Series[];
   selectedIds: string[];
@@ -247,7 +270,7 @@ export function App() {
     <section className="filters" aria-label="Filter"><button className="filter-button" type="button" disabled={!seriesSelectionInitialized} onClick={() => setFilterOpen(true)}>Filter</button><span>{selectedSeriesIds.length} von {series.length} Serien ausgewählt</span></section>
     {loading && <p className="status">Kalender wird geladen …</p>}
     {error && <p className="status error">{error}<br /><small>Prüfe, ob die API unter {API_URL} läuft.</small></p>}
-    {!loading && !error && <section className="calendar">{days.map((day) => { const items = byDay.get(dateKey(day)) ?? []; return <article className="day" key={dateKey(day)}><h2>{dayLabel.format(day)}</h2>{items.length === 0 ? <p className="empty">Keine Episoden</p> : items.map(({ episode, release }) => { const show = seriesMap.get(episode.series_id); const color = seriesColor(episode.series_id); const colorStyle = { "--series-color": color } as CSSProperties; const startLabel = episodeStartLabel(episode); const className = `episode${release.url ? " episode-link" : ""}${startLabel ? " episode-new" : ""}`; const content = <><div className="episode-header"><div className="episode-time">{timeLabel.format(new Date(release.release_at))}</div><span className={`badge ${episode.platform_id}`}>{episode.platform}</span></div><div><h3><span className="series-dot" style={{ backgroundColor: color }} aria-hidden="true" />{show?.title ?? "Unbekannte Serie"}</h3><p>{episode.season_number ? `S${episode.season_number} · ` : ""}{episode.number ? `E${episode.number} · ` : ""}{episode.title}</p><div className="episode-badges">{startLabel && <span className="new-badge">{startLabel}</span>}{release.preview && <span className="preview-badge">Vorab</span>}</div></div></>; return release.url ? <a className={className} style={colorStyle} href={release.url} target="_blank" rel="noreferrer" key={`${episode.id}-${release.release_at}`}>{content}</a> : <div className={className} style={colorStyle} key={`${episode.id}-${release.release_at}`}>{content}</div>; })}</article>; })}</section>}
+    {!loading && !error && <section className="calendar">{days.map((day) => { const items = sortCalendarItems(byDay.get(dateKey(day)) ?? [], seriesMap); return <article className="day" key={dateKey(day)}><h2>{dayLabel.format(day)}</h2>{items.length === 0 ? <p className="empty">Keine Episoden</p> : items.map(({ episode, release }) => { const show = seriesMap.get(episode.series_id); const color = seriesColor(episode.series_id); const colorStyle = { "--series-color": color } as CSSProperties; const startLabel = episodeStartLabel(episode); const className = `episode${release.url ? " episode-link" : ""}${startLabel ? " episode-new" : ""}`; const content = <><div className="episode-header"><div className="episode-time">{timeLabel.format(new Date(release.release_at))}</div><span className={`badge ${episode.platform_id}`}>{episode.platform}</span></div><div><h3><span className="series-dot" style={{ backgroundColor: color }} aria-hidden="true" />{show?.title ?? "Unbekannte Serie"}</h3><p>{episode.season_number ? `S${episode.season_number} · ` : ""}{episode.number ? `E${episode.number} · ` : ""}{episode.title}</p><div className="episode-badges">{startLabel && <span className="new-badge">{startLabel}</span>}{release.preview && <span className="preview-badge">Vorab</span>}</div></div></>; return release.url ? <a className={className} style={colorStyle} href={release.url} target="_blank" rel="noreferrer" key={`${episode.id}-${release.release_at}`}>{content}</a> : <div className={className} style={colorStyle} key={`${episode.id}-${release.release_at}`}>{content}</div>; })}</article>; })}</section>}
     {!loading && !error && filtered.length === 0 && <p className="status">Für diese Filter wurden keine Episoden gefunden.</p>}
     <footer className="app-footer">Episode Calendar is open source under the <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noreferrer">Apache 2.0 license</a>. Created by <a href="https://github.com/ckadluba" target="_blank" rel="noreferrer">Christian Kadluba</a>. <a href="https://github.com/ckadluba/episode-calendar" target="_blank" rel="noreferrer">View the source on GitHub</a>.</footer>
   </main>;
