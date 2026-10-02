@@ -23,15 +23,19 @@ def episode(
     title: str,
     *,
     airdate: int | str | None = 1_704_067_200,
+    starts_at: int | str | None = None,
+    markings: list[str] | None = None,
     path: str | None = None,
 ) -> dict[str, Any]:
     return {
         "id": episode_id,
         "number": number,
+        "startsAt": starts_at,
         "airdate": airdate,
         "endsAt": None,
         "title": title,
         "path": path or f"/serien/demo/episode-{number}",
+        "markings": markings,
     }
 
 
@@ -190,6 +194,50 @@ async def test_parses_epoch_release_as_utc_instant() -> None:
     release_at = result.seasons[0].episodes[0].releases[0].release_at
     assert release_at == datetime(1970, 1, 1, tzinfo=UTC)
     assert release_at.tzinfo is UTC
+
+
+async def test_prefers_streaming_start_over_linear_airdate() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=series_response(
+                [
+                    season(
+                        "c_1",
+                        1,
+                        [episode("e_1", 1, "Streaming first", airdate=200, starts_at=100)],
+                    )
+                ]
+            ),
+        )
+
+    client = joyn_client(handler)
+    try:
+        result = await JoynProvider(api_key="test-key", client=client).get_series("demo")
+    finally:
+        await client.aclose()
+
+    assert result.seasons[0].episodes[0].releases[0].release_at == datetime(
+        1970, 1, 1, 0, 1, 40, tzinfo=UTC
+    )
+
+
+async def test_marks_joyn_preview_episodes() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=series_response(
+                [season("c_1", 1, [episode("e_1", 1, "Preview", markings=["PREVIEW"])])]
+            ),
+        )
+
+    client = joyn_client(handler)
+    try:
+        result = await JoynProvider(api_key="test-key", client=client).get_series("demo")
+    finally:
+        await client.aclose()
+
+    assert result.seasons[0].episodes[0].releases[0].preview is True
 
 
 async def test_parses_optional_end_time() -> None:

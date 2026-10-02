@@ -15,6 +15,11 @@ http:
       value: Europe/London
       type: query
       description: "Default: Europe/Vienna"
+    - name: includePreviews
+      value: "false"
+      type: query
+      description: "Default: true"
+      disabled: true
   auth: inherit
 
 settings:

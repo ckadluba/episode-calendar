@@ -37,6 +37,7 @@ class EpisodeReleaseResponse(BaseModel):
     available_until: datetime | None
     url: str | None
     rerun: bool
+    preview: bool
 
 
 class EpisodeResponse(BaseModel):
@@ -99,6 +100,7 @@ async def list_episodes(
     series: uuid.UUID | None = None,
     platform: str | None = None,
     include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
+    include_previews: bool = Query(default=True, alias="includePreviews"),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     for value, name in ((from_, "from"), (to, "to")):
@@ -114,6 +116,8 @@ async def list_episodes(
     )
     if not include_reruns:
         statement = statement.where(EpisodeRelease.rerun.is_(False))
+    if not include_previews:
+        statement = statement.where(EpisodeRelease.preview.is_(False))
     if series is not None:
         statement = statement.where(Season.series_id == series)
     if platform is not None:
@@ -124,6 +128,7 @@ async def list_episodes(
                 and_(
                     EpisodeRelease.release_at >= from_,
                     EpisodeRelease.rerun.is_(False) if not include_reruns else True,
+                    EpisodeRelease.preview.is_(False) if not include_previews else True,
                 )
             )
         )
@@ -133,6 +138,7 @@ async def list_episodes(
                 and_(
                     EpisodeRelease.release_at <= to,
                     EpisodeRelease.rerun.is_(False) if not include_reruns else True,
+                    EpisodeRelease.preview.is_(False) if not include_previews else True,
                 )
             )
         )
@@ -160,7 +166,7 @@ async def list_episodes(
             releases=[
                 EpisodeReleaseResponse.model_validate(item)
                 for item in episode.releases
-                if include_reruns or not item.rerun
+                if (include_reruns or not item.rerun) and (include_previews or not item.preview)
             ],
             platform=next(
                 (item.provider.name for item in episode.releases if item.provider), "unknown"
@@ -196,6 +202,7 @@ async def list_current_week_episodes(
     platform: str | None = None,
     timezone: str = DEFAULT_TIMEZONE,
     include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
+    include_previews: bool = Query(default=True, alias="includePreviews"),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     start, end = _calendar_week_window(timezone_name=timezone)
@@ -205,6 +212,7 @@ async def list_current_week_episodes(
         series=series,
         platform=platform,
         include_reruns=include_reruns,
+        include_previews=include_previews,
         session=session,
     )
 
@@ -215,6 +223,7 @@ async def list_last_week_episodes(
     platform: str | None = None,
     timezone: str = DEFAULT_TIMEZONE,
     include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
+    include_previews: bool = Query(default=True, alias="includePreviews"),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     start, end = _calendar_week_window(offset=-1, timezone_name=timezone)
@@ -224,6 +233,7 @@ async def list_last_week_episodes(
         series=series,
         platform=platform,
         include_reruns=include_reruns,
+        include_previews=include_previews,
         session=session,
     )
 
@@ -234,6 +244,7 @@ async def list_next_week_episodes(
     platform: str | None = None,
     timezone: str = DEFAULT_TIMEZONE,
     include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
+    include_previews: bool = Query(default=True, alias="includePreviews"),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     start, end = _calendar_week_window(offset=1, timezone_name=timezone)
@@ -243,5 +254,6 @@ async def list_next_week_episodes(
         series=series,
         platform=platform,
         include_reruns=include_reruns,
+        include_previews=include_previews,
         session=session,
     )

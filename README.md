@@ -129,10 +129,11 @@ GET http://localhost:8000/api/v1/episodes/current-week?timezone=Europe/Vienna
 GET http://localhost:8000/api/v1/episodes/next-week?platform=rtlplus
 ```
 
-Episode results are ordered by release time. `from`, `to`, `series`, `platform`, and
-`timezone` are optional filters; week endpoints use Monday-to-Sunday weeks in
-`Europe/Vienna` by default. The series `{id}` is the internal database UUID. The same
-requests can be made from Bruno.
+Episode results are ordered by release time. `from`, `to`, `series`, `platform`, `timezone`,
+`includeReruns`, and `includePreviews` are optional filters. Reruns are excluded by default;
+previews are included by default. Week endpoints use Monday-to-Sunday weeks in `Europe/Vienna`
+by default. The series `{id}` is the internal database UUID. The same requests can be made from
+Bruno.
 
 #### Frontend
 

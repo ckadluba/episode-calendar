@@ -34,6 +34,14 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
             rerun=True,
         )
     )
+    episode.releases.append(
+        EpisodeRelease(
+            provider=provider,
+            release_type=ReleaseType.STREAMING,
+            release_at=release_at + timedelta(days=2),
+            preview=True,
+        )
+    )
     db_session.add(episode)
     await db_session.commit()
 
@@ -64,8 +72,23 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
         )
         assert response.status_code == 200
         assert response.json()[0]["title"] == "Pilot"
-        assert len(response.json()[0]["releases"]) == 1
+        assert len(response.json()[0]["releases"]) == 2
         assert response.json()[0]["releases"][0]["rerun"] is False
+        assert response.json()[0]["releases"][0]["preview"] is False
+        assert (
+            len(
+                (
+                    await client.get(
+                        "/api/v1/episodes",
+                        params={"series": str(series.id), "includePreviews": "false"},
+                    )
+                ).json()[0]["releases"]
+            )
+            == 1
+        )
+        preview_response = await client.get("/api/v1/episodes", params={"series": str(series.id)})
+        assert len(preview_response.json()[0]["releases"]) == 2
+        assert preview_response.json()[0]["releases"][1]["preview"] is True
         rerun_response = await client.get(
             "/api/v1/episodes",
             params={
@@ -74,7 +97,7 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
             },
         )
         assert rerun_response.status_code == 200
-        assert len(rerun_response.json()[0]["releases"]) == 2
+        assert len(rerun_response.json()[0]["releases"]) == 3
         assert {release["rerun"] for release in rerun_response.json()[0]["releases"]} == {
             False,
             True,
