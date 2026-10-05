@@ -24,6 +24,11 @@ http:
       type: query
       description: "Default: true"
       disabled: true
+    - name: includeReleaseHistory
+      value: "true"
+      type: query
+      description: "Default: false"
+      disabled: true
   auth: inherit
 
 settings:

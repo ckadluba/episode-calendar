@@ -130,8 +130,12 @@ GET http://localhost:8000/api/v1/episodes/next-week?platform=rtlplus
 ```
 
 Episode results are ordered by release time. `from`, `to`, `series`, `platform`, `timezone`,
-`includeReruns`, and `includePreviews` are optional filters. Reruns are excluded by default;
-previews are included by default. Week endpoints use Monday-to-Sunday weeks in `Europe/Vienna`
+`includeReruns`, `includePreviews`, and `includeReleaseHistory` are optional filters. Reruns are
+excluded by default; `includePreviews=all` includes previews for every platform. A comma-separated
+platform list such as `includePreviews=joyn,rtlplus` includes previews only for those platforms;
+`includePreviews=false` excludes them everywhere. By default, only the newest matching release
+per episode is returned. Set `includeReleaseHistory=true` to return all matching releases for each
+episode. Week endpoints use Monday-to-Sunday weeks in `Europe/Vienna`
 by default. The series `{id}` is the internal database UUID. The same requests can be made from
 Bruno.
 

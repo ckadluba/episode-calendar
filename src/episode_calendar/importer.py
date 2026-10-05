@@ -16,10 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.db.session import get_session_factory
+from episode_calendar.domain import TV_BROADCAST_MATCH_TOLERANCE, ReleaseType
 from episode_calendar.providers.amazon_prime_de import AmazonPrimeDEProvider
 from episode_calendar.providers.amazon_prime_uk import AmazonPrimeUKProvider
 from episode_calendar.providers.ardmediathek import ARDMediathekProvider
-from episode_calendar.providers.base import NormalizedSeries, ProviderAdapter
+from episode_calendar.providers.base import (
+    NormalizedEpisodeRelease,
+    NormalizedSeries,
+    ProviderAdapter,
+)
 from episode_calendar.providers.bbc_iplayer import BBCIPlayerProvider
 from episode_calendar.providers.channel4 import Channel4Provider
 from episode_calendar.providers.joyn import JoynProvider
@@ -33,8 +38,18 @@ logger = logging.getLogger(__name__)
 # Linear TV providers often publish the same episode again with a new broadcast date.
 # Keep accepting corrections for currently running episodes, but do not replace old
 # first-release data with a rerun. The fixed window also makes the policy predictable
-# across all providers instead of duplicating provider-specific date heuristics.
-KNOWN_EPISODE_RELEASE_MAX_AGE = timedelta(days=180)
+# across all providers instead of duplicating provider-specific date heuristics. Use a
+# five-month window rather than an exact day count for "about half a year": providers
+# can publish a schedule several weeks before the broadcast date, so waiting 180 days
+# would leave obvious repeats visible for too long.
+KNOWN_EPISODE_RELEASE_MAX_AGE = timedelta(days=150)
+
+# An EPG-only event outside the known catalog TV schedule is a likely repeat, but
+# require enough observations before applying this conservative heuristic. The two-hour
+# margin keeps a new episode in a slightly shifted slot visible while filtering obvious
+# overnight repeats such as a 02:40 broadcast after a 20:30-23:40 premiere window.
+EPG_RERUN_MIN_CATALOG_EPISODES = 2
+EPG_RERUN_MAX_SCHEDULE_DEVIATION = timedelta(hours=2)
 
 
 def configured_series(provider: str) -> tuple[str, ...]:
@@ -67,6 +82,7 @@ def detect_reruns(
     highest_existing_episode: Mapping[str, int],
     existing_episode_ids: Mapping[str, Mapping[tuple[str, int | None], UUID]],
     existing_release_dates: Mapping[UUID, datetime],
+    latest_catalog_release_at: datetime | None,
     reference_time: datetime,
 ) -> RerunDetection:
     """Classify provider releases that should be stored as reruns.
@@ -79,6 +95,48 @@ def detect_reruns(
 
     rerun_episode_keys: set[tuple[str, str, int | None]] = set()
     rerun_episode_ids: set[UUID] = set()
+    catalog_tv_releases = tuple(
+        release
+        for normalized_season in normalized.seasons
+        if normalized_season.number is not None
+        for normalized_episode in normalized_season.episodes
+        if normalized_episode.number is not None
+        for release in normalized_episode.releases
+        if release.release_type is ReleaseType.TV_BROADCAST
+    )
+    catalog_tv_episode_count = len(
+        {
+            (normalized_season.external_id, normalized_episode.external_id)
+            for normalized_season in normalized.seasons
+            if normalized_season.number is not None
+            for normalized_episode in normalized_season.episodes
+            if normalized_episode.number is not None
+            and any(
+                release.release_type is ReleaseType.TV_BROADCAST
+                for release in normalized_episode.releases
+            )
+        }
+    )
+    catalog_tv_slots = tuple(
+        sorted(
+            {
+                release.release_at.astimezone(UTC).hour * 60
+                + release.release_at.astimezone(UTC).minute
+                for release in catalog_tv_releases
+            }
+        )
+    )
+    latest_catalog_tv_release_at = max(
+        (release.release_at for release in catalog_tv_releases), default=None
+    )
+    if catalog_tv_episode_count:
+        logger.info(
+            "EPG schedule baseline for %s: %s catalog TV episodes, slots=%s, latest=%s",
+            normalized.title,
+            catalog_tv_episode_count,
+            ", ".join(f"{slot // 60:02d}:{slot % 60:02d}" for slot in catalog_tv_slots),
+            latest_catalog_tv_release_at.isoformat() if latest_catalog_tv_release_at else "none",
+        )
     for normalized_season in normalized.seasons:
         season_is_obsolete = (
             newest_existing_season is not None
@@ -104,10 +162,96 @@ def detect_reruns(
                 release_at is not None
                 and reference_time - release_at > KNOWN_EPISODE_RELEASE_MAX_AGE
             )
+            epg_only_broadcast = (
+                normalized_season.number is None
+                and normalized_episode.number is None
+                and any(
+                    release.release_type is ReleaseType.TV_BROADCAST
+                    for release in normalized_episode.releases
+                )
+            )
+            stale_catalog_for_epg = (
+                epg_only_broadcast
+                and latest_catalog_release_at is not None
+                and reference_time - latest_catalog_release_at > KNOWN_EPISODE_RELEASE_MAX_AGE
+            )
+            epg_schedule_repeat = False
+            nearest_catalog_slot = None
+            schedule_deviation = None
+            if epg_only_broadcast:
+                epg_release = next(
+                    (
+                        release
+                        for release in normalized_episode.releases
+                        if release.release_type is ReleaseType.TV_BROADCAST
+                    ),
+                    None,
+                )
+                if epg_release is not None and catalog_tv_slots:
+                    epg_slot = (
+                        epg_release.release_at.astimezone(UTC).hour * 60
+                        + epg_release.release_at.astimezone(UTC).minute
+                    )
+                    nearest_catalog_slot = min(
+                        catalog_tv_slots, key=lambda slot: abs(slot - epg_slot)
+                    )
+                    schedule_deviation = timedelta(minutes=abs(nearest_catalog_slot - epg_slot))
+                    epg_schedule_repeat = (
+                        catalog_tv_episode_count >= EPG_RERUN_MIN_CATALOG_EPISODES
+                        and latest_catalog_tv_release_at is not None
+                        and epg_release.release_at > latest_catalog_tv_release_at
+                        and schedule_deviation > EPG_RERUN_MAX_SCHEDULE_DEVIATION
+                    )
+                    if epg_schedule_repeat or stale_catalog_for_epg:
+                        logger.info(
+                            "Classified EPG release as rerun for %s: release_at=%s, "
+                            "nearest_catalog_slot=%s, deviation=%s, "
+                            "catalog_tv_episodes=%s, latest_catalog_tv=%s, "
+                            "schedule_repeat=%s, stale_catalog=%s",
+                            normalized.title,
+                            epg_release.release_at.isoformat(),
+                            (
+                                f"{nearest_catalog_slot // 60:02d}:{nearest_catalog_slot % 60:02d}"
+                                if nearest_catalog_slot is not None
+                                else "none"
+                            ),
+                            schedule_deviation,
+                            catalog_tv_episode_count,
+                            (
+                                latest_catalog_tv_release_at.isoformat()
+                                if latest_catalog_tv_release_at
+                                else "none"
+                            ),
+                            epg_schedule_repeat,
+                            stale_catalog_for_epg,
+                        )
+                    else:
+                        logger.info(
+                            "Kept EPG release for %s: release_at=%s, nearest_catalog_slot=%s, "
+                            "deviation=%s, catalog_tv_episodes=%s, "
+                            "reason=within_schedule_or_insufficient_baseline",
+                            normalized.title,
+                            epg_release.release_at.isoformat(),
+                            (
+                                f"{nearest_catalog_slot // 60:02d}:{nearest_catalog_slot % 60:02d}"
+                                if nearest_catalog_slot is not None
+                                else "none"
+                            ),
+                            schedule_deviation,
+                            catalog_tv_episode_count,
+                        )
+                elif epg_release is not None:
+                    logger.info(
+                        "Kept EPG release for %s: release_at=%s, reason=no_catalog_tv_schedule",
+                        normalized.title,
+                        epg_release.release_at.isoformat(),
+                    )
             if (
                 season_is_obsolete
                 or (episode_id is None and higher_episode_exists)
                 or old_known_episode
+                or stale_catalog_for_epg
+                or epg_schedule_repeat
             ):
                 rerun_episode_keys.add(episode_key)
                 if episode_id:
@@ -193,6 +337,16 @@ async def import_series(
     for episode_id, release_at in release_rows:
         if release_at is not None:
             existing_release_dates[episode_id] = release_at
+    latest_catalog_release_at = await session.scalar(
+        select(func.max(EpisodeRelease.release_at))
+        .join(Episode, Episode.id == EpisodeRelease.episode_id)
+        .join(Season, Season.id == Episode.season_id)
+        .where(
+            EpisodeRelease.provider_id == provider.id,
+            EpisodeRelease.release_type == ReleaseType.STREAMING,
+            Season.series_id == series.id,
+        )
+    )
     import_time = (reference_time or datetime.now(UTC)).astimezone(UTC)
 
     imported_seasons = normalized.seasons
@@ -218,6 +372,7 @@ async def import_series(
         highest_existing_episode=highest_existing_episode,
         existing_episode_ids=existing_episode_ids,
         existing_release_dates=existing_release_dates,
+        latest_catalog_release_at=latest_catalog_release_at,
         reference_time=import_time,
     )
 
@@ -290,8 +445,29 @@ async def import_series(
                 episode.title = normalized_episode.title
                 episode.description = normalized_episode.description
             episode_count += 1
+            catalog_url = next(
+                (
+                    str(release.url)
+                    for release in normalized_episode.releases
+                    if release.release_type is ReleaseType.STREAMING and release.url
+                ),
+                None,
+            )
 
             for normalized_release in normalized_episode.releases:
+                release_url = str(normalized_release.url) if normalized_release.url else catalog_url
+                if (
+                    release_url is None
+                    and normalized_release.release_type is ReleaseType.TV_BROADCAST
+                ):
+                    release_url = await session.scalar(
+                        select(EpisodeRelease.url).where(
+                            EpisodeRelease.episode_id == episode.id,
+                            EpisodeRelease.provider_id == provider.id,
+                            EpisodeRelease.release_type == ReleaseType.STREAMING,
+                            EpisodeRelease.url.is_not(None),
+                        )
+                    )
                 release = None
                 if normalized_release.external_id:
                     release = await session.scalar(
@@ -309,6 +485,17 @@ async def import_series(
                             EpisodeRelease.release_at == normalized_release.release_at,
                         )
                     )
+                if release is None and normalized_release.release_type in {
+                    ReleaseType.STREAMING,
+                    ReleaseType.TV_BROADCAST,
+                }:
+                    release = await _promote_tv_broadcast_release(
+                        session,
+                        provider.id,
+                        series.id,
+                        episode.id,
+                        normalized_release,
+                    )
                 if release is None:
                     release = EpisodeRelease(
                         episode_id=episode.id,
@@ -317,14 +504,20 @@ async def import_series(
                         release_type=normalized_release.release_type,
                         release_at=normalized_release.release_at,
                         available_until=normalized_release.available_until,
-                        url=str(normalized_release.url) if normalized_release.url else None,
+                        url=release_url,
                         rerun=is_rerun,
                         preview=normalized_release.preview,
                     )
                     session.add(release)
                 else:
+                    release.episode_id = episode.id
+                    release.external_id = normalized_release.external_id
+                    release.release_type = normalized_release.release_type
+                    release.release_at = normalized_release.release_at
                     release.available_until = normalized_release.available_until
-                    release.url = str(normalized_release.url) if normalized_release.url else None
+                    if release_url is not None:
+                        release.url = release_url
+                    release.rerun = is_rerun
                     release.preview = normalized_release.preview
                 release_count += 1
 
@@ -336,6 +529,59 @@ async def import_series(
         new_episodes=new_episode_count,
         releases=release_count,
     )
+
+
+async def _promote_tv_broadcast_release(
+    session: AsyncSession,
+    provider_id: UUID,
+    series_id: UUID,
+    episode_id: UUID,
+    normalized_release: NormalizedEpisodeRelease,
+) -> EpisodeRelease | None:
+    """Replace an EPG broadcast with a catalog release at the same instant."""
+
+    candidates = list(
+        await session.scalars(
+            select(EpisodeRelease)
+            .join(Episode, Episode.id == EpisodeRelease.episode_id)
+            .join(Season, Season.id == Episode.season_id)
+            .where(
+                EpisodeRelease.provider_id == provider_id,
+                EpisodeRelease.release_type == ReleaseType.TV_BROADCAST,
+                EpisodeRelease.release_at
+                >= normalized_release.release_at - TV_BROADCAST_MATCH_TOLERANCE,
+                EpisodeRelease.release_at
+                <= normalized_release.release_at + TV_BROADCAST_MATCH_TOLERANCE,
+                Season.series_id == series_id,
+            )
+        )
+    )
+    candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.release_at.date() == normalized_release.release_at.date()
+    ]
+    release = min(
+        candidates,
+        key=lambda candidate: abs(candidate.release_at - normalized_release.release_at),
+        default=None,
+    )
+    if release is None or release.episode_id == episode_id:
+        return release
+
+    if normalized_release.release_type is ReleaseType.STREAMING:
+        existing_catalog_release = await session.scalar(
+            select(EpisodeRelease).where(
+                EpisodeRelease.episode_id == episode_id,
+                EpisodeRelease.provider_id == provider_id,
+                EpisodeRelease.release_type == ReleaseType.STREAMING,
+                EpisodeRelease.release_at == normalized_release.release_at,
+            )
+        )
+        if existing_catalog_release is not None:
+            await session.delete(release)
+            return existing_catalog_release
+    return release
 
 
 async def import_configured_joyn() -> None:

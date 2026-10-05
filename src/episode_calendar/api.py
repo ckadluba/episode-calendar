@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -16,6 +16,37 @@ from episode_calendar.series_config import displayable_series_by_platform
 
 router = APIRouter(prefix="/api/v1")
 DEFAULT_TIMEZONE = "Europe/Vienna"
+
+
+def _parse_include_previews(value: str) -> frozenset[str] | None:
+    """Parse preview platforms; ``None`` means previews are enabled everywhere."""
+
+    normalized = value.strip().casefold()
+    if normalized in {"all", "true"}:
+        return None
+    if normalized in {"false", "none", ""}:
+        return frozenset()
+    platforms = frozenset(part.strip().casefold() for part in value.split(",") if part.strip())
+    if not platforms:
+        raise HTTPException(
+            status_code=422,
+            detail="includePreviews must be all, false, or a comma-separated platform list",
+        )
+    return platforms
+
+
+def _preview_filter(platforms: frozenset[str] | None):
+    if platforms is None:
+        return True
+    if not platforms:
+        return EpisodeRelease.preview.is_(False)
+    return or_(
+        EpisodeRelease.preview.is_(False),
+        and_(
+            EpisodeRelease.preview.is_(True),
+            EpisodeRelease.provider.has(Provider.slug.in_(platforms)),
+        ),
+    )
 
 
 class SeriesResponse(BaseModel):
@@ -100,12 +131,16 @@ async def list_episodes(
     series: uuid.UUID | None = None,
     platform: str | None = None,
     include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
-    include_previews: bool = Query(default=True, alias="includePreviews"),  # noqa: B008
+    include_previews: str = Query(default="all", alias="includePreviews"),  # noqa: B008
+    include_release_history: bool = Query(  # noqa: B008
+        default=False, alias="includeReleaseHistory"
+    ),
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     for value, name in ((from_, "from"), (to, "to")):
         if value is not None and (value.tzinfo is None or value.utcoffset() is None):
             raise HTTPException(status_code=422, detail=f"{name} must be timezone-aware")
+    preview_platforms = _parse_include_previews(include_previews)
     statement = (
         select(Episode, Season.series_id, Season.number, Series.external_id, Provider.slug)
         .join(Episode.season)
@@ -116,8 +151,7 @@ async def list_episodes(
     )
     if not include_reruns:
         statement = statement.where(EpisodeRelease.rerun.is_(False))
-    if not include_previews:
-        statement = statement.where(EpisodeRelease.preview.is_(False))
+    statement = statement.where(_preview_filter(preview_platforms))
     if series is not None:
         statement = statement.where(Season.series_id == series)
     if platform is not None:
@@ -128,7 +162,7 @@ async def list_episodes(
                 and_(
                     EpisodeRelease.release_at >= from_,
                     EpisodeRelease.rerun.is_(False) if not include_reruns else True,
-                    EpisodeRelease.preview.is_(False) if not include_previews else True,
+                    _preview_filter(preview_platforms),
                 )
             )
         )
@@ -138,7 +172,7 @@ async def list_episodes(
                 and_(
                     EpisodeRelease.release_at <= to,
                     EpisodeRelease.rerun.is_(False) if not include_reruns else True,
-                    EpisodeRelease.preview.is_(False) if not include_previews else True,
+                    _preview_filter(preview_platforms),
                 )
             )
         )
@@ -153,30 +187,40 @@ async def list_episodes(
         if configured_ids is not None and external_id not in configured_ids:
             continue
         unique_rows.setdefault(episode.id, (episode, series_id, season_number))
-    return [
-        EpisodeResponse(
-            id=episode.id,
-            external_id=episode.external_id,
-            series_id=series_id,
-            season_id=episode.season_id,
-            season_number=season_number,
-            number=episode.number,
-            title=episode.title,
-            description=episode.description,
-            releases=[
-                EpisodeReleaseResponse.model_validate(item)
-                for item in episode.releases
-                if (include_reruns or not item.rerun) and (include_previews or not item.preview)
-            ],
-            platform=next(
-                (item.provider.name for item in episode.releases if item.provider), "unknown"
-            ),
-            platform_id=next(
-                (item.provider.slug for item in episode.releases if item.provider), "unknown"
-            ),
+    responses = []
+    for episode, series_id, season_number in unique_rows.values():
+        releases = [
+            item
+            for item in episode.releases
+            if (include_reruns or not item.rerun)
+            and (
+                not item.preview
+                or preview_platforms is None
+                or item.provider.slug in preview_platforms
+            )
+        ]
+        if not include_release_history and releases:
+            releases = [max(releases, key=lambda item: item.release_at)]
+        responses.append(
+            EpisodeResponse(
+                id=episode.id,
+                external_id=episode.external_id,
+                series_id=series_id,
+                season_id=episode.season_id,
+                season_number=season_number,
+                number=episode.number,
+                title=episode.title,
+                description=episode.description,
+                releases=[EpisodeReleaseResponse.model_validate(item) for item in releases],
+                platform=next(
+                    (item.provider.name for item in episode.releases if item.provider), "unknown"
+                ),
+                platform_id=next(
+                    (item.provider.slug for item in episode.releases if item.provider), "unknown"
+                ),
+            )
         )
-        for episode, series_id, season_number in unique_rows.values()
-    ]
+    return responses
 
 
 def _calendar_week_window(
@@ -202,7 +246,10 @@ async def list_current_week_episodes(
     platform: str | None = None,
     timezone: str = DEFAULT_TIMEZONE,
     include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
-    include_previews: bool = Query(default=True, alias="includePreviews"),  # noqa: B008
+    include_previews: str = Query(default="all", alias="includePreviews"),  # noqa: B008
+    include_release_history: bool = Query(  # noqa: B008
+        default=False, alias="includeReleaseHistory"
+    ),
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     start, end = _calendar_week_window(timezone_name=timezone)
@@ -213,6 +260,7 @@ async def list_current_week_episodes(
         platform=platform,
         include_reruns=include_reruns,
         include_previews=include_previews,
+        include_release_history=include_release_history,
         session=session,
     )
 
@@ -223,7 +271,10 @@ async def list_last_week_episodes(
     platform: str | None = None,
     timezone: str = DEFAULT_TIMEZONE,
     include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
-    include_previews: bool = Query(default=True, alias="includePreviews"),  # noqa: B008
+    include_previews: str = Query(default="all", alias="includePreviews"),  # noqa: B008
+    include_release_history: bool = Query(  # noqa: B008
+        default=False, alias="includeReleaseHistory"
+    ),
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     start, end = _calendar_week_window(offset=-1, timezone_name=timezone)
@@ -234,6 +285,7 @@ async def list_last_week_episodes(
         platform=platform,
         include_reruns=include_reruns,
         include_previews=include_previews,
+        include_release_history=include_release_history,
         session=session,
     )
 
@@ -244,7 +296,10 @@ async def list_next_week_episodes(
     platform: str | None = None,
     timezone: str = DEFAULT_TIMEZONE,
     include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
-    include_previews: bool = Query(default=True, alias="includePreviews"),  # noqa: B008
+    include_previews: str = Query(default="all", alias="includePreviews"),  # noqa: B008
+    include_release_history: bool = Query(  # noqa: B008
+        default=False, alias="includeReleaseHistory"
+    ),
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> list[EpisodeResponse]:
     start, end = _calendar_week_window(offset=1, timezone_name=timezone)
@@ -255,5 +310,6 @@ async def list_next_week_episodes(
         platform=platform,
         include_reruns=include_reruns,
         include_previews=include_previews,
+        include_release_history=include_release_history,
         session=session,
     )

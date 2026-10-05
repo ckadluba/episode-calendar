@@ -16,6 +16,11 @@ http:
     - name: platform
       value: stv
       type: query
+    - name: includeReleaseHistory
+      value: "true"
+      type: query
+      description: "Default: false"
+      disabled: true
   auth: inherit
 
 settings:

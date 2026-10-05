@@ -72,9 +72,33 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
         )
         assert response.status_code == 200
         assert response.json()[0]["title"] == "Pilot"
-        assert len(response.json()[0]["releases"]) == 2
+        assert len(response.json()[0]["releases"]) == 1
         assert response.json()[0]["releases"][0]["rerun"] is False
-        assert response.json()[0]["releases"][0]["preview"] is False
+        assert response.json()[0]["releases"][0]["preview"] is True
+        history_response = await client.get(
+            "/api/v1/episodes",
+            params={"series": str(series.id), "includeReleaseHistory": "true"},
+        )
+        assert len(history_response.json()[0]["releases"]) == 2
+        joyn_preview_response = await client.get(
+            "/api/v1/episodes",
+            params={
+                "series": str(series.id),
+                "includePreviews": "joyn",
+                "includeReleaseHistory": "true",
+            },
+        )
+        assert len(joyn_preview_response.json()[0]["releases"]) == 2
+        rtlplus_preview_response = await client.get(
+            "/api/v1/episodes",
+            params={
+                "series": str(series.id),
+                "includePreviews": "rtlplus",
+                "includeReleaseHistory": "true",
+            },
+        )
+        assert len(rtlplus_preview_response.json()[0]["releases"]) == 1
+        assert rtlplus_preview_response.json()[0]["releases"][0]["preview"] is False
         assert (
             len(
                 (
@@ -87,13 +111,13 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
             == 1
         )
         preview_response = await client.get("/api/v1/episodes", params={"series": str(series.id)})
-        assert len(preview_response.json()[0]["releases"]) == 2
-        assert preview_response.json()[0]["releases"][1]["preview"] is True
+        assert preview_response.json()[0]["releases"][0]["preview"] is True
         rerun_response = await client.get(
             "/api/v1/episodes",
             params={
                 "series": str(series.id),
                 "includeReruns": "true",
+                "includeReleaseHistory": "true",
             },
         )
         assert rerun_response.status_code == 200
