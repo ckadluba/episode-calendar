@@ -174,6 +174,7 @@ def detect_reruns(
                 epg_only_broadcast
                 and latest_catalog_release_at is not None
                 and reference_time - latest_catalog_release_at > KNOWN_EPISODE_RELEASE_MAX_AGE
+                and not catalog_tv_slots
             )
             epg_schedule_repeat = False
             nearest_catalog_slot = None

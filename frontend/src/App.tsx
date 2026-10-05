@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 type Series = { id: string; title: string; platform: string; platform_id: string; description: string | null };
-type Release = { release_type: string; release_at: string; url: string | null; preview: boolean };
+export type Release = { release_type: string; release_at: string; url: string | null; preview: boolean };
 type Episode = {
   id: string; series_id: string; season_number: number | null; number: number | null;
   title: string; description: string | null; platform: string; platform_id: string; releases: Release[];
@@ -10,7 +10,9 @@ type CalendarItem = { episode: Episode; release: Release };
 
 const API_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:8000";
 const TIMEZONE = "Europe/Vienna";
-const CACHE_PREFIX = "episode-calendar-cache-v1";
+const CACHE_PREFIX = "episode-calendar-cache-v2";
+const PREVIEW_PREFERENCES_KEY = "episode-calendar-preview-preferences";
+const PREVIEW_UNAVAILABLE_PLATFORMS = new Set(["amazon_prime_de", "amazon_prime_uk"]);
 
 type CachedValue<T> = { timestamp: number; data: T };
 
@@ -47,6 +49,7 @@ function writeCache<T>(key: string, data: T) {
 }
 
 type CalendarWeek = "last" | "current" | "next";
+type PreviewPreferences = Record<string, boolean>;
 
 function weekDays(week: CalendarWeek) {
   const now = new Date();
@@ -82,6 +85,33 @@ export function calendarItems(episodes: Episode[]): CalendarItem[] {
   return episodes.flatMap((episode) => episode.releases.map((release) => ({ episode, release })));
 }
 
+export function selectCalendarRelease(
+  episode: Episode,
+  includePreview: boolean,
+  from?: Date,
+  to?: Date,
+): Release | null {
+  const releases = episode.releases.filter((release) => {
+    const releaseAt = Date.parse(release.release_at);
+    return (from === undefined || releaseAt >= from.getTime())
+      && (to === undefined || releaseAt < to.getTime());
+  });
+  const catalogReleases = releases.filter((release) => release.release_type === "streaming");
+  const regularCatalogReleases = catalogReleases.filter((release) => !release.preview);
+  const tvReleases = releases.filter((release) => release.release_type === "tv_broadcast");
+  const previewReleases = catalogReleases.filter((release) => release.preview);
+  const newest = (items: Release[]) => items.reduce<Release | null>(
+    (latest, release) => !latest || Date.parse(release.release_at) > Date.parse(latest.release_at)
+      ? release
+      : latest,
+    null,
+  );
+
+  return newest(regularCatalogReleases)
+    ?? (includePreview ? newest(previewReleases) : null)
+    ?? newest(tvReleases);
+}
+
 function compareNullableNumbers(left: number | null, right: number | null) {
   if (left === right) return 0;
   if (left === null) return 1;
@@ -105,13 +135,15 @@ export function sortCalendarItems(items: CalendarItem[], seriesById: ReadonlyMap
   });
 }
 
-function SeriesFilterPage({ series, selectedIds, onSave, onDiscard }: {
+function SeriesFilterPage({ series, selectedIds, previewPreferences, onSave, onDiscard }: {
   series: Series[];
   selectedIds: string[];
-  onSave: (ids: string[]) => void;
+  previewPreferences: PreviewPreferences;
+  onSave: (ids: string[], previewPreferences: PreviewPreferences) => void;
   onDiscard: () => void;
 }) {
   const [draftIds, setDraftIds] = useState(selectedIds);
+  const [draftPreviewPreferences, setDraftPreviewPreferences] = useState(previewPreferences);
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase("de");
   const groups = useMemo(() => {
@@ -120,7 +152,10 @@ function SeriesFilterPage({ series, selectedIds, onSave, onDiscard }: {
       .sort((left, right) => left.title.localeCompare(right.title, "de"));
     return [...new Set(visible.map((item) => item.platform))]
       .sort((left, right) => left.localeCompare(right, "de"))
-      .map((platform) => ({ platform, series: visible.filter((item) => item.platform === platform) }));
+      .map((platform) => {
+        const platformSeries = visible.filter((item) => item.platform === platform);
+        return { platform, platformId: platformSeries[0].platform_id, series: platformSeries };
+      });
   }, [normalizedQuery, series]);
 
   const toggle = (id: string) => setDraftIds((current) => current.includes(id)
@@ -139,7 +174,7 @@ function SeriesFilterPage({ series, selectedIds, onSave, onDiscard }: {
     <section className="series-groups" aria-label="Serienauswahl">
       {groups.length === 0 && <p className="empty">Keine Serien gefunden.</p>}
       {groups.map((group) => <section className="series-group" key={group.platform}>
-        <h2><label className="provider-filter-option">
+        <div className="provider-filter-header"><h2><label className="provider-filter-option">
           <input
             type="checkbox"
             aria-label={`Alle Serien von ${group.platform} auswählen`}
@@ -159,7 +194,16 @@ function SeriesFilterPage({ series, selectedIds, onSave, onDiscard }: {
             }}
           />
           {group.platform}
-        </label></h2>
+        </label></h2><label className="preview-filter-option" title={PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId) ? "Dieser Provider liefert keine Vorab-Releases." : undefined}>
+          <input
+            type="checkbox"
+            aria-label={`Vorab-Releases für ${group.platform} anzeigen`}
+            checked={!PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId) && draftPreviewPreferences[group.platformId] !== false}
+            disabled={PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId)}
+            onChange={() => setDraftPreviewPreferences((current) => ({ ...current, [group.platformId]: current[group.platformId] === false }))}
+          />
+          Vorab-Releases anzeigen
+        </label></div>
         {group.series.map((item) => <label className="series-filter-option" key={item.id}>
           <input type="checkbox" checked={draftIds.includes(item.id)} onChange={() => toggle(item.id)} />
           <span className="series-dot" style={{ backgroundColor: seriesColor(item.id) }} aria-hidden="true" />
@@ -169,7 +213,7 @@ function SeriesFilterPage({ series, selectedIds, onSave, onDiscard }: {
     </section>
     <div className="filter-actions">
       <button className="secondary-button" type="button" onClick={onDiscard}>Verwerfen</button>
-      <button className="primary-button" type="button" onClick={() => onSave(draftIds)}>Speichern</button>
+      <button className="primary-button" type="button" onClick={() => onSave(draftIds, draftPreviewPreferences)}>Speichern</button>
     </div>
   </main>;
 }
@@ -179,6 +223,7 @@ export function App() {
   const [series, setSeries] = useState<Series[]>([]);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [selectedSeriesIds, setSelectedSeriesIds] = useState<string[]>([]);
+  const [previewPreferences, setPreviewPreferences] = useState<PreviewPreferences>({});
   const [seriesSelectionInitialized, setSeriesSelectionInitialized] = useState(false);
   const [knownSeriesIds, setKnownSeriesIds] = useState<string[]>([]);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -216,6 +261,21 @@ export function App() {
     }
   }, [knownSeriesIds, selectedSeriesIds, seriesSelectionInitialized]);
   useEffect(() => {
+    if (!series.length) return;
+    const saved = readLocal<unknown>(PREVIEW_PREFERENCES_KEY, {});
+    const stored = saved && typeof saved === "object" ? saved as Record<string, unknown> : {};
+    const platformIds = [...new Set(series.map((item) => item.platform_id))];
+    setPreviewPreferences(Object.fromEntries(platformIds.map((platformId) => [
+      platformId,
+      stored[platformId] !== false,
+    ])));
+  }, [series]);
+  useEffect(() => {
+    if (Object.keys(previewPreferences).length) {
+      localStorage.setItem(PREVIEW_PREFERENCES_KEY, JSON.stringify(previewPreferences));
+    }
+  }, [previewPreferences]);
+  useEffect(() => {
     const seriesKey = `${CACHE_PREFIX}:${API_URL}:series`;
     const episodesKey = `${CACHE_PREFIX}:${API_URL}:episodes:${week}:${TIMEZONE}`;
     const cachedSeries = readCache<Series[]>(seriesKey);
@@ -231,7 +291,7 @@ export function App() {
             if (!response.ok) throw new Error(`Serien konnten nicht geladen werden (${response.status}).`);
             return response.json();
           }),
-          fetch(`${API_URL}/api/v1/episodes/${week}-week?timezone=${encodeURIComponent(TIMEZONE)}&includePreviews=all`).then(async (response) => {
+          fetch(`${API_URL}/api/v1/episodes/${week}-week?timezone=${encodeURIComponent(TIMEZONE)}&includePreviews=all&includeReleaseHistory=true`).then(async (response) => {
             if (!response.ok) throw new Error(`Episoden konnten nicht geladen werden (${response.status}).`);
             return response.json();
           }),
@@ -248,19 +308,32 @@ export function App() {
     void load();
   }, [week]);
 
-  const filtered = calendarItems(episodes.filter((episode) => selectedSeriesIds.includes(episode.series_id)));
+  const days = weekDays(week);
+  const weekStart = days[0];
+  const weekEnd = new Date(days[days.length - 1]);
+  weekEnd.setDate(weekEnd.getDate() + 1);
+  const filtered = episodes
+    .filter((episode) => selectedSeriesIds.includes(episode.series_id))
+    .flatMap((episode) => {
+      const release = selectCalendarRelease(
+        episode,
+        previewPreferences[episode.platform_id] !== false,
+        weekStart,
+        weekEnd,
+      );
+      return release ? [{ episode, release }] : [];
+    });
   const byDay = new Map<string, CalendarItem[]>();
   filtered.forEach((item) => {
     const key = dateKey(new Date(item.release.release_at));
     byDay.set(key, [...(byDay.get(key) ?? []), item]);
   });
   const seriesMap = new Map(series.map((item) => [item.id, item]));
-  const days = weekDays(week);
-
   if (filterOpen) return <SeriesFilterPage
     series={series}
     selectedIds={selectedSeriesIds}
-    onSave={(ids) => { setSelectedSeriesIds(ids); setFilterOpen(false); }}
+    previewPreferences={previewPreferences}
+    onSave={(ids, preferences) => { setSelectedSeriesIds(ids); setPreviewPreferences(preferences); setFilterOpen(false); }}
     onDiscard={() => setFilterOpen(false)}
   />;
 
