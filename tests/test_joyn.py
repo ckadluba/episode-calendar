@@ -114,6 +114,83 @@ async def test_normalizes_one_season_with_multiple_episodes() -> None:
     )
 
 
+async def test_adds_exactly_matching_future_epg_broadcasts() -> None:
+    requests: list[dict[str, Any]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        requests.append(body)
+        if body["operationName"] == "EpisodeCalendarJoynEpg":
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "liveStreams": [
+                            {
+                                "id": "sat1-at",
+                                "title": "SAT.1",
+                                "epgEvents": [
+                                    {
+                                        "startDate": 1_791_400_000,
+                                        "endDate": 1_791_403_600,
+                                        "program": {
+                                            "__typename": "EpgEntry",
+                                            "id": "epg-demo",
+                                            "title": "Demo series",
+                                        },
+                                    },
+                                    {
+                                        "startDate": 1_791_410_000,
+                                        "endDate": None,
+                                        "program": {
+                                            "__typename": "EpgEntry",
+                                            "id": "epg-fbi",
+                                            "title": "FBI: Most Wanted",
+                                        },
+                                    },
+                                    {
+                                        "startDate": 1_791_420_000,
+                                        "endDate": 1_791_441_600,
+                                        "program": {
+                                            "__typename": "EpgEntry",
+                                            "id": "epg-live-block",
+                                            "title": "Demo series",
+                                        },
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json=series_response([season("c_1", 1, [episode("e_1", 1, "Pilot")])]),
+        )
+
+    client = joyn_client(handler)
+    try:
+        result = await JoynProvider(
+            api_key="test-key",
+            endpoint="https://joyn-test.example/graphql",
+            client=client,
+            clock=lambda: datetime(2026, 10, 5, tzinfo=UTC),
+        ).get_series("demo")
+    finally:
+        await client.aclose()
+
+    epg_season = result.seasons[-1]
+    assert epg_season.external_id == "joyn-epg"
+    assert len(epg_season.episodes) == 1
+    assert epg_season.episodes[0].title == "Demo series"
+    release = epg_season.episodes[0].releases[0]
+    assert release.release_type is ReleaseType.TV_BROADCAST
+    assert release.external_id == "epg:sat1-at:epg-demo:1791400000"
+    epg_requests = [item for item in requests if item["operationName"] == "EpisodeCalendarJoynEpg"]
+    assert len(epg_requests) == 28
+    assert epg_requests[-1]["variables"]["to"] - epg_requests[0]["variables"]["from"] == 28 * 86400
+
+
 async def test_normalizes_multiple_seasons() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -217,9 +294,82 @@ async def test_prefers_streaming_start_over_linear_airdate() -> None:
     finally:
         await client.aclose()
 
-    assert result.seasons[0].episodes[0].releases[0].release_at == datetime(
-        1970, 1, 1, 0, 1, 40, tzinfo=UTC
-    )
+    releases = result.seasons[0].episodes[0].releases
+    assert releases[0].release_type is ReleaseType.STREAMING
+    assert releases[0].release_at == datetime(1970, 1, 1, 0, 1, 40, tzinfo=UTC)
+    assert releases[1].release_type is ReleaseType.TV_BROADCAST
+    assert releases[1].release_at == datetime(1970, 1, 1, 0, 3, 20, tzinfo=UTC)
+
+
+async def test_catalog_airdate_prevents_duplicate_epg_episode() -> None:
+    broadcast_at = 1_791_400_000
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        if body["operationName"] == "EpisodeCalendarJoynEpg":
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "liveStreams": [
+                            {
+                                "id": "sat1-at",
+                                "title": "SAT.1",
+                                "epgEvents": [
+                                    {
+                                        "startDate": broadcast_at,
+                                        "endDate": broadcast_at + 3600,
+                                        "program": {
+                                            "__typename": "Episode",
+                                            "id": "epg-demo",
+                                            "title": "Demo series",
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json=series_response(
+                [
+                    season(
+                        "c_1",
+                        1,
+                        [
+                            episode(
+                                "e_1",
+                                1,
+                                "Pilot",
+                                airdate=broadcast_at,
+                                starts_at=broadcast_at - 86400,
+                            )
+                        ],
+                    )
+                ]
+            ),
+        )
+
+    client = joyn_client(handler)
+    try:
+        result = await JoynProvider(
+            api_key="test-key",
+            endpoint="https://joyn-test.example/graphql",
+            client=client,
+            clock=lambda: datetime(2026, 10, 5, tzinfo=UTC),
+        ).get_series("demo")
+    finally:
+        await client.aclose()
+
+    assert len(result.seasons) == 1
+    catalog_episode = result.seasons[0].episodes[0]
+    assert [release.release_type for release in catalog_episode.releases] == [
+        ReleaseType.STREAMING,
+        ReleaseType.TV_BROADCAST,
+    ]
+    assert catalog_episode.number == 1
 
 
 async def test_marks_joyn_preview_episodes() -> None:

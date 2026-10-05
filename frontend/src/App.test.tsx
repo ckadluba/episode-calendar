@@ -33,6 +33,7 @@ describe("App preferences", () => {
 
     expect(screen.getByRole("button", { name: "Nächste Woche" })).toHaveClass("active");
     await waitFor(() => expect(screen.queryByText("Kalender wird geladen …")).not.toBeInTheDocument());
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("includePreviews=all"));
   });
 
   it("supports switching to last week", async () => {

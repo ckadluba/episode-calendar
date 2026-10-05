@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -75,6 +75,305 @@ async def test_import_updates_existing_metadata(db_session: AsyncSession) -> Non
     assert persisted is not None
     assert persisted.title == "Demo"
     assert persisted.provider.slug == "joyn"
+
+
+async def test_catalog_release_replaces_epg_release_at_same_time(
+    db_session: AsyncSession,
+) -> None:
+    release_at = datetime(2026, 10, 6, 18, 15, tzinfo=UTC)
+
+    class EpgThenCatalogProvider:
+        slug = "joyn"
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            if self.calls == 1:
+                return NormalizedSeries(
+                    external_id="joyn-series",
+                    title="Demo",
+                    seasons=(
+                        NormalizedSeason(
+                            external_id="joyn-epg",
+                            episodes=(
+                                NormalizedEpisode(
+                                    external_id="epg-release",
+                                    title="Demo",
+                                    releases=(
+                                        NormalizedEpisodeRelease(
+                                            external_id="epg-release",
+                                            release_type=ReleaseType.TV_BROADCAST,
+                                            release_at=release_at,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="catalog-season",
+                        number=14,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="catalog-episode",
+                                number=1,
+                                title="The real episode title",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=release_at,
+                                        url="https://joyn.example/episode",
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    provider = EpgThenCatalogProvider()
+    await import_series(db_session, provider, "ignored")
+    await import_series(db_session, provider, "ignored")
+
+    releases = list(await db_session.scalars(select(EpisodeRelease)))
+    assert len(releases) == 1
+    assert releases[0].release_type is ReleaseType.STREAMING
+    assert releases[0].url == "https://joyn.example/episode"
+    episode = await db_session.get(Episode, releases[0].episode_id)
+    assert episode is not None
+    assert episode.title == "The real episode title"
+    season = await db_session.get(Season, episode.season_id)
+    assert season is not None
+    assert season.number == 14
+
+
+async def test_catalog_tv_release_replaces_numberless_epg_episode(
+    db_session: AsyncSession,
+) -> None:
+    release_at = datetime(2026, 10, 6, 18, 15, tzinfo=UTC)
+
+    class EpgThenCatalogProvider:
+        slug = "joyn"
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            if self.calls == 1:
+                return NormalizedSeries(
+                    external_id="joyn-series",
+                    title="Demo",
+                    seasons=(
+                        NormalizedSeason(
+                            external_id="joyn-epg",
+                            episodes=(
+                                NormalizedEpisode(
+                                    external_id="epg-release",
+                                    title="Demo",
+                                    releases=(
+                                        NormalizedEpisodeRelease(
+                                            external_id="epg-release",
+                                            release_type=ReleaseType.TV_BROADCAST,
+                                            release_at=release_at,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="catalog-season",
+                        number=1,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="catalog-episode",
+                                number=2,
+                                title="Catalog episode",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=release_at - timedelta(days=7),
+                                        url="https://joyn.example/episode-2",
+                                    ),
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=release_at,
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    provider = EpgThenCatalogProvider()
+    await import_series(db_session, provider, "ignored")
+    await import_series(db_session, provider, "ignored")
+
+    releases = list(await db_session.scalars(select(EpisodeRelease)))
+    assert len(releases) == 2
+    tv_release = next(item for item in releases if item.release_type is ReleaseType.TV_BROADCAST)
+    episode = await db_session.get(Episode, tv_release.episode_id)
+    assert episode is not None
+    assert episode.number == 2
+    assert episode.title == "Catalog episode"
+    assert tv_release.url == "https://joyn.example/episode-2"
+
+
+async def test_stale_catalog_marks_epg_broadcast_as_rerun(db_session: AsyncSession) -> None:
+    # MOST WANTED had its latest catalog release on 28 April, while the EPG exposes
+    # repeats for 14 October. This is intentionally a fixed-date regression test so
+    # the rerun policy does not depend on the wall clock when the suite runs.
+    old_release_at = datetime(2026, 4, 28, 17, 1, tzinfo=UTC)
+    epg_release_at = datetime(2026, 10, 14, 18, 15, tzinfo=UTC)
+
+    class StaleCatalogProvider:
+        slug = "joyn"
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            episodes = [
+                NormalizedEpisode(
+                    external_id="catalog-episode",
+                    number=1,
+                    title="Old episode",
+                    releases=(
+                        NormalizedEpisodeRelease(
+                            release_type=ReleaseType.STREAMING,
+                            release_at=old_release_at,
+                        ),
+                    ),
+                )
+            ]
+            if self.calls > 1:
+                episodes.append(
+                    NormalizedEpisode(
+                        external_id="epg-release",
+                        title="MOST WANTED",
+                        releases=(
+                            NormalizedEpisodeRelease(
+                                external_id="epg-release",
+                                release_type=ReleaseType.TV_BROADCAST,
+                                release_at=epg_release_at,
+                            ),
+                        ),
+                    )
+                )
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="MOST WANTED",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="catalog-season",
+                        number=1,
+                        episodes=tuple(episodes[:1]),
+                    ),
+                    *(
+                        (
+                            NormalizedSeason(
+                                external_id="joyn-epg",
+                                number=None,
+                                episodes=(episodes[1],),
+                            ),
+                        )
+                        if self.calls > 1
+                        else ()
+                    ),
+                ),
+            )
+
+    provider = StaleCatalogProvider()
+    reference_time = datetime(2026, 10, 5, tzinfo=UTC)
+    await import_series(db_session, provider, "ignored", reference_time=reference_time)
+    await import_series(db_session, provider, "ignored", reference_time=reference_time)
+
+    release = await db_session.scalar(
+        select(EpisodeRelease).where(EpisodeRelease.external_id == "epg-release")
+    )
+    assert release is not None
+    assert release.rerun is True
+
+
+async def test_late_epg_broadcasts_are_marked_as_reruns_from_schedule(
+    db_session: AsyncSession,
+) -> None:
+    class ScheduleProvider:
+        slug = "joyn"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            catalog_episodes = tuple(
+                NormalizedEpisode(
+                    external_id=f"catalog-{number}",
+                    number=number,
+                    title=f"Episode {number}",
+                    releases=(
+                        NormalizedEpisodeRelease(
+                            release_type=ReleaseType.TV_BROADCAST,
+                            release_at=datetime(2026, 10, 6, 20 + number, 30, tzinfo=UTC),
+                        ),
+                    ),
+                )
+                for number in (1, 2)
+            )
+            epg_episodes = tuple(
+                NormalizedEpisode(
+                    external_id=f"epg-{number}",
+                    title="Demo",
+                    releases=(
+                        NormalizedEpisodeRelease(
+                            release_type=ReleaseType.TV_BROADCAST,
+                            release_at=release_at,
+                        ),
+                    ),
+                )
+                for number, release_at in enumerate(
+                    (
+                        datetime(2026, 10, 7, 2, 40, tzinfo=UTC),
+                        datetime(2026, 10, 11, 3, 55, tzinfo=UTC),
+                    ),
+                    start=1,
+                )
+            )
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="catalog-season",
+                        number=1,
+                        episodes=catalog_episodes,
+                    ),
+                    NormalizedSeason(
+                        external_id="joyn-epg",
+                        episodes=epg_episodes,
+                    ),
+                ),
+            )
+
+    await import_series(
+        db_session,
+        ScheduleProvider(),
+        "ignored",
+        reference_time=datetime(2026, 10, 5, tzinfo=UTC),
+    )
+
+    releases = list(await db_session.scalars(select(EpisodeRelease)))
+    assert [release.rerun for release in sorted(releases, key=lambda item: item.release_at)] == [
+        False,
+        False,
+        True,
+        True,
+    ]
 
 
 async def test_reimport_preserves_known_episode_releases(db_session: AsyncSession) -> None:

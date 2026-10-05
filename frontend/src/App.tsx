@@ -231,7 +231,7 @@ export function App() {
             if (!response.ok) throw new Error(`Serien konnten nicht geladen werden (${response.status}).`);
             return response.json();
           }),
-          fetch(`${API_URL}/api/v1/episodes/${week}-week?timezone=${encodeURIComponent(TIMEZONE)}`).then(async (response) => {
+          fetch(`${API_URL}/api/v1/episodes/${week}-week?timezone=${encodeURIComponent(TIMEZONE)}&includePreviews=all`).then(async (response) => {
             if (!response.ok) throw new Error(`Episoden konnten nicht geladen werden (${response.status}).`);
             return response.json();
           }),
