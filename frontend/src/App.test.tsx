@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, calendarItems, episodeStartLabel, seriesColor, sortCalendarItems } from "./App";
+import { App, calendarItems, episodeStartLabel, selectCalendarRelease, seriesColor, sortCalendarItems, type Release } from "./App";
 
 const series = [
   { id: "series-1", title: "Testserie", platform: "RTL+", platform_id: "rtlplus", description: null },
@@ -34,6 +34,7 @@ describe("App preferences", () => {
     expect(screen.getByRole("button", { name: "Nächste Woche" })).toHaveClass("active");
     await waitFor(() => expect(screen.queryByText("Kalender wird geladen …")).not.toBeInTheDocument());
     expect(fetch).toHaveBeenCalledWith(expect.stringContaining("includePreviews=all"));
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("includeReleaseHistory=true"));
   });
 
   it("supports switching to last week", async () => {
@@ -108,6 +109,24 @@ describe("App preferences", () => {
     expect(screen.getByRole("checkbox", { name: "Andere Serie" })).toBeChecked();
   });
 
+  it("persists the preview setting next to a provider", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("2 von 2 Serien ausgewählt")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    const previewCheckbox = screen.getByRole("checkbox", { name: "Vorab-Releases für Joyn.at anzeigen" });
+    expect(previewCheckbox).toBeChecked();
+    const requestCount = vi.mocked(fetch).mock.calls.length;
+    fireEvent.click(previewCheckbox);
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
+
+    expect(JSON.parse(localStorage.getItem("episode-calendar-preview-preferences") ?? "null")).toEqual({
+      rtlplus: true,
+      joyn: false,
+    });
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(requestCount);
+  });
+
   it("selects or clears all series globally", async () => {
     render(<App />);
 
@@ -145,11 +164,11 @@ describe("App preferences", () => {
 
   it("renders cached API data without waiting for the network", () => {
     localStorage.setItem(
-      "episode-calendar-cache-v1:http://localhost:8000:series",
+      "episode-calendar-cache-v2:http://localhost:8000:series",
       JSON.stringify({ timestamp: Date.now(), data: series }),
     );
     localStorage.setItem(
-      "episode-calendar-cache-v1:http://localhost:8000:episodes:current:Europe/Vienna",
+      "episode-calendar-cache-v2:http://localhost:8000:episodes:current:Europe/Vienna",
       JSON.stringify({ timestamp: Date.now(), data: [] }),
     );
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => undefined)));
@@ -171,6 +190,40 @@ describe("episode start labels", () => {
 });
 
 describe("calendar releases", () => {
+  const episodeWithReleases = (releases: Release[]) => ({
+    id: "episode-1",
+    series_id: "series-1",
+    season_number: 1,
+    number: 1,
+    title: "Pilot",
+    description: null,
+    platform: "Joyn.at",
+    platform_id: "joyn",
+    releases,
+  });
+
+  it("prefers regular catalog, then optional previews, then TV fallbacks", () => {
+    const preview = { release_type: "streaming", release_at: "2026-09-28T18:00:00Z", url: "https://example.test/preview", preview: true };
+    const regular = { release_type: "streaming", release_at: "2026-10-01T18:00:00Z", url: "https://example.test/regular", preview: false };
+    const tv = { release_type: "tv_broadcast", release_at: "2026-10-02T18:00:00Z", url: null, preview: false };
+
+    expect(selectCalendarRelease(episodeWithReleases([preview, regular, tv]), true)).toBe(regular);
+    expect(selectCalendarRelease(episodeWithReleases([preview, tv]), true)).toBe(preview);
+    expect(selectCalendarRelease(episodeWithReleases([preview]), false)).toBeNull();
+    expect(selectCalendarRelease(episodeWithReleases([preview]), true)).toBe(preview);
+    expect(selectCalendarRelease(episodeWithReleases([tv]), false)).toBe(tv);
+  });
+
+  it("selects the release that falls inside the displayed week", () => {
+    const preview = { release_type: "streaming", release_at: "2026-09-29T22:00:00Z", url: "https://example.test/preview", preview: true };
+    const tv = { release_type: "tv_broadcast", release_at: "2026-10-06T20:35:00Z", url: null, preview: false };
+    const from = new Date("2026-10-05T00:00:00+02:00");
+    const to = new Date("2026-10-12T00:00:00+02:00");
+
+    expect(selectCalendarRelease(episodeWithReleases([preview, tv]), true, from, to)).toBe(tv);
+    expect(selectCalendarRelease(episodeWithReleases([preview, tv]), true, new Date("2026-09-28T00:00:00Z"), from)).toBe(preview);
+  });
+
   it("keeps every release date of an episode", () => {
     const episode = {
       id: "episode-1",

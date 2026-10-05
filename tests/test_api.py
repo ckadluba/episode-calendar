@@ -4,9 +4,27 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from episode_calendar.api import _select_release
 from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.domain import ReleaseType
 from episode_calendar.main import create_app
+
+
+def test_select_release_keeps_preview_before_later_tv_release() -> None:
+    provider = Provider(slug="joyn", name="Joyn.at")
+    preview = EpisodeRelease(
+        provider=provider,
+        release_type=ReleaseType.STREAMING,
+        release_at=datetime(2026, 9, 29, 18, tzinfo=UTC),
+        preview=True,
+    )
+    tv = EpisodeRelease(
+        provider=provider,
+        release_type=ReleaseType.TV_BROADCAST,
+        release_at=datetime(2026, 10, 6, 18, tzinfo=UTC),
+    )
+
+    assert _select_release([preview, tv]) is preview
 
 
 @pytest.mark.asyncio
@@ -42,6 +60,13 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
             preview=True,
         )
     )
+    episode.releases.append(
+        EpisodeRelease(
+            provider=provider,
+            release_type=ReleaseType.TV_BROADCAST,
+            release_at=release_at + timedelta(days=3),
+        )
+    )
     db_session.add(episode)
     await db_session.commit()
 
@@ -74,12 +99,13 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
         assert response.json()[0]["title"] == "Pilot"
         assert len(response.json()[0]["releases"]) == 1
         assert response.json()[0]["releases"][0]["rerun"] is False
-        assert response.json()[0]["releases"][0]["preview"] is True
+        assert response.json()[0]["releases"][0]["preview"] is False
+        assert response.json()[0]["releases"][0]["release_type"] == "streaming"
         history_response = await client.get(
             "/api/v1/episodes",
             params={"series": str(series.id), "includeReleaseHistory": "true"},
         )
-        assert len(history_response.json()[0]["releases"]) == 2
+        assert len(history_response.json()[0]["releases"]) == 3
         joyn_preview_response = await client.get(
             "/api/v1/episodes",
             params={
@@ -88,7 +114,7 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
                 "includeReleaseHistory": "true",
             },
         )
-        assert len(joyn_preview_response.json()[0]["releases"]) == 2
+        assert len(joyn_preview_response.json()[0]["releases"]) == 3
         rtlplus_preview_response = await client.get(
             "/api/v1/episodes",
             params={
@@ -97,7 +123,7 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
                 "includeReleaseHistory": "true",
             },
         )
-        assert len(rtlplus_preview_response.json()[0]["releases"]) == 1
+        assert len(rtlplus_preview_response.json()[0]["releases"]) == 2
         assert rtlplus_preview_response.json()[0]["releases"][0]["preview"] is False
         assert (
             len(
@@ -111,7 +137,13 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
             == 1
         )
         preview_response = await client.get("/api/v1/episodes", params={"series": str(series.id)})
-        assert preview_response.json()[0]["releases"][0]["preview"] is True
+        assert preview_response.json()[0]["releases"][0]["preview"] is False
+        assert preview_response.json()[0]["releases"][0]["release_type"] == "streaming"
+        no_preview_response = await client.get(
+            "/api/v1/episodes",
+            params={"series": str(series.id), "includePreviews": "false"},
+        )
+        assert no_preview_response.json()[0]["releases"][0]["release_type"] == "streaming"
         rerun_response = await client.get(
             "/api/v1/episodes",
             params={
@@ -121,7 +153,7 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
             },
         )
         assert rerun_response.status_code == 200
-        assert len(rerun_response.json()[0]["releases"]) == 3
+        assert len(rerun_response.json()[0]["releases"]) == 4
         assert {release["rerun"] for release in rerun_response.json()[0]["releases"]} == {
             False,
             True,

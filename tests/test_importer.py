@@ -205,6 +205,7 @@ async def test_catalog_tv_release_replaces_numberless_epg_episode(
                                         url="https://joyn.example/episode-2",
                                     ),
                                     NormalizedEpisodeRelease(
+                                        external_id="epg-release",
                                         release_type=ReleaseType.TV_BROADCAST,
                                         release_at=release_at,
                                     ),
@@ -302,6 +303,67 @@ async def test_stale_catalog_marks_epg_broadcast_as_rerun(db_session: AsyncSessi
     )
     assert release is not None
     assert release.rerun is True
+
+
+async def test_current_epg_slot_is_not_marked_stale_when_catalog_has_tv_schedule(
+    db_session: AsyncSession,
+) -> None:
+    class CurrentScheduleProvider:
+        slug = "joyn"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="catalog-season",
+                        number=1,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="catalog-episode",
+                                number=1,
+                                title="Old episode",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 4, 28, 18, 15, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                    NormalizedSeason(
+                        external_id="joyn-epg",
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="epg-release",
+                                title="Demo",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        external_id="epg-release",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 5, 18, 15, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(
+        db_session,
+        CurrentScheduleProvider(),
+        "ignored",
+        reference_time=datetime(2026, 10, 5, tzinfo=UTC),
+    )
+
+    release = await db_session.scalar(
+        select(EpisodeRelease).where(EpisodeRelease.external_id == "epg-release")
+    )
+    assert release is not None
+    assert release.rerun is False
 
 
 async def test_late_epg_broadcasts_are_marked_as_reruns_from_schedule(

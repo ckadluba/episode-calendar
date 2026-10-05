@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.db.session import get_session
+from episode_calendar.domain import ReleaseType
 from episode_calendar.series_config import displayable_series_by_platform
 
 router = APIRouter(prefix="/api/v1")
@@ -47,6 +48,25 @@ def _preview_filter(platforms: frozenset[str] | None):
             EpisodeRelease.provider.has(Provider.slug.in_(platforms)),
         ),
     )
+
+
+def _select_release(releases: list[EpisodeRelease]) -> EpisodeRelease | None:
+    """Select the canonical release while keeping previews ahead of TV fallbacks.
+
+    A later TV listing must not replace a preview release that was already
+    published by the catalog.  Regular catalog data remains the preferred
+    source; previews are next, and TV broadcasts are only a fallback when no
+    catalog release is available after the preview filter was applied.
+    """
+
+    def newest(items: list[EpisodeRelease]) -> EpisodeRelease | None:
+        return max(items, key=lambda item: item.release_at, default=None)
+
+    catalog_releases = [item for item in releases if item.release_type == ReleaseType.STREAMING]
+    regular_catalog_releases = [item for item in catalog_releases if not item.preview]
+    preview_releases = [item for item in catalog_releases if item.preview]
+    tv_releases = [item for item in releases if item.release_type == ReleaseType.TV_BROADCAST]
+    return newest(regular_catalog_releases) or newest(preview_releases) or newest(tv_releases)
 
 
 class SeriesResponse(BaseModel):
@@ -200,7 +220,8 @@ async def list_episodes(
             )
         ]
         if not include_release_history and releases:
-            releases = [max(releases, key=lambda item: item.release_at)]
+            selected_release = _select_release(releases)
+            releases = [selected_release] if selected_release else []
         responses.append(
             EpisodeResponse(
                 id=episode.id,
