@@ -200,16 +200,15 @@ function SeriesFilterPage({ series, selectedIds, previewPreferences, onSave, onD
             }}
           />
           {group.platform}
-        </label></h2><label className="preview-filter-option" title={PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId) ? "Dieser Provider liefert keine Vorab-Releases." : undefined}>
+        </label></h2>{!PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId) && <label className="preview-filter-option">
             <input
               type="checkbox"
               aria-label={`Vorab-Releases für ${group.platform} anzeigen`}
-              checked={!PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId) && draftPreviewPreferences[group.platformId] !== false}
-              disabled={PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId)}
+              checked={draftPreviewPreferences[group.platformId] !== false}
               onChange={() => setDraftPreviewPreferences((current) => ({ ...current, [group.platformId]: current[group.platformId] === false }))}
             />
             Vorab-Releases anzeigen
-          </label></div>
+          </label>}</div>
         {group.series.map((item) => <label className="series-filter-option" key={item.id}>
           <input type="checkbox" checked={draftIds.includes(item.id)} onChange={() => toggle(item.id)} />
           <span className="series-dot" style={{ backgroundColor: seriesColor(item.id) }} aria-hidden="true" />
