@@ -12,7 +12,7 @@ const API_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.repla
 const TIMEZONE = "Europe/Vienna";
 const CACHE_PREFIX = "episode-calendar-cache-v2";
 const PREVIEW_PREFERENCES_KEY = "episode-calendar-preview-preferences";
-const PREVIEW_UNAVAILABLE_PLATFORMS = new Set(["amazon_prime_de", "amazon_prime_uk"]);
+const PREVIEW_UNAVAILABLE_PLATFORMS = new Set(["bbc_iplayer", "channel4", "ardmediathek", "stv", "amazon_prime_de", "amazon_prime_uk"]);
 
 type CachedValue<T> = { timestamp: number; data: T };
 
@@ -195,15 +195,15 @@ function SeriesFilterPage({ series, selectedIds, previewPreferences, onSave, onD
           />
           {group.platform}
         </label></h2><label className="preview-filter-option" title={PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId) ? "Dieser Provider liefert keine Vorab-Releases." : undefined}>
-          <input
-            type="checkbox"
-            aria-label={`Vorab-Releases für ${group.platform} anzeigen`}
-            checked={!PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId) && draftPreviewPreferences[group.platformId] !== false}
-            disabled={PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId)}
-            onChange={() => setDraftPreviewPreferences((current) => ({ ...current, [group.platformId]: current[group.platformId] === false }))}
-          />
-          Vorab-Releases anzeigen
-        </label></div>
+            <input
+              type="checkbox"
+              aria-label={`Vorab-Releases für ${group.platform} anzeigen`}
+              checked={!PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId) && draftPreviewPreferences[group.platformId] !== false}
+              disabled={PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId)}
+              onChange={() => setDraftPreviewPreferences((current) => ({ ...current, [group.platformId]: current[group.platformId] === false }))}
+            />
+            Vorab-Releases anzeigen
+          </label></div>
         {group.series.map((item) => <label className="series-filter-option" key={item.id}>
           <input type="checkbox" checked={draftIds.includes(item.id)} onChange={() => toggle(item.id)} />
           <span className="series-dot" style={{ backgroundColor: seriesColor(item.id) }} aria-hidden="true" />
@@ -337,7 +337,7 @@ export function App() {
     onDiscard={() => setFilterOpen(false)}
   />;
 
- return <main className="app-shell">
+  return <main className="app-shell">
     <header className="hero"><p className="eyebrow">EPISODE CALENDAR</p><h1>{week === "last" ? "Was lief letzte Woche?" : week === "next" ? "Was läuft nächste Woche?" : "Was läuft diese Woche?"}</h1><p className="subtitle">Neue Episoden deiner Serien auf einen Blick. Zukünftige Daten können unvollständig sein.</p></header>
     <nav className="week-switch" aria-label="Woche"><button className={week === "last" ? "active" : ""} onClick={() => setWeek("last")}>Letzte Woche</button><button className={week === "current" ? "active" : ""} onClick={() => setWeek("current")}>Diese Woche</button><button className={week === "next" ? "active" : ""} onClick={() => setWeek("next")}>Nächste Woche</button></nav>
     <section className="filters" aria-label="Filter"><button className="filter-button" type="button" disabled={!seriesSelectionInitialized} onClick={() => setFilterOpen(true)}>Filter</button><span>{selectedSeriesIds.length} von {series.length} Serien ausgewählt</span></section>
