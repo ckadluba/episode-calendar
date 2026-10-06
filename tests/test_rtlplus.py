@@ -1,6 +1,10 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+import httpx
+
+from episode_calendar.domain import ReleaseType
+from episode_calendar.providers.base import NormalizedEpisode, NormalizedSeason, NormalizedSeries
 from episode_calendar.providers.rtlplus import RTLPlusProvider
 
 
@@ -75,6 +79,113 @@ def test_series_url_is_only_created_for_slug_identifiers() -> None:
         "https://plus.rtl.de/are-you-the-one-reality-stars-in-love-p_6838"
     )
     assert RTLPlusProvider._series_url("6838") is None
+
+
+async def test_epg_adds_broadcast_date_to_catalog_episode_without_release() -> None:
+    endpoint = "https://rtlplus-test.example/guidetv"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/guidetv"
+        assert request.url.params["channel"] == "rtlde_rtl"
+        assert request.url.params["from"] == "2026-10-06 02:00:00"
+        return httpx.Response(
+            200,
+            json={
+                "rtlde_rtl": [
+                    {
+                        "code": "demo",
+                        "title": "Demo series",
+                        "subtitle": "Folge 3 (2026)",
+                        "description": "A planned broadcast",
+                        "diffusion_start_date": "2026-10-06 20:15:00",
+                        "diffusion_end_date": "2026-10-06 21:45:00",
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    provider._epg_endpoint = endpoint
+    provider._epg_channels = ("rtlde_rtl",)
+    provider._clock = lambda: datetime(2026, 10, 6, tzinfo=UTC)
+    RTLPlusProvider._epg_tasks.clear()
+    normalized = NormalizedSeries(
+        external_id="demo",
+        title="Demo series",
+        seasons=(
+            NormalizedSeason(
+                external_id="season-1",
+                number=1,
+                episodes=(NormalizedEpisode(external_id="episode-3", number=3, title="Episode 3"),),
+            ),
+        ),
+    )
+    try:
+        result = await provider._add_epg(client, normalized)
+    finally:
+        await client.aclose()
+
+    episode = result.seasons[0].episodes[0]
+    assert episode.title == "Episode 3"
+    assert episode.releases[0].release_type is ReleaseType.TV_BROADCAST
+    assert episode.releases[0].release_at == datetime(2026, 10, 6, 18, 15, tzinfo=UTC)
+    assert len(result.seasons) == 1
+
+
+async def test_epg_adds_numberless_future_episode_and_ignores_long_entries() -> None:
+    endpoint = "https://rtlplus-test.example/guidetv-numberless"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "rtlde_rtl": [
+                    {
+                        "code": "future-demo",
+                        "title": "Demo series",
+                        "subtitle": "Die nächste Folge",
+                        "description": "Coming soon",
+                        "diffusion_start_date": "2026-10-07 20:15:00",
+                        "diffusion_end_date": "2026-10-07 21:15:00",
+                    },
+                    {
+                        "code": "long-demo",
+                        "title": "Demo series",
+                        "subtitle": "Live",
+                        "diffusion_start_date": "2026-10-08 00:00:00",
+                        "diffusion_end_date": "2026-10-08 05:00:00",
+                    },
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    provider._epg_endpoint = endpoint
+    provider._epg_channels = ("rtlde_rtl",)
+    provider._clock = lambda: datetime(2026, 10, 6, tzinfo=UTC)
+    RTLPlusProvider._epg_tasks.clear()
+    normalized = NormalizedSeries(
+        external_id="demo",
+        title="Demo series",
+        seasons=(
+            NormalizedSeason(
+                external_id="season-1",
+                number=1,
+                episodes=(NormalizedEpisode(external_id="episode-1", number=1, title="Episode 1"),),
+            ),
+        ),
+    )
+    try:
+        result = await provider._add_epg(client, normalized)
+    finally:
+        await client.aclose()
+
+    assert len(result.seasons) == 2
+    assert result.seasons[-1].external_id == "rtlplus-epg"
+    assert len(result.seasons[-1].episodes) == 1
+    assert result.seasons[-1].episodes[0].number is None
 
 
 def test_schedule_supports_current_weekly_rtl_format() -> None:
