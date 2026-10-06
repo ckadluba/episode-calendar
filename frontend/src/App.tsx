@@ -91,11 +91,10 @@ export function selectCalendarRelease(
   from?: Date,
   to?: Date,
 ): Release | null {
-  const releases = episode.releases.filter((release) => {
-    const releaseAt = Date.parse(release.release_at);
-    return (from === undefined || releaseAt >= from.getTime())
-      && (to === undefined || releaseAt < to.getTime());
-  });
+  // Select one canonical release for the episode before applying the calendar
+  // window. Otherwise the same episode can appear once as a preview and again
+  // on its later regular/TV release date in another calendar week.
+  const releases = episode.releases;
   const catalogReleases = releases.filter((release) => release.release_type === "streaming");
   const regularCatalogReleases = catalogReleases.filter((release) => !release.preview);
   const tvReleases = releases.filter((release) => release.release_type === "tv_broadcast");
@@ -107,9 +106,16 @@ export function selectCalendarRelease(
     null,
   );
 
-  return newest(regularCatalogReleases)
-    ?? (includePreview ? newest(previewReleases) : null)
+  const selected = (includePreview ? newest(previewReleases) : null)
+    ?? newest(regularCatalogReleases)
     ?? newest(tvReleases);
+  if (!selected) return null;
+
+  const releaseAt = Date.parse(selected.release_at);
+  return (from === undefined || releaseAt >= from.getTime())
+    && (to === undefined || releaseAt < to.getTime())
+    ? selected
+    : null;
 }
 
 function compareNullableNumbers(left: number | null, right: number | null) {

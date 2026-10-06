@@ -24,6 +24,7 @@ class NormalizedEpisodeRelease(BaseModel):
     available_until: datetime | None = None
     url: HttpUrl | None = None
     preview: bool = False
+    rerun: bool = False
 
     @field_validator("release_at", "available_until")
     @classmethod
