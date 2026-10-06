@@ -169,6 +169,7 @@ async def test_adds_exactly_matching_future_epg_broadcasts() -> None:
         )
 
     client = joyn_client(handler)
+    JoynProvider._epg_tasks.clear()
     try:
         result = await JoynProvider(
             api_key="test-key",
@@ -299,6 +300,198 @@ async def test_prefers_streaming_start_over_linear_airdate() -> None:
     assert releases[0].release_at == datetime(1970, 1, 1, 0, 1, 40, tzinfo=UTC)
     assert releases[1].release_type is ReleaseType.TV_BROADCAST
     assert releases[1].release_at == datetime(1970, 1, 1, 0, 3, 20, tzinfo=UTC)
+    assert releases[0].preview is False
+
+
+async def test_does_not_infer_preview_from_release_dates() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=series_response(
+                [
+                    season(
+                        "c_1",
+                        1,
+                        [
+                            episode(
+                                "e_1",
+                                1,
+                                "Forsthaus Rampensau",
+                                airdate="2026-10-12T22:20:00+02:00",
+                                starts_at="2026-10-10T00:05:00+02:00",
+                            )
+                        ],
+                    )
+                ]
+            ),
+        )
+
+    client = joyn_client(handler)
+    try:
+        result = await JoynProvider(api_key="test-key", client=client).get_series("demo")
+    finally:
+        await client.aclose()
+
+    releases = result.seasons[0].episodes[0].releases
+    assert releases[0].release_type is ReleaseType.STREAMING
+    assert releases[0].preview is False
+    assert releases[1].release_type is ReleaseType.TV_BROADCAST
+    assert releases[1].preview is False
+
+
+async def test_marks_irregular_followup_epg_events_as_reruns() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        if body["operationName"] == "EpisodeCalendarJoynEpg":
+            events = [
+                ("first", "2026-10-09T20:15:00+02:00", "2026-10-09T22:05:00+02:00"),
+                ("second", "2026-10-10T00:15:00+02:00", "2026-10-10T02:05:00+02:00"),
+                ("third", "2026-10-12T22:20:00+02:00", "2026-10-13T00:10:00+02:00"),
+            ]
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "liveStreams": [
+                            {
+                                "id": "atv",
+                                "title": "ATV",
+                                "epgEvents": [
+                                    {
+                                        "startDate": start,
+                                        "endDate": end,
+                                        "program": {
+                                            "__typename": "EpgEntry",
+                                            "id": event_id,
+                                            "title": "Demo series",
+                                        },
+                                    }
+                                    for event_id, start, end in events
+                                ],
+                            }
+                        ]
+                    }
+                },
+            )
+        return httpx.Response(200, json=series_response([]))
+
+    client = joyn_client(handler)
+    JoynProvider._epg_tasks.clear()
+    try:
+        result = await JoynProvider(
+            api_key="test-key",
+            endpoint="https://joyn-irregular-test.example/graphql",
+            client=client,
+            clock=lambda: datetime(2026, 10, 6, tzinfo=UTC),
+        ).get_series("demo")
+    finally:
+        await client.aclose()
+
+    releases = [episode.releases[0] for episode in result.seasons[-1].episodes]
+    assert [release.rerun for release in releases] == [False, True, True]
+
+
+async def test_keeps_daily_epg_slots_as_regular_releases() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        if body["operationName"] == "EpisodeCalendarJoynEpg":
+            events = [
+                ("first", "2026-10-08T20:15:00+02:00"),
+                ("second", "2026-10-09T20:15:00+02:00"),
+                ("third", "2026-10-10T20:15:00+02:00"),
+            ]
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "liveStreams": [
+                            {
+                                "id": "atv",
+                                "title": "ATV",
+                                "epgEvents": [
+                                    {
+                                        "startDate": start,
+                                        "endDate": None,
+                                        "program": {
+                                            "__typename": "EpgEntry",
+                                            "id": event_id,
+                                            "title": "Demo series",
+                                        },
+                                    }
+                                    for event_id, start in events
+                                ],
+                            }
+                        ]
+                    }
+                },
+            )
+        return httpx.Response(200, json=series_response([]))
+
+    client = joyn_client(handler)
+    JoynProvider._epg_tasks.clear()
+    try:
+        result = await JoynProvider(
+            api_key="test-key",
+            endpoint="https://joyn-daily-test.example/graphql",
+            client=client,
+            clock=lambda: datetime(2026, 10, 6, tzinfo=UTC),
+        ).get_series("demo")
+    finally:
+        await client.aclose()
+
+    releases = [episode.releases[0] for episode in result.seasons[-1].episodes]
+    assert [release.rerun for release in releases] == [False, False, False]
+
+
+async def test_keeps_weekly_epg_slots_as_regular_releases() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        if body["operationName"] == "EpisodeCalendarJoynEpg":
+            events = [
+                ("first", "2026-10-09T20:15:00+02:00"),
+                ("second", "2026-10-16T20:15:00+02:00"),
+            ]
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "liveStreams": [
+                            {
+                                "id": "atv",
+                                "title": "ATV",
+                                "epgEvents": [
+                                    {
+                                        "startDate": start,
+                                        "endDate": None,
+                                        "program": {
+                                            "__typename": "EpgEntry",
+                                            "id": event_id,
+                                            "title": "Demo series",
+                                        },
+                                    }
+                                    for event_id, start in events
+                                ],
+                            }
+                        ]
+                    }
+                },
+            )
+        return httpx.Response(200, json=series_response([]))
+
+    client = joyn_client(handler)
+    JoynProvider._epg_tasks.clear()
+    try:
+        result = await JoynProvider(
+            api_key="test-key",
+            endpoint="https://joyn-weekly-test.example/graphql",
+            client=client,
+            clock=lambda: datetime(2026, 10, 6, tzinfo=UTC),
+        ).get_series("demo")
+    finally:
+        await client.aclose()
+
+    releases = [episode.releases[0] for episode in result.seasons[-1].episodes]
+    assert [release.rerun for release in releases] == [False, False]
 
 
 async def test_catalog_airdate_prevents_duplicate_epg_episode() -> None:
@@ -377,7 +570,22 @@ async def test_marks_joyn_preview_episodes() -> None:
         return httpx.Response(
             200,
             json=series_response(
-                [season("c_1", 1, [episode("e_1", 1, "Preview", markings=["PREVIEW"])])]
+                [
+                    season(
+                        "c_1",
+                        1,
+                        [
+                            episode(
+                                "e_1",
+                                1,
+                                "Preview",
+                                starts_at="2026-09-29T22:00:00+02:00",
+                                airdate="2026-10-06T22:35:00+02:00",
+                                markings=["PREVIEW"],
+                            )
+                        ],
+                    )
+                ]
             ),
         )
 
@@ -388,6 +596,39 @@ async def test_marks_joyn_preview_episodes() -> None:
         await client.aclose()
 
     assert result.seasons[0].episodes[0].releases[0].preview is True
+
+
+async def test_does_not_keep_preview_marking_after_regular_airdate() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=series_response(
+                [
+                    season(
+                        "c_1",
+                        1,
+                        [
+                            episode(
+                                "e_1",
+                                1,
+                                "Regular release",
+                                starts_at="2026-10-06T22:35:00+02:00",
+                                airdate="2026-10-06T22:35:00+02:00",
+                                markings=["PREVIEW"],
+                            )
+                        ],
+                    )
+                ]
+            ),
+        )
+
+    client = joyn_client(handler)
+    try:
+        result = await JoynProvider(api_key="test-key", client=client).get_series("demo")
+    finally:
+        await client.aclose()
+
+    assert result.seasons[0].episodes[0].releases[0].preview is False
 
 
 async def test_parses_optional_end_time() -> None:

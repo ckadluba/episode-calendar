@@ -77,6 +77,154 @@ async def test_import_updates_existing_metadata(db_session: AsyncSession) -> Non
     assert persisted.provider.slug == "joyn"
 
 
+async def test_catalog_preview_and_tv_release_are_not_reruns(
+    db_session: AsyncSession,
+) -> None:
+    class JoynCatalogProvider:
+        slug = "joyn"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Forsthaus Rampensau",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="joyn-season",
+                        number=5,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="joyn-episode",
+                                number=1,
+                                title="Folge 1",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 10, 10, 0, 15, tzinfo=UTC),
+                                        preview=True,
+                                    ),
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 12, 20, 20, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(db_session, JoynCatalogProvider(), "ignored")
+
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    assert len(releases) == 2
+    assert [release.preview for release in releases] == [True, False]
+    assert [release.rerun for release in releases] == [False, False]
+
+
+async def test_old_on_demand_release_is_not_marked_as_rerun(
+    db_session: AsyncSession,
+) -> None:
+    class ChangingCatalogProvider:
+        slug = "joyn"
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            release_at = datetime(
+                2025 if self.calls == 1 else 2026,
+                1 if self.calls == 1 else 10,
+                1 if self.calls == 1 else 6,
+                tzinfo=UTC,
+            )
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="joyn-season",
+                        number=1,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="joyn-episode",
+                                number=1,
+                                title="Pilot",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=release_at,
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    provider = ChangingCatalogProvider()
+    await import_series(
+        db_session,
+        provider,
+        "ignored",
+        reference_time=datetime(2026, 10, 6, tzinfo=UTC),
+    )
+    await import_series(
+        db_session,
+        provider,
+        "ignored",
+        reference_time=datetime(2026, 10, 6, tzinfo=UTC),
+    )
+
+    releases = list(await db_session.scalars(select(EpisodeRelease)))
+    assert releases
+    assert all(release.rerun is False for release in releases)
+
+
+async def test_only_tv_release_persists_normalized_rerun_flag(
+    db_session: AsyncSession,
+) -> None:
+    class EpgProvider:
+        slug = "joyn"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="joyn-epg",
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="epg-episode",
+                                title="Demo",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 10, 10, tzinfo=UTC),
+                                        preview=True,
+                                        rerun=True,
+                                    ),
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 11, tzinfo=UTC),
+                                        rerun=True,
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(db_session, EpgProvider(), "ignored")
+
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    assert [release.rerun for release in releases] == [False, True]
+
+
 async def test_catalog_release_replaces_epg_release_at_same_time(
     db_session: AsyncSession,
 ) -> None:

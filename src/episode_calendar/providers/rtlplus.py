@@ -190,33 +190,57 @@ class RTLPlusProvider:
                 release_at=event.start,
                 available_until=event.end,
             )
+            # A catalog release earlier on the same day is the known RTL+ preview
+            # pattern, even when the EPG labels another episode number.
+            for candidate in tuple(episode for season in seasons for episode in season.episodes):
+                updated_releases = tuple(
+                    existing.model_copy(update={"preview": True})
+                    if (
+                        existing.release_type is ReleaseType.STREAMING
+                        and not existing.preview
+                        and existing.release_at.date() == event.start.date()
+                        and existing.release_at < event.start
+                    )
+                    else existing
+                    for existing in candidate.releases
+                )
+                if updated_releases != candidate.releases:
+                    seasons = self._replace_episode_releases(
+                        seasons, candidate.external_id, updated_releases
+                    )
             episode_number = self._epg_episode_number(event)
-            target = self._catalog_episode_for_epg(seasons, episode_number)
+            target = self._catalog_episode_for_epg(seasons, episode_number, event.start)
             if target is not None:
+                # A matching catalog release shortly before the linear broadcast is a
+                # preview, even when the two dates are several days apart. This is how
+                # RTL+ publishes episodes such as Sommerhaus S11E7 (catalog: 6 Oct,
+                # TV: 13 Oct). Limit the inference to the EPG look-ahead window so an
+                # unrelated old release is not reclassified when an episode is rerun.
+                updated_releases = tuple(
+                    existing.model_copy(update={"preview": True})
+                    if (
+                        existing.release_type is ReleaseType.STREAMING
+                        and not existing.preview
+                        and timedelta(0) < event.start - existing.release_at <= EPG_LOOKAHEAD
+                    )
+                    else existing
+                    for existing in target.releases
+                )
+                if updated_releases != target.releases:
+                    seasons = self._replace_episode_releases(
+                        seasons, target.external_id, updated_releases
+                    )
+                    target = target.model_copy(update={"releases": updated_releases})
                 if not any(
                     existing.release_at.date() == event.start.date()
                     and abs(existing.release_at - event.start) <= EPG_MATCH_TOLERANCE
                     for existing in target.releases
                 ):
-                    seasons = [
-                        season.model_copy(
-                            update={
-                                "episodes": tuple(
-                                    episode.model_copy(
-                                        update={"releases": episode.releases + (release,)}
-                                    )
-                                    if episode.external_id == target.external_id
-                                    else episode
-                                    for episode in season.episodes
-                                )
-                            }
-                        )
-                        if any(
-                            episode.external_id == target.external_id for episode in season.episodes
-                        )
-                        else season
-                        for season in seasons
-                    ]
+                    updated_releases += (release,)
+                if updated_releases != target.releases:
+                    seasons = self._replace_episode_releases(
+                        seasons, target.external_id, updated_releases
+                    )
                 continue
             if any(
                 existing.release_at.date() == event.start.date()
@@ -299,7 +323,10 @@ class RTLPlusProvider:
 
     @staticmethod
     def _epg_event(raw: dict[str, Any]) -> _EpgEvent:
-        code = RTLPlusProvider._required_string(raw.get("code"), "EPG.code")
+        identifier = raw.get("code") or raw.get("id")
+        if isinstance(identifier, bool) or not isinstance(identifier, (int, str)):
+            raise RTLPlusMalformedResponseError("EPG.code or EPG.id was missing or invalid")
+        identifier = str(identifier)
         start = RTLPlusProvider._epg_timestamp(raw.get("diffusion_start_date"), "EPG.start")
         if start is None:
             raise RTLPlusMalformedResponseError("EPG.start was missing")
@@ -308,7 +335,7 @@ class RTLPlusProvider:
         subtitle = raw.get("subtitle") if isinstance(raw.get("subtitle"), str) else None
         description = raw.get("description") if isinstance(raw.get("description"), str) else None
         return _EpgEvent(
-            external_id=f"epg:{code}:{int(start.timestamp())}",
+            external_id=f"epg:{identifier}:{int(start.timestamp())}",
             title=title,
             subtitle=subtitle,
             description=description,
@@ -349,19 +376,58 @@ class RTLPlusProvider:
 
     @staticmethod
     def _catalog_episode_for_epg(
-        seasons: list[NormalizedSeason], episode_number: int | None
+        seasons: list[NormalizedSeason], episode_number: int | None, release_at: datetime
     ) -> NormalizedEpisode | None:
+        if episode_number is not None:
+            for season in sorted(
+                (season for season in seasons if season.number is not None),
+                key=lambda season: season.number or 0,
+                reverse=True,
+            ):
+                for episode in season.episodes:
+                    if episode.number == episode_number:
+                        return episode
+
+        same_day = [
+            episode
+            for season in seasons
+            if season.number is not None
+            for episode in season.episodes
+            if any(
+                release.release_type is ReleaseType.STREAMING
+                and release.release_at.date() == release_at.date()
+                for release in episode.releases
+            )
+        ]
+        if len(same_day) == 1:
+            # RTL+ can publish a different episode number in the EPG than in the catalog.
+            # The catalog's season/episode metadata remains authoritative in that case.
+            return same_day[0]
         if episode_number is None:
             return None
-        for season in sorted(
-            (season for season in seasons if season.number is not None),
-            key=lambda season: season.number or 0,
-            reverse=True,
-        ):
-            for episode in season.episodes:
-                if episode.number == episode_number:
-                    return episode
         return None
+
+    @staticmethod
+    def _replace_episode_releases(
+        seasons: list[NormalizedSeason],
+        episode_external_id: str,
+        releases: tuple[NormalizedEpisodeRelease, ...],
+    ) -> list[NormalizedSeason]:
+        return [
+            season.model_copy(
+                update={
+                    "episodes": tuple(
+                        episode.model_copy(update={"releases": releases})
+                        if episode.external_id == episode_external_id
+                        else episode
+                        for episode in season.episodes
+                    )
+                }
+            )
+            if any(episode.external_id == episode_external_id for episode in season.episodes)
+            else season
+            for season in seasons
+        ]
 
     @staticmethod
     def _required_string(value: Any, location: str) -> str:
@@ -548,6 +614,9 @@ class RTLPlusProvider:
                         if season_match:
                             season_numbers.add(int(season_match.group(1)))
         current_season_number = max(season_numbers, default=None)
+        latest_catalog_episode_number = self._latest_catalog_episode_number(
+            pages, current_season_number
+        )
         seo_text = "\n".join(
             str(value)
             for value in (first.get("seo") or {}).get("metadata", {}).values()
@@ -613,7 +682,7 @@ class RTLPlusProvider:
                     if (
                         release_at is None
                         and season_number == current_season_number
-                        and episode_number == 1
+                        and episode_number == latest_catalog_episode_number
                     ):
                         release_at = diffusion_release
                     release_tuple = (
@@ -676,6 +745,36 @@ class RTLPlusProvider:
             for number, episodes in sorted(seasons.items())
         )
         return NormalizedSeries(external_id=program_id, title=title, seasons=normalized_seasons)
+
+    @staticmethod
+    def _latest_catalog_episode_number(
+        pages: list[dict[str, Any]], current_season_number: int | None
+    ) -> int | None:
+        if current_season_number is None:
+            return None
+        episode_numbers: list[int] = []
+        for payload in pages:
+            for block in payload.get("blocks", []):
+                if (
+                    not isinstance(block, dict)
+                    or block.get("analytics", {}).get("tealium", {}).get("from")
+                    != "feature.videos_by_season_by_program"
+                ):
+                    continue
+                content = block.get("content")
+                items = content.get("items", []) if isinstance(content, dict) else []
+                for item in items if isinstance(items, list) else []:
+                    raw = item.get("itemContent") if isinstance(item, dict) else None
+                    highlight = str(raw.get("highlight") or "") if isinstance(raw, dict) else ""
+                    season_match = _SEASON_RE.search(highlight)
+                    episode_match = _EPISODE_RE.search(highlight)
+                    if (
+                        season_match
+                        and episode_match
+                        and int(season_match.group(1)) == current_season_number
+                    ):
+                        episode_numbers.append(int(episode_match.group(1)))
+        return max(episode_numbers, default=None)
 
     @staticmethod
     def _series_url(external_id: str) -> str | None:

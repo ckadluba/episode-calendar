@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from json import JSONDecodeError
 from typing import Any, ClassVar
+from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import ValidationError
@@ -94,6 +95,9 @@ query EpisodeCalendarJoynEpg($from: Timestamp!, $to: Timestamp!) {
 
 EPG_LOOKAHEAD = timedelta(days=28)
 MAX_EPG_EVENT_DURATION = timedelta(hours=4)
+EPG_FOLLOWUP_WINDOW = timedelta(days=4)
+EPG_SLOT_TOLERANCE = timedelta(hours=2)
+EPG_TIMEZONE = ZoneInfo("Europe/Vienna")
 logger = logging.getLogger(__name__)
 
 
@@ -283,23 +287,54 @@ class JoynProvider:
         ]
         if not matching:
             return None
-        episodes = tuple(
-            NormalizedEpisode(
-                external_id=event.external_id,
-                number=None,
-                title=event.title,
-                releases=(
-                    NormalizedEpisodeRelease(
-                        external_id=event.external_id,
-                        release_type=ReleaseType.TV_BROADCAST,
-                        release_at=event.start,
-                        available_until=event.end,
+        episodes: list[NormalizedEpisode] = []
+        last_regular_event: _EpgEvent | None = None
+        for event in matching:
+            rerun = False
+            if last_regular_event is not None:
+                elapsed = event.start - last_regular_event.start
+                slot_difference = self._slot_difference(event.start, last_regular_event.start)
+                rerun = (
+                    timedelta(0) < elapsed <= EPG_FOLLOWUP_WINDOW
+                    and slot_difference > EPG_SLOT_TOLERANCE
+                )
+                if rerun:
+                    logger.info(
+                        "Classified numberless Joyn EPG release as suspected rerun for %s: "
+                        "release_at=%s, previous_regular=%s, slot_difference=%s",
+                        normalized.title,
+                        event.start.isoformat(),
+                        last_regular_event.start.isoformat(),
+                        slot_difference,
+                    )
+            if not rerun:
+                last_regular_event = event
+            episodes.append(
+                NormalizedEpisode(
+                    external_id=event.external_id,
+                    number=None,
+                    title=event.title,
+                    releases=(
+                        NormalizedEpisodeRelease(
+                            external_id=event.external_id,
+                            release_type=ReleaseType.TV_BROADCAST,
+                            release_at=event.start,
+                            available_until=event.end,
+                            rerun=rerun,
+                        ),
                     ),
-                ),
+                )
             )
-            for event in matching
-        )
         return NormalizedSeason(external_id="joyn-epg", number=None, title="EPG", episodes=episodes)
+
+    @staticmethod
+    def _slot_difference(left: datetime, right: datetime) -> timedelta:
+        left_local = left.astimezone(EPG_TIMEZONE)
+        right_local = right.astimezone(EPG_TIMEZONE)
+        left_minutes = left_local.hour * 60 + left_local.minute
+        right_minutes = right_local.hour * 60 + right_local.minute
+        difference = abs(left_minutes - right_minutes)
+        return timedelta(minutes=min(difference, 24 * 60 - difference))
 
     async def _epg_events(self, client: httpx.AsyncClient) -> tuple[_EpgEvent, ...]:
         now = self._clock().astimezone(UTC)
@@ -433,7 +468,13 @@ class JoynProvider:
         airdate = self._timestamp(episode.get("airdate"), "episode.airdate")
         available_until = self._timestamp(episode.get("endsAt"), "episode.endsAt")
         markings = episode.get("markings")
-        preview = isinstance(markings, list) and "PREVIEW" in markings
+        preview_marked = isinstance(markings, list) and "PREVIEW" in markings
+        # Joyn keeps the PREVIEW marking on some catalog entries after the
+        # regular release has happened. Treat it as a preview only while the
+        # catalog start is still before the linear airdate. This preserves the
+        # actual early release (for example 29 September) without turning the
+        # regular release (6 October) into a second preview.
+        preview = preview_marked and (starts_at is None or airdate is None or starts_at < airdate)
         path = episode.get("path")
         url = self._episode_url(path)
         releases: list[NormalizedEpisodeRelease] = []

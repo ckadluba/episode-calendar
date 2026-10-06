@@ -202,26 +202,38 @@ describe("calendar releases", () => {
     releases,
   });
 
-  it("prefers regular catalog, then optional previews, then TV fallbacks", () => {
+  it("shows exactly one preferred release per episode", () => {
     const preview = { release_type: "streaming", release_at: "2026-09-28T18:00:00Z", url: "https://example.test/preview", preview: true };
     const regular = { release_type: "streaming", release_at: "2026-10-01T18:00:00Z", url: "https://example.test/regular", preview: false };
     const tv = { release_type: "tv_broadcast", release_at: "2026-10-02T18:00:00Z", url: null, preview: false };
 
-    expect(selectCalendarRelease(episodeWithReleases([preview, regular, tv]), true)).toBe(regular);
+    expect(selectCalendarRelease(episodeWithReleases([preview, regular, tv]), true)).toBe(preview);
+    expect(selectCalendarRelease(episodeWithReleases([preview, regular, tv]), false)).toBe(regular);
     expect(selectCalendarRelease(episodeWithReleases([preview, tv]), true)).toBe(preview);
     expect(selectCalendarRelease(episodeWithReleases([preview]), false)).toBeNull();
     expect(selectCalendarRelease(episodeWithReleases([preview]), true)).toBe(preview);
     expect(selectCalendarRelease(episodeWithReleases([tv]), false)).toBe(tv);
   });
 
-  it("selects the release that falls inside the displayed week", () => {
+  it("does not show the same episode again on its later TV release date", () => {
     const preview = { release_type: "streaming", release_at: "2026-09-29T22:00:00Z", url: "https://example.test/preview", preview: true };
     const tv = { release_type: "tv_broadcast", release_at: "2026-10-06T20:35:00Z", url: null, preview: false };
     const from = new Date("2026-10-05T00:00:00+02:00");
     const to = new Date("2026-10-12T00:00:00+02:00");
 
-    expect(selectCalendarRelease(episodeWithReleases([preview, tv]), true, from, to)).toBe(tv);
+    expect(selectCalendarRelease(episodeWithReleases([preview, tv]), true, from, to)).toBeNull();
     expect(selectCalendarRelease(episodeWithReleases([preview, tv]), true, new Date("2026-09-28T00:00:00Z"), from)).toBe(preview);
+    expect(selectCalendarRelease(episodeWithReleases([preview, tv]), false, from, to)).toBe(tv);
+  });
+
+  it("uses the later TV date when a week-earlier catalog release is a preview", () => {
+    const preview = { release_type: "streaming", release_at: "2026-10-06T22:00:00Z", url: "https://example.test/preview", preview: true };
+    const tv = { release_type: "tv_broadcast", release_at: "2026-10-13T18:15:00Z", url: null, preview: false };
+    const episode = episodeWithReleases([preview, tv]);
+
+    expect(selectCalendarRelease(episode, true, new Date("2026-10-05T00:00:00Z"), new Date("2026-10-12T00:00:00Z"))).toBe(preview);
+    expect(selectCalendarRelease(episode, false, new Date("2026-10-05T00:00:00Z"), new Date("2026-10-12T00:00:00Z"))).toBeNull();
+    expect(selectCalendarRelease(episode, false, new Date("2026-10-12T00:00:00Z"), new Date("2026-10-19T00:00:00Z"))).toBe(tv);
   });
 
   it("keeps every release date of an episode", () => {

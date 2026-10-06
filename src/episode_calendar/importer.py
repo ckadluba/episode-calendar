@@ -456,6 +456,11 @@ async def import_series(
             )
 
             for normalized_release in normalized_episode.releases:
+                # Reruns are a linear-TV concept. On-demand releases, including previews,
+                # are never reruns even when the surrounding episode is an old repeat.
+                release_is_rerun = (
+                    is_rerun or normalized_release.rerun
+                ) and normalized_release.release_type is ReleaseType.TV_BROADCAST
                 release_url = str(normalized_release.url) if normalized_release.url else catalog_url
                 if (
                     release_url is None
@@ -506,7 +511,7 @@ async def import_series(
                         release_at=normalized_release.release_at,
                         available_until=normalized_release.available_until,
                         url=release_url,
-                        rerun=is_rerun,
+                        rerun=release_is_rerun,
                         preview=normalized_release.preview,
                     )
                     session.add(release)
@@ -518,7 +523,7 @@ async def import_series(
                     release.available_until = normalized_release.available_until
                     if release_url is not None:
                         release.url = release_url
-                    release.rerun = is_rerun
+                    release.rerun = release_is_rerun
                     release.preview = normalized_release.preview
                 release_count += 1
 

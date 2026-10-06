@@ -133,6 +133,200 @@ async def test_epg_adds_broadcast_date_to_catalog_episode_without_release() -> N
     assert len(result.seasons) == 1
 
 
+async def test_epg_marks_earlier_catalog_release_as_preview() -> None:
+    endpoint = "https://rtlplus-test.example/guidetv-preview"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "rtlde_rtl": [
+                    {
+                        "code": "demo-preview",
+                        "title": "Demo series",
+                        "subtitle": "Folge 6 (2026)",
+                        "diffusion_start_date": "2026-10-06 20:15:00",
+                        "diffusion_end_date": "2026-10-06 21:45:00",
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    provider._epg_endpoint = endpoint
+    provider._epg_channels = ("rtlde_rtl",)
+    provider._clock = lambda: datetime(2026, 10, 6, tzinfo=UTC)
+    RTLPlusProvider._epg_tasks.clear()
+    normalized = NormalizedSeries(
+        external_id="demo",
+        title="Demo series",
+        seasons=(
+            NormalizedSeason(
+                external_id="season-1",
+                number=1,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="episode-3",
+                        number=3,
+                        title="Episode 3",
+                        releases=(
+                            {
+                                "release_type": ReleaseType.STREAMING,
+                                "release_at": datetime(
+                                    2026, 10, 6, tzinfo=ZoneInfo("Europe/Vienna")
+                                ),
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    try:
+        result = await provider._add_epg(client, normalized)
+    finally:
+        await client.aclose()
+
+    releases = result.seasons[0].episodes[0].releases
+    assert len(releases) == 2
+    assert releases[0].preview is True
+    assert releases[1].release_type is ReleaseType.TV_BROADCAST
+
+
+async def test_epg_marks_catalog_release_days_before_broadcast_as_preview() -> None:
+    endpoint = "https://rtlplus-test.example/guidetv-preview-days-apart"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "rtlde_rtl": [
+                    {
+                        "code": "demo-preview-days-apart",
+                        "title": "Demo series",
+                        "subtitle": "Folge 7",
+                        "diffusion_start_date": "2026-10-13 20:15:00",
+                        "diffusion_end_date": "2026-10-13 22:30:00",
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    provider._epg_endpoint = endpoint
+    provider._epg_channels = ("rtlde_rtl",)
+    provider._clock = lambda: datetime(2026, 10, 6, tzinfo=UTC)
+    RTLPlusProvider._epg_tasks.clear()
+    normalized = NormalizedSeries(
+        external_id="demo",
+        title="Demo series",
+        seasons=(
+            NormalizedSeason(
+                external_id="season-11",
+                number=11,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="episode-7",
+                        number=7,
+                        title="Episode 7",
+                        releases=(
+                            {
+                                "release_type": ReleaseType.STREAMING,
+                                "release_at": datetime(
+                                    2026, 10, 6, tzinfo=ZoneInfo("Europe/Vienna")
+                                ),
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    try:
+        result = await provider._add_epg(client, normalized)
+    finally:
+        await client.aclose()
+
+    releases = result.seasons[0].episodes[0].releases
+    assert releases[0].preview is True
+    assert releases[1].release_type is ReleaseType.TV_BROADCAST
+
+
+async def test_epg_episode_number_takes_precedence_over_same_day_catalog_release() -> None:
+    endpoint = "https://rtlplus-test.example/guidetv-number-priority"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "rtlde_rtl": [
+                    {
+                        "code": "demo-7",
+                        "title": "Demo series",
+                        "subtitle": "Folge 7",
+                        "diffusion_start_date": "2026-10-13 20:15:00",
+                        "diffusion_end_date": "2026-10-13 22:30:00",
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    provider._epg_endpoint = endpoint
+    provider._epg_channels = ("rtlde_rtl",)
+    provider._clock = lambda: datetime(2026, 10, 6, tzinfo=UTC)
+    RTLPlusProvider._epg_tasks.clear()
+    normalized = NormalizedSeries(
+        external_id="demo",
+        title="Demo series",
+        seasons=(
+            NormalizedSeason(
+                external_id="season-1",
+                number=1,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="episode-7",
+                        number=7,
+                        title="Episode 7",
+                        releases=(
+                            {
+                                "release_type": ReleaseType.STREAMING,
+                                "release_at": datetime(
+                                    2026, 10, 6, tzinfo=ZoneInfo("Europe/Vienna")
+                                ),
+                            },
+                        ),
+                    ),
+                    NormalizedEpisode(
+                        external_id="episode-8",
+                        number=8,
+                        title="Episode 8",
+                        releases=(
+                            {
+                                "release_type": ReleaseType.STREAMING,
+                                "release_at": datetime(
+                                    2026, 10, 13, tzinfo=ZoneInfo("Europe/Vienna")
+                                ),
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    try:
+        result = await provider._add_epg(client, normalized)
+    finally:
+        await client.aclose()
+
+    episodes = {episode.number: episode for episode in result.seasons[0].episodes}
+    assert episodes[7].releases[-1].release_type is ReleaseType.TV_BROADCAST
+    assert episodes[8].releases[0].preview is True
+
+
 async def test_epg_adds_numberless_future_episode_and_ignores_long_entries() -> None:
     endpoint = "https://rtlplus-test.example/guidetv-numberless"
 
@@ -186,6 +380,20 @@ async def test_epg_adds_numberless_future_episode_and_ignores_long_entries() -> 
     assert result.seasons[-1].external_id == "rtlplus-epg"
     assert len(result.seasons[-1].episodes) == 1
     assert result.seasons[-1].episodes[0].number is None
+
+
+def test_epg_event_uses_id_when_code_is_missing() -> None:
+    event = RTLPlusProvider._epg_event(
+        {
+            "id": 560809,
+            "title": "Der Blaulicht Report",
+            "subtitle": "Frau will vorbestraften Sohn vor Knast bewahren",
+            "diffusion_start_date": "2026-10-06 05:20:00",
+            "diffusion_end_date": "2026-10-06 06:00:00",
+        }
+    )
+
+    assert event.external_id == "epg:560809:1791256800"
 
 
 def test_schedule_supports_current_weekly_rtl_format() -> None:
@@ -312,6 +520,42 @@ def test_normalize_uses_diffusion_date_for_first_episode_without_schedule() -> N
     episode = result.seasons[0].episodes[0]
     assert episode.number == 1
     assert episode.releases[0].release_at == datetime(2026, 9, 22, tzinfo=ZoneInfo("Europe/Vienna"))
+
+
+def test_normalize_assigns_diffusion_date_to_latest_catalog_episode() -> None:
+    payload = {
+        "entity": {"id": "254773", "metadata": {"title": "Yeliz & Jimi"}},
+        "seo": {"diffusionDate": 1791237600, "metadata": {"title": "Yeliz & Jimi"}},
+        "blocks": [
+            {
+                "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                "content": {
+                    "title": {"short": "Staffel 2"},
+                    "items": [
+                        {
+                            "itemContent": {
+                                "id": f"clip-{episode_number}",
+                                "title": f"Folge {episode_number}",
+                                "highlight": f"Staffel 2 • Folge {episode_number}",
+                            }
+                        }
+                        for episode_number in (1, 2, 3)
+                    ],
+                },
+            }
+        ],
+    }
+
+    result = RTLPlusProvider._normalize(
+        RTLPlusProvider.__new__(RTLPlusProvider), "254773", [payload]
+    )
+
+    episodes = {episode.number: episode for episode in result.seasons[0].episodes}
+    assert episodes[1].releases == ()
+    assert episodes[2].releases == ()
+    assert episodes[3].releases[0].release_at == datetime(
+        2026, 10, 6, tzinfo=ZoneInfo("Europe/Vienna")
+    )
 
 
 def test_normalize_anchors_weekly_schedule_to_latest_feed_episode() -> None:
