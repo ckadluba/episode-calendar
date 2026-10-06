@@ -1,0 +1,51 @@
+info:
+  name: EpisodeCalendarEpg
+  type: graphql
+  seq: 2
+
+graphql:
+  method: POST
+  url: "{{base_url}}/graphql"
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: Joyn-Platform
+      value: web
+    - name: Joyn-Client-Version
+      value: 5.1579.1
+    - name: Joyn-Distribution-Tenant
+      value: JOYN_AT
+    - name: Joyn-Country
+      value: AT
+    - name: x-api-key
+      value: "{{joyn_api_key}}"
+  body:
+    query: |-
+      query EpisodeCalendarJoynEpg($from: Timestamp!, $to: Timestamp!) {
+        liveStreams(first: 5000, offset: 0) {
+          id
+          title
+          epgEvents(from: $from, to: $to) {
+            startDate
+            endDate
+            program {
+              ... on EpgEntry { __typename id title }
+              ... on Episode { __typename id title }
+              ... on Movie { __typename id title }
+            }
+          }
+        }
+      }
+    variables: |2-
+        {
+          "from": 1791244800,
+          "to": 1793664000
+        }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false
