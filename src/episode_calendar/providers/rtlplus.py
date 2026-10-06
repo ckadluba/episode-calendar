@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 
 # The provider mirrors a verbose external contract; long endpoint/field expressions are kept
@@ -8,8 +9,11 @@ import random
 # ruff: noqa: E501
 import re
 import time
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
+from typing import Any, ClassVar
+from unicodedata import normalize as unicode_normalize
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -24,6 +28,13 @@ from episode_calendar.providers.base import (
     NormalizedSeason,
     NormalizedSeries,
 )
+
+EPG_LOOKAHEAD = timedelta(days=14)
+MAX_EPG_EVENT_DURATION = timedelta(hours=4)
+EPG_MATCH_TOLERANCE = timedelta(minutes=15)
+EPG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+EPG_TIMEZONE = ZoneInfo("Europe/Vienna")
+logger = logging.getLogger(__name__)
 
 _SEASON_RE = re.compile(r"Staffel\s+(\d+)", re.IGNORECASE)
 _EPISODE_RE = re.compile(r"Folge\s+(\d+)", re.IGNORECASE)
@@ -73,12 +84,24 @@ class RTLPlusMalformedResponseError(RTLPlusProviderError):
     pass
 
 
+@dataclass(frozen=True)
+class _EpgEvent:
+    external_id: str
+    title: str
+    subtitle: str | None
+    description: str | None
+    start: datetime
+    end: datetime | None
+
+
 class RTLPlusProvider:
     """Read RTL+ Bedrock layout metadata for the German RTL+ catalogue.
 
     The layout endpoint and item fields are observed current web behaviour. Release times are
     parsed from the SEO markdown schedule table or the newer weekly cadence format.
     """
+
+    _epg_tasks: ClassVar[dict[tuple[str, str, date], asyncio.Task[tuple[_EpgEvent, ...]]]] = {}
 
     def __init__(
         self,
@@ -89,11 +112,20 @@ class RTLPlusProvider:
         bedrock_token: str | None = None,
         authorization: str | None = None,
         oidc_client_secret: str | None = None,
+        epg_endpoint: str | None = None,
+        epg_channels: str | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         settings = get_settings()
         self._client = client
         self._timeout = timeout if timeout is not None else settings.rtlplus_timeout_seconds
         self._endpoint_template = endpoint_template or settings.rtlplus_layout_url
+        self._epg_endpoint = epg_endpoint or settings.rtlplus_epg_url
+        self._epg_channels = tuple(
+            channel.strip()
+            for channel in (epg_channels or settings.rtlplus_epg_channels).split(",")
+            if channel.strip()
+        )
         self._bedrock_token = bedrock_token or settings.rtlplus_bedrock_token
         self._authorization = authorization or settings.rtlplus_authorization
         self._oidc_url = settings.rtlplus_oidc_token_url
@@ -102,6 +134,7 @@ class RTLPlusProvider:
         self._auth_url = settings.rtlplus_auth_url
         self._max_retries = settings.import_max_retries
         self._backoff = settings.import_backoff_seconds
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     @property
     def slug(self) -> str:
@@ -119,11 +152,222 @@ class RTLPlusProvider:
         if self._client is not None:
             if not self._bedrock_token or not self._authorization:
                 self._authorization, self._bedrock_token = await self._authenticate(self._client)
-            return await self._fetch(self._client, program_id, series_url)
+            normalized = await self._fetch(self._client, program_id, series_url)
+            return await self._add_epg(self._client, normalized)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             if not self._bedrock_token or not self._authorization:
                 self._authorization, self._bedrock_token = await self._authenticate(client)
-            return await self._fetch(client, program_id, series_url)
+            normalized = await self._fetch(client, program_id, series_url)
+            return await self._add_epg(client, normalized)
+
+    async def _add_epg(
+        self, client: httpx.AsyncClient, normalized: NormalizedSeries
+    ) -> NormalizedSeries:
+        """Merge RTL+'s linear TV guide into the catalog result.
+
+        Catalog episodes remain authoritative for season/episode metadata and links. The EPG
+        only supplies missing TV dates or creates numberless future entries, matching Joyn's
+        complementary-source semantics.
+        """
+
+        try:
+            events = await self._epg_events(client)
+        except Exception as exc:  # EPG is supplementary; the catalog remains usable.
+            logger.warning("RTL+ EPG unavailable for %s: %s", normalized.title, exc)
+            return normalized
+
+        matching = [event for event in events if self._same_title(event.title, normalized.title)]
+        if not matching:
+            return normalized
+
+        seasons = [season.model_copy(deep=True) for season in normalized.seasons]
+        catalog_episodes = [episode for season in seasons for episode in season.episodes]
+        synthetic: list[NormalizedEpisode] = []
+        for event in matching:
+            release = NormalizedEpisodeRelease(
+                external_id=event.external_id,
+                release_type=ReleaseType.TV_BROADCAST,
+                release_at=event.start,
+                available_until=event.end,
+            )
+            episode_number = self._epg_episode_number(event)
+            target = self._catalog_episode_for_epg(seasons, episode_number)
+            if target is not None:
+                if not any(
+                    existing.release_at.date() == event.start.date()
+                    and abs(existing.release_at - event.start) <= EPG_MATCH_TOLERANCE
+                    for existing in target.releases
+                ):
+                    seasons = [
+                        season.model_copy(
+                            update={
+                                "episodes": tuple(
+                                    episode.model_copy(
+                                        update={"releases": episode.releases + (release,)}
+                                    )
+                                    if episode.external_id == target.external_id
+                                    else episode
+                                    for episode in season.episodes
+                                )
+                            }
+                        )
+                        if any(
+                            episode.external_id == target.external_id for episode in season.episodes
+                        )
+                        else season
+                        for season in seasons
+                    ]
+                continue
+            if any(
+                existing.release_at.date() == event.start.date()
+                and abs(existing.release_at - event.start) <= EPG_MATCH_TOLERANCE
+                for episode in catalog_episodes
+                for existing in episode.releases
+            ):
+                continue
+            synthetic.append(
+                NormalizedEpisode(
+                    external_id=event.external_id,
+                    number=None,
+                    title=event.title,
+                    description=event.description,
+                    releases=(release,),
+                )
+            )
+
+        if synthetic:
+            seasons.append(
+                NormalizedSeason(
+                    external_id="rtlplus-epg",
+                    number=None,
+                    title="EPG",
+                    episodes=tuple(synthetic),
+                )
+            )
+        return normalized.model_copy(update={"seasons": tuple(seasons)})
+
+    async def _epg_events(self, client: httpx.AsyncClient) -> tuple[_EpgEvent, ...]:
+        now = self._clock().astimezone(UTC)
+        key = (self._epg_endpoint, ",".join(self._epg_channels), now.date())
+        task = self._epg_tasks.get(key)
+        if task is None:
+            task = asyncio.create_task(self._fetch_epg(client, now))
+            self._epg_tasks[key] = task
+        try:
+            return await task
+        except Exception:
+            if self._epg_tasks.get(key) is task:
+                del self._epg_tasks[key]
+            raise
+
+    async def _fetch_epg(self, client: httpx.AsyncClient, now: datetime) -> tuple[_EpgEvent, ...]:
+        end = now + EPG_LOOKAHEAD
+        events: dict[str, _EpgEvent] = {}
+        offset = 0
+        while True:
+            response = await client.get(
+                self._epg_endpoint,
+                params={
+                    "channel": ",".join(self._epg_channels),
+                    "from": now.astimezone(EPG_TIMEZONE).strftime(EPG_DATE_FORMAT),
+                    "to": end.astimezone(EPG_TIMEZONE).strftime(EPG_DATE_FORMAT),
+                    "limit": 99,
+                    "offset": offset,
+                    "with": "realdiffusiondates",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise RTLPlusMalformedResponseError("RTL+ EPG response was not an object")
+            page_count = 0
+            for channel_events in payload.values():
+                if not isinstance(channel_events, list):
+                    raise RTLPlusMalformedResponseError("RTL+ EPG channel data was not an array")
+                page_count += len(channel_events)
+                for raw in channel_events:
+                    if not isinstance(raw, dict):
+                        raise RTLPlusMalformedResponseError("RTL+ EPG event was not an object")
+                    event = self._epg_event(raw)
+                    if event.end is not None and event.end - event.start > MAX_EPG_EVENT_DURATION:
+                        continue
+                    events[event.external_id] = event
+            if page_count < 99:
+                break
+            offset += 99
+        return tuple(sorted(events.values(), key=lambda event: event.start))
+
+    @staticmethod
+    def _epg_event(raw: dict[str, Any]) -> _EpgEvent:
+        code = RTLPlusProvider._required_string(raw.get("code"), "EPG.code")
+        start = RTLPlusProvider._epg_timestamp(raw.get("diffusion_start_date"), "EPG.start")
+        if start is None:
+            raise RTLPlusMalformedResponseError("EPG.start was missing")
+        end = RTLPlusProvider._epg_timestamp(raw.get("diffusion_end_date"), "EPG.end")
+        title = RTLPlusProvider._required_string(raw.get("title"), "EPG.title")
+        subtitle = raw.get("subtitle") if isinstance(raw.get("subtitle"), str) else None
+        description = raw.get("description") if isinstance(raw.get("description"), str) else None
+        return _EpgEvent(
+            external_id=f"epg:{code}:{int(start.timestamp())}",
+            title=title,
+            subtitle=subtitle,
+            description=description,
+            start=start,
+            end=end,
+        )
+
+    @staticmethod
+    def _epg_timestamp(value: Any, location: str) -> datetime | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise RTLPlusMalformedResponseError(f"{location} was not a string")
+        try:
+            return (
+                datetime.strptime(value, EPG_DATE_FORMAT)
+                .replace(tzinfo=EPG_TIMEZONE)
+                .astimezone(UTC)
+            )
+        except ValueError as exc:
+            raise RTLPlusMalformedResponseError(f"{location} was not a valid timestamp") from exc
+
+    @staticmethod
+    def _same_title(left: str, right: str) -> bool:
+        def clean(value: str) -> str:
+            value = unicode_normalize("NFKD", value).encode("ascii", "ignore").decode()
+            return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+        return clean(left) == clean(right)
+
+    @staticmethod
+    def _epg_episode_number(event: _EpgEvent) -> int | None:
+        for value in (event.subtitle, event.title, event.external_id):
+            match = _EPISODE_RE.search(value or "")
+            if match:
+                return int(match.group(1))
+        return None
+
+    @staticmethod
+    def _catalog_episode_for_epg(
+        seasons: list[NormalizedSeason], episode_number: int | None
+    ) -> NormalizedEpisode | None:
+        if episode_number is None:
+            return None
+        for season in sorted(
+            (season for season in seasons if season.number is not None),
+            key=lambda season: season.number or 0,
+            reverse=True,
+        ):
+            for episode in season.episodes:
+                if episode.number == episode_number:
+                    return episode
+        return None
+
+    @staticmethod
+    def _required_string(value: Any, location: str) -> str:
+        if not isinstance(value, str) or not value:
+            raise RTLPlusMalformedResponseError(f"{location} was missing or not a string")
+        return value
 
     async def _authenticate(self, client: httpx.AsyncClient) -> tuple[str, str]:
         if not self._oidc_client_secret:
