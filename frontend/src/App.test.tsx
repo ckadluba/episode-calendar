@@ -127,6 +127,25 @@ describe("App preferences", () => {
     expect(vi.mocked(fetch).mock.calls).toHaveLength(requestCount);
   });
 
+  it("hides the preview checkbox for providers without previews", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const data = url.endsWith("/series")
+          ? [...series, { id: "series-3", title: "Ohne Vorab-Releases", platform: "Amazon Prime Video", platform_id: "amazon_prime_de", description: null }]
+          : [];
+        return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }));
+      }),
+    );
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("3 von 3 Serien ausgewählt")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    expect(screen.getByRole("checkbox", { name: "Vorab-Releases für Joyn.at anzeigen" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Vorab-Releases für Amazon Prime Video anzeigen" })).not.toBeInTheDocument();
+  });
+
   it("selects or clears all series globally", async () => {
     render(<App />);
 
