@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, calendarItems, episodeStartLabel, selectCalendarRelease, seriesColor, sortCalendarItems, type Release } from "./App";
 
@@ -14,6 +14,30 @@ function mockApi() {
     "fetch",
     vi.fn((url: string) => {
       const data = url.endsWith("/series") ? series : [];
+      return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }));
+    }),
+  );
+}
+
+const HIDE_CONFIRMATION = "Willst du alle Folgen dieser Serie verstecken? Du kannst diese Einstellung jederzeit in der Filter Seite wieder ändern.";
+
+function mockApiWithEpisode() {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      const data = url.endsWith("/series")
+        ? series
+        : [{
+            id: "episode-1",
+            series_id: "series-1",
+            season_number: 1,
+            number: 1,
+            title: "Pilot",
+            description: null,
+            platform: "RTL+",
+            platform_id: "rtlplus",
+            releases: [{ release_type: "streaming", release_at: new Date().toISOString(), url: "https://example.test/1", preview: false }],
+          }];
       return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }));
     }),
   );
@@ -155,6 +179,53 @@ describe("App preferences", () => {
     fireEvent.click(screen.getByRole("button", { name: "Filter" }));
     expect(screen.getByRole("checkbox", { name: "Vorab-Releases für Joyn.at anzeigen" })).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "Vorab-Releases für Amazon Prime Video anzeigen" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the series when the hide confirmation is declined", async () => {
+    mockApiWithEpisode();
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
+    const tile = screen.getByText(/Pilot/).closest(".episode");
+    expect(tile).not.toBeNull();
+    const hideButton = within(tile as HTMLElement).getByRole("button", { name: "Serie ausblenden" });
+    expect(hideButton.closest("a")).toBeNull();
+
+    fireEvent.click(hideButton);
+
+    expect(screen.getByRole("dialog", { name: "Testserie" })).toHaveTextContent(HIDE_CONFIRMATION);
+    expect(screen.getByText(/Pilot/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Nein" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText(/Pilot/)).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("episode-calendar-series-selection") ?? "null")).toEqual({
+      selected: ["series-1", "series-2"],
+      known: ["series-1", "series-2"],
+    });
+  });
+
+  it("hides a series from its calendar tile after confirming", async () => {
+    mockApiWithEpisode();
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
+    const tile = screen.getByText(/Pilot/).closest(".episode");
+    fireEvent.click(within(tile as HTMLElement).getByRole("button", { name: "Serie ausblenden" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ja" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Pilot/)).not.toBeInTheDocument();
+    expect(screen.getAllByText("Keine Episoden")).toHaveLength(7);
+    expect(JSON.parse(localStorage.getItem("episode-calendar-series-selection") ?? "null")).toEqual({
+      selected: ["series-2"],
+      known: ["series-1", "series-2"],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    expect(screen.getByRole("checkbox", { name: "Testserie" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Andere Serie" })).toBeChecked();
   });
 
   it("selects or clears all series globally", async () => {
