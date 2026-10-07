@@ -234,6 +234,16 @@ export function App() {
   const [filterOpen, setFilterOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [hideCandidate, setHideCandidate] = useState<{ seriesId: string; title: string } | null>(null);
+
+  useEffect(() => {
+    if (!hideCandidate) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setHideCandidate(null);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [hideCandidate]);
 
   useEffect(() => { localStorage.setItem("episode-calendar-week", week); }, [week]);
   useEffect(() => {
@@ -335,6 +345,7 @@ export function App() {
     byDay.set(key, [...(byDay.get(key) ?? []), item]);
   });
   const seriesMap = new Map(series.map((item) => [item.id, item]));
+  const hideSeries = (seriesId: string) => setSelectedSeriesIds((current) => current.filter((id) => id !== seriesId));
   if (filterOpen) return <SeriesFilterPage
     series={series}
     selectedIds={selectedSeriesIds}
@@ -349,8 +360,18 @@ export function App() {
     <section className="filters" aria-label="Filter"><button className="filter-button" type="button" disabled={!seriesSelectionInitialized} onClick={() => setFilterOpen(true)}>Filter</button><span>{selectedSeriesIds.length} von {series.length} Serien ausgewählt</span></section>
     {loading && <p className="status">Kalender wird geladen …</p>}
     {error && <p className="status error">{error}<br /><small>Prüfe, ob die API unter {API_URL} läuft.</small></p>}
-    {!loading && !error && <section className="calendar">{days.map((day) => { const items = sortCalendarItems(byDay.get(dateKey(day)) ?? [], seriesMap); return <article className={dateKey(day) === todayKey ? "day day-today" : "day"} key={dateKey(day)}><h2>{dayLabel.format(day)}</h2>{items.length === 0 ? <p className="empty">Keine Episoden</p> : items.map(({ episode, release }) => { const show = seriesMap.get(episode.series_id); const color = seriesColor(episode.series_id); const colorStyle = { "--series-color": color } as CSSProperties; const startLabel = episodeStartLabel(episode); const className = `episode${release.url ? " episode-link" : ""}${startLabel ? " episode-new" : ""}`; const content = <><div className="episode-header"><div className="episode-time">{timeLabel.format(new Date(release.release_at))}</div><span className={`badge ${episode.platform_id}`}>{episode.platform}</span></div><div><h3><span className="series-dot" style={{ backgroundColor: color }} aria-hidden="true" />{show?.title ?? "Unbekannte Serie"}</h3><p>{episode.season_number ? `S${episode.season_number} · ` : ""}{episode.number ? `E${episode.number} · ` : ""}{episode.title}</p><div className="episode-badges">{startLabel && <span className="new-badge">{startLabel}</span>}{release.preview && <span className="preview-badge">Vorab</span>}</div></div></>; return release.url ? <a className={className} style={colorStyle} href={release.url} target="_blank" rel="noreferrer" key={`${episode.id}-${release.release_at}`}>{content}</a> : <div className={className} style={colorStyle} key={`${episode.id}-${release.release_at}`}>{content}</div>; })}</article>; })}</section>}
+    {!loading && !error && <section className="calendar">{days.map((day) => { const items = sortCalendarItems(byDay.get(dateKey(day)) ?? [], seriesMap); return <article className={dateKey(day) === todayKey ? "day day-today" : "day"} key={dateKey(day)}><h2>{dayLabel.format(day)}</h2>{items.length === 0 ? <p className="empty">Keine Episoden</p> : items.map(({ episode, release }) => { const show = seriesMap.get(episode.series_id); const color = seriesColor(episode.series_id); const colorStyle = { "--series-color": color } as CSSProperties; const startLabel = episodeStartLabel(episode); const className = `episode${startLabel ? " episode-new" : ""}`; const content = <><div className="episode-header"><div className="episode-time">{timeLabel.format(new Date(release.release_at))}</div><span className={`badge ${episode.platform_id}`}>{episode.platform}</span></div><div><h3><span className="series-dot" style={{ backgroundColor: color }} aria-hidden="true" />{show?.title ?? "Unbekannte Serie"}</h3><p>{episode.season_number ? `S${episode.season_number} · ` : ""}{episode.number ? `E${episode.number} · ` : ""}{episode.title}</p><div className="episode-badges">{startLabel && <span className="new-badge">{startLabel}</span>}{release.preview && <span className="preview-badge">Vorab</span>}</div></div></>; return <article className={className} style={colorStyle} key={`${episode.id}-${release.release_at}`}>{release.url ? <a className="episode-link" href={release.url} target="_blank" rel="noreferrer">{content}</a> : content}<button className="episode-hide" type="button" onClick={() => setHideCandidate({ seriesId: episode.series_id, title: show?.title ?? episode.platform })}>Serie ausblenden</button></article>; })}</article>; })}</section>}
     {!loading && !error && filtered.length === 0 && <p className="status">Für diese Filter wurden keine Episoden gefunden.</p>}
     <footer className="app-footer">Episode Calendar is open source under the <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noreferrer">Apache 2.0 license</a>. Created by <a href="https://github.com/ckadluba" target="_blank" rel="noreferrer">Christian Kadluba</a>. <a href="https://github.com/ckadluba/episode-calendar" target="_blank" rel="noreferrer">View the source on GitHub</a>.</footer>
+    {hideCandidate && <div className="confirm-backdrop" onClick={() => setHideCandidate(null)}>
+      <div className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="hide-series-title" onClick={(event) => event.stopPropagation()}>
+        <h2 id="hide-series-title">{hideCandidate.title}</h2>
+        <p>Willst du alle Folgen dieser Serie verstecken? Du kannst diese Einstellung jederzeit in der Filter Seite wieder ändern.</p>
+        <div className="confirm-actions">
+          <button className="secondary-button" type="button" autoFocus onClick={() => setHideCandidate(null)}>Nein</button>
+          <button className="primary-button" type="button" onClick={() => { hideSeries(hideCandidate.seriesId); setHideCandidate(null); }}>Ja</button>
+        </div>
+      </div>
+    </div>}
   </main>;
 }
