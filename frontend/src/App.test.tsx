@@ -337,6 +337,16 @@ describe("calendar releases", () => {
     expect(selectCalendarRelease(episode, false, new Date("2026-10-12T00:00:00Z"), new Date("2026-10-19T00:00:00Z"))).toBe(tv);
   });
 
+  it("keeps the TV premiere instead of a later streaming placeholder", () => {
+    const streaming = { release_type: "streaming", release_at: "2026-10-13T22:00:00Z", url: "https://plus.rtl.de/demo", preview: false };
+    const tv = { release_type: "tv_broadcast", release_at: "2026-10-07T18:15:00Z", url: null, preview: false };
+    const episode = episodeWithReleases([streaming, tv]);
+
+    expect(selectCalendarRelease(episode, true, new Date("2026-10-05T00:00:00Z"), new Date("2026-10-12T00:00:00Z"))).toBe(tv);
+    expect(selectCalendarRelease(episode, false, new Date("2026-10-05T00:00:00Z"), new Date("2026-10-12T00:00:00Z"))).toBe(tv);
+    expect(selectCalendarRelease(episode, false, new Date("2026-10-12T00:00:00Z"), new Date("2026-10-19T00:00:00Z"))).toBeNull();
+  });
+
   it("keeps every release date of an episode", () => {
     const episode = {
       id: "episode-1",

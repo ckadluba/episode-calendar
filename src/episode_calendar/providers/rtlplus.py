@@ -114,6 +114,7 @@ class RTLPlusProvider:
         oidc_client_secret: str | None = None,
         epg_endpoint: str | None = None,
         epg_channels: str | None = None,
+        epg_lookback_days: int | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         settings = get_settings()
@@ -125,6 +126,11 @@ class RTLPlusProvider:
             channel.strip()
             for channel in (epg_channels or settings.rtlplus_epg_channels).split(",")
             if channel.strip()
+        )
+        self._epg_lookback_days = (
+            epg_lookback_days
+            if epg_lookback_days is not None
+            else settings.rtlplus_epg_lookback_days
         )
         self._bedrock_token = bedrock_token or settings.rtlplus_bedrock_token
         self._authorization = authorization or settings.rtlplus_authorization
@@ -191,7 +197,9 @@ class RTLPlusProvider:
                 available_until=event.end,
             )
             # A catalog release earlier on the same day is the known RTL+ preview
-            # pattern, even when the EPG labels another episode number.
+            # pattern, even when the EPG labels another episode number. An episode
+            # whose own premiere already aired cannot gain a preview: its later
+            # same-day drop is a cadence artifact, not an early release.
             for candidate in tuple(episode for season in seasons for episode in season.episodes):
                 updated_releases = tuple(
                     existing.model_copy(update={"preview": True})
@@ -200,6 +208,11 @@ class RTLPlusProvider:
                         and not existing.preview
                         and existing.release_at.date() == event.start.date()
                         and existing.release_at < event.start
+                        and not any(
+                            other.release_type is ReleaseType.TV_BROADCAST
+                            and other.release_at < existing.release_at
+                            for other in candidate.releases
+                        )
                     )
                     else existing
                     for existing in candidate.releases
@@ -215,13 +228,19 @@ class RTLPlusProvider:
                 # preview, even when the two dates are several days apart. This is how
                 # RTL+ publishes episodes such as Sommerhaus S11E7 (catalog: 6 Oct,
                 # TV: 13 Oct). Limit the inference to the EPG look-ahead window so an
-                # unrelated old release is not reclassified when an episode is rerun.
+                # unrelated old release is not reclassified when an episode is rerun,
+                # and keep an already-aired episode from gaining a preview.
                 updated_releases = tuple(
                     existing.model_copy(update={"preview": True})
                     if (
                         existing.release_type is ReleaseType.STREAMING
                         and not existing.preview
                         and timedelta(0) < event.start - existing.release_at <= EPG_LOOKAHEAD
+                        and not any(
+                            other.release_type is ReleaseType.TV_BROADCAST
+                            and other.release_at < existing.release_at
+                            for other in target.releases
+                        )
                     )
                     else existing
                     for existing in target.releases
@@ -285,6 +304,11 @@ class RTLPlusProvider:
             raise
 
     async def _fetch_epg(self, client: httpx.AsyncClient, now: datetime) -> tuple[_EpgEvent, ...]:
+        # Include the recent past so premieres that aired shortly before the import (for
+        # example a Wednesday-night lead-in already broadcast today) are not lost to a
+        # from-now-only window; the central rerun policy keeps their night replays marked
+        # as reruns.
+        start = now - timedelta(days=self._epg_lookback_days)
         end = now + EPG_LOOKAHEAD
         events: dict[str, _EpgEvent] = {}
         offset = 0
@@ -293,7 +317,7 @@ class RTLPlusProvider:
                 self._epg_endpoint,
                 params={
                     "channel": ",".join(self._epg_channels),
-                    "from": now.astimezone(EPG_TIMEZONE).strftime(EPG_DATE_FORMAT),
+                    "from": start.astimezone(EPG_TIMEZONE).strftime(EPG_DATE_FORMAT),
                     "to": end.astimezone(EPG_TIMEZONE).strftime(EPG_DATE_FORMAT),
                     "limit": 99,
                     "offset": offset,

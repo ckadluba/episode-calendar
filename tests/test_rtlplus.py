@@ -87,7 +87,7 @@ async def test_epg_adds_broadcast_date_to_catalog_episode_without_release() -> N
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/guidetv"
         assert request.url.params["channel"] == "rtlde_rtl"
-        assert request.url.params["from"] == "2026-10-06 02:00:00"
+        assert request.url.params["from"] == "2026-09-15 02:00:00"
         return httpx.Response(
             200,
             json={
@@ -108,6 +108,7 @@ async def test_epg_adds_broadcast_date_to_catalog_episode_without_release() -> N
     provider = RTLPlusProvider.__new__(RTLPlusProvider)
     provider._epg_endpoint = endpoint
     provider._epg_channels = ("rtlde_rtl",)
+    provider._epg_lookback_days = 21
     provider._clock = lambda: datetime(2026, 10, 6, tzinfo=UTC)
     RTLPlusProvider._epg_tasks.clear()
     normalized = NormalizedSeries(
@@ -133,6 +134,62 @@ async def test_epg_adds_broadcast_date_to_catalog_episode_without_release() -> N
     assert len(result.seasons) == 1
 
 
+async def test_epg_adds_premiere_and_night_repeat_before_now() -> None:
+    endpoint = "https://rtlplus-test.example/guidetv-premiere"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "rtlde_rtlzwei": [
+                    {
+                        "code": "folge-5-2026",
+                        "title": "Love Island VIP",
+                        "subtitle": "Folge 5 (2026)",
+                        "diffusion_start_date": "2026-10-07 20:15:00",
+                        "diffusion_end_date": "2026-10-07 21:25:00",
+                    },
+                    {
+                        "code": "folge-5-2026",
+                        "title": "Love Island VIP",
+                        "subtitle": "Folge 5 (2026)",
+                        "diffusion_start_date": "2026-10-13 00:15:00",
+                        "diffusion_end_date": "2026-10-13 01:20:00",
+                    },
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    provider._epg_endpoint = endpoint
+    provider._epg_channels = ("rtlde_rtlzwei",)
+    provider._epg_lookback_days = 21
+    provider._clock = lambda: datetime(2026, 10, 8, tzinfo=UTC)
+    RTLPlusProvider._epg_tasks.clear()
+    normalized = NormalizedSeries(
+        external_id="demo",
+        title="Love Island VIP",
+        seasons=(
+            NormalizedSeason(
+                external_id="season-1",
+                number=1,
+                episodes=(NormalizedEpisode(external_id="episode-5", number=5, title="Folge 5"),),
+            ),
+        ),
+    )
+    try:
+        result = await provider._add_epg(client, normalized)
+    finally:
+        await client.aclose()
+
+    releases = result.seasons[0].episodes[0].releases
+    assert [release.release_at for release in releases] == [
+        datetime(2026, 10, 7, 18, 15, tzinfo=UTC),
+        datetime(2026, 10, 12, 22, 15, tzinfo=UTC),
+    ]
+
+
 async def test_epg_marks_earlier_catalog_release_as_preview() -> None:
     endpoint = "https://rtlplus-test.example/guidetv-preview"
 
@@ -156,6 +213,7 @@ async def test_epg_marks_earlier_catalog_release_as_preview() -> None:
     provider = RTLPlusProvider.__new__(RTLPlusProvider)
     provider._epg_endpoint = endpoint
     provider._epg_channels = ("rtlde_rtl",)
+    provider._epg_lookback_days = 21
     provider._clock = lambda: datetime(2026, 10, 6, tzinfo=UTC)
     RTLPlusProvider._epg_tasks.clear()
     normalized = NormalizedSeries(
@@ -217,6 +275,7 @@ async def test_epg_marks_catalog_release_days_before_broadcast_as_preview() -> N
     provider = RTLPlusProvider.__new__(RTLPlusProvider)
     provider._epg_endpoint = endpoint
     provider._epg_channels = ("rtlde_rtl",)
+    provider._epg_lookback_days = 21
     provider._clock = lambda: datetime(2026, 10, 6, tzinfo=UTC)
     RTLPlusProvider._epg_tasks.clear()
     normalized = NormalizedSeries(
@@ -277,6 +336,7 @@ async def test_epg_episode_number_takes_precedence_over_same_day_catalog_release
     provider = RTLPlusProvider.__new__(RTLPlusProvider)
     provider._epg_endpoint = endpoint
     provider._epg_channels = ("rtlde_rtl",)
+    provider._epg_lookback_days = 21
     provider._clock = lambda: datetime(2026, 10, 6, tzinfo=UTC)
     RTLPlusProvider._epg_tasks.clear()
     normalized = NormalizedSeries(
@@ -327,6 +387,73 @@ async def test_epg_episode_number_takes_precedence_over_same_day_catalog_release
     assert episodes[8].releases[0].preview is True
 
 
+async def test_epg_does_not_mark_already_aired_catalog_release_as_preview() -> None:
+    endpoint = "https://rtlplus-test.example/guidetv-no-preview-after-premiere"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "rtlde_rtlzwei": [
+                    {
+                        "code": "folge-5-2026",
+                        "title": "Love Island VIP",
+                        "subtitle": "Folge 5 (2026)",
+                        "diffusion_start_date": "2026-10-07 20:15:00",
+                        "diffusion_end_date": "2026-10-07 21:25:00",
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    provider._epg_endpoint = endpoint
+    provider._epg_channels = ("rtlde_rtlzwei",)
+    provider._epg_lookback_days = 21
+    provider._clock = lambda: datetime(2026, 10, 8, tzinfo=UTC)
+    RTLPlusProvider._epg_tasks.clear()
+    normalized = NormalizedSeries(
+        external_id="demo",
+        title="Love Island VIP",
+        seasons=(
+            NormalizedSeason(
+                external_id="season-1",
+                number=1,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="episode-4",
+                        number=4,
+                        title="Folge 4",
+                        releases=(
+                            {
+                                "release_type": ReleaseType.STREAMING,
+                                "release_at": datetime(
+                                    2026, 10, 7, 0, 0, tzinfo=ZoneInfo("Europe/Vienna")
+                                ),
+                            },
+                            {
+                                "release_type": ReleaseType.TV_BROADCAST,
+                                "release_at": datetime(2026, 9, 30, 18, 15, tzinfo=UTC),
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    try:
+        result = await provider._add_epg(client, normalized)
+    finally:
+        await client.aclose()
+
+    episode = result.seasons[0].episodes[0]
+    streaming = next(
+        release for release in episode.releases if release.release_type is ReleaseType.STREAMING
+    )
+    assert streaming.preview is False
+
+
 async def test_epg_adds_numberless_future_episode_and_ignores_long_entries() -> None:
     endpoint = "https://rtlplus-test.example/guidetv-numberless"
 
@@ -358,6 +485,7 @@ async def test_epg_adds_numberless_future_episode_and_ignores_long_entries() -> 
     provider = RTLPlusProvider.__new__(RTLPlusProvider)
     provider._epg_endpoint = endpoint
     provider._epg_channels = ("rtlde_rtl",)
+    provider._epg_lookback_days = 21
     provider._clock = lambda: datetime(2026, 10, 6, tzinfo=UTC)
     RTLPlusProvider._epg_tasks.clear()
     normalized = NormalizedSeries(

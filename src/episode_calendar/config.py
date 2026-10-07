@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     rtlplus_layout_url: str = "https://layout.rtlde.bedrock.tech/front/v1/rtlde/m6group_web/main/token-web-31/program/{program_id}/layout"
     rtlplus_epg_url: str = "https://pc.middleware.rtlde.bedrock.tech/6play/v2/platforms/m6group_web/services/rtlde_rtl/guidetv"
     rtlplus_epg_channels: str = "rtlde_rtl,rtlde_vox,rtlde_rtlzwei,rtlde_voxup"
+    rtlplus_epg_lookback_days: int = 21
     rtlplus_bedrock_token: str | None = None
     rtlplus_authorization: str | None = None
     rtlplus_oidc_token_url: str = (

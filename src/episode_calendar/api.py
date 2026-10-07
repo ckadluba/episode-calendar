@@ -57,6 +57,10 @@ def _select_release(releases: list[EpisodeRelease]) -> EpisodeRelease | None:
     published by the catalog.  Regular catalog data remains the preferred
     source; previews are next, and TV broadcasts are only a fallback when no
     catalog release is available after the preview filter was applied.
+
+    A regular streaming date that falls *after* the linear premiere is a catalog
+    artifact (RTL+ catalog times are prereleases that precede their EPG airing)
+    and must not displace the actual premiere in the calendar.
     """
 
     def newest(items: list[EpisodeRelease]) -> EpisodeRelease | None:
@@ -66,7 +70,11 @@ def _select_release(releases: list[EpisodeRelease]) -> EpisodeRelease | None:
     regular_catalog_releases = [item for item in catalog_releases if not item.preview]
     preview_releases = [item for item in catalog_releases if item.preview]
     tv_releases = [item for item in releases if item.release_type == ReleaseType.TV_BROADCAST]
-    return newest(regular_catalog_releases) or newest(preview_releases) or newest(tv_releases)
+    tv = newest(tv_releases)
+    regular = newest(regular_catalog_releases)
+    if tv is not None and regular is not None and regular.release_at > tv.release_at:
+        regular = None
+    return regular or newest(preview_releases) or tv
 
 
 class SeriesResponse(BaseModel):
