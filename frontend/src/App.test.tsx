@@ -7,6 +7,8 @@ const series = [
   { id: "series-2", title: "Andere Serie", platform: "Joyn.at", platform_id: "joyn", description: null },
 ];
 
+const dayLabel = new Intl.DateTimeFormat("de-AT", { weekday: "short", day: "numeric", month: "short" });
+
 function mockApi() {
   vi.stubGlobal(
     "fetch",
@@ -60,6 +62,15 @@ describe("App preferences", () => {
 
     await waitFor(() => expect(screen.queryByText("Kalender wird geladen …")).not.toBeInTheDocument());
     expect(screen.getAllByRole("heading", { level: 2 })[0]).toHaveTextContent(/^(Mo|Di|Mi|Do|Fr|Sa|So)\., \d{1,2}\. /);
+  });
+
+  it("highlights the current day in the calendar", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.queryByText("Kalender wird geladen …")).not.toBeInTheDocument());
+    const highlighted = document.querySelectorAll(".day-today");
+    expect(highlighted).toHaveLength(1);
+    expect(highlighted[0]).toHaveTextContent(dayLabel.format(new Date()));
   });
 
   it("persists an arbitrary series selection", async () => {
