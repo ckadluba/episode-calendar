@@ -27,6 +27,38 @@ def test_select_release_keeps_preview_before_later_tv_release() -> None:
     assert _select_release([preview, tv]) is preview
 
 
+def test_select_release_prefers_tv_over_later_catalog_release() -> None:
+    provider = Provider(slug="joyn", name="Joyn.at")
+    streaming = EpisodeRelease(
+        provider=provider,
+        release_type=ReleaseType.STREAMING,
+        release_at=datetime(2026, 10, 14, 0, 0, tzinfo=UTC),
+    )
+    tv = EpisodeRelease(
+        provider=provider,
+        release_type=ReleaseType.TV_BROADCAST,
+        release_at=datetime(2026, 10, 7, 18, 15, tzinfo=UTC),
+    )
+
+    assert _select_release([streaming, tv]) is tv
+
+
+def test_select_release_keeps_catalog_release_before_tv_premiere() -> None:
+    provider = Provider(slug="joyn", name="Joyn.at")
+    streaming = EpisodeRelease(
+        provider=provider,
+        release_type=ReleaseType.STREAMING,
+        release_at=datetime(2026, 10, 7, 0, 0, tzinfo=UTC),
+    )
+    tv = EpisodeRelease(
+        provider=provider,
+        release_type=ReleaseType.TV_BROADCAST,
+        release_at=datetime(2026, 10, 7, 18, 15, tzinfo=UTC),
+    )
+
+    assert _select_release([streaming, tv]) is streaming
+
+
 @pytest.mark.asyncio
 async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatch) -> None:
     monkeypatch.setattr(

@@ -106,9 +106,15 @@ export function selectCalendarRelease(
     null,
   );
 
-  const selected = (includePreview ? newest(previewReleases) : null)
-    ?? newest(regularCatalogReleases)
-    ?? newest(tvReleases);
+  const tv = newest(tvReleases);
+  const regular = newest(regularCatalogReleases);
+  // A regular streaming date after the linear premiere is a catalog artifact
+  // (RTL+ catalog times are prereleases that precede their EPG airing) and must
+  // not displace the premiere in the calendar.
+  const canonical = tv && regular && Date.parse(regular.release_at) > Date.parse(tv.release_at)
+    ? tv
+    : (regular ?? tv);
+  const selected = (includePreview ? newest(previewReleases) : null) ?? canonical;
   if (!selected) return null;
 
   const releaseAt = Date.parse(selected.release_at);
