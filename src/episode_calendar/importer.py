@@ -73,6 +73,7 @@ class RerunDetection:
 
     episode_keys: frozenset[tuple[str, str, int | None]]
     existing_episode_ids: frozenset[UUID]
+    rerun_release_keys: frozenset[tuple[str, str, str | None]]
 
 
 def detect_reruns(
@@ -95,6 +96,7 @@ def detect_reruns(
 
     rerun_episode_keys: set[tuple[str, str, int | None]] = set()
     rerun_episode_ids: set[UUID] = set()
+    rerun_release_keys: set[tuple[str, str, str | None]] = set()
     catalog_tv_releases = tuple(
         release
         for normalized_season in normalized.seasons
@@ -161,6 +163,11 @@ def detect_reruns(
             old_known_episode = (
                 release_at is not None
                 and reference_time - release_at > KNOWN_EPISODE_RELEASE_MAX_AGE
+            )
+            tv_broadcasts = tuple(
+                release
+                for release in normalized_episode.releases
+                if release.release_type is ReleaseType.TV_BROADCAST
             )
             epg_only_broadcast = (
                 normalized_season.number is None
@@ -257,9 +264,60 @@ def detect_reruns(
                 rerun_episode_keys.add(episode_key)
                 if episode_id:
                     rerun_episode_ids.add(episode_id)
+            # Only the earliest linear broadcast of an episode is a premiere; a second,
+            # later airing (for example a night-time repeat of the same day's broadcast)
+            # is a rerun even when the episode itself is still running. This keeps
+            # provider-only guide data out of the shared policy: corrections that
+            # republish the same airing collapse onto one release, whereas genuinely
+            # repeated broadcasts carry distinct provider identifiers.
+            if len(tv_broadcasts) > 1:
+                premiere = min(tv_broadcasts, key=lambda release: release.release_at)
+                for release in tv_broadcasts:
+                    if release is not premiere:
+                        rerun_release_keys.add(
+                            (
+                                normalized_season.external_id,
+                                normalized_episode.external_id,
+                                release.external_id,
+                            )
+                        )
+    # Linear TV airs the episodes of a season in ascending order. Once a higher-numbered
+    # episode has aired, a later broadcast of a lower-numbered episode is a repeat of the
+    # season start (for example a regional night marathon rerunning the opening episodes
+    # while later episodes have already premiered). Like the per-episode rule above this
+    # is limited to broadcasts known in this pass so schedule corrections are not
+    # misclassified.
+    ascending_baseline: dict[str, int] = {}
+    sequenced_broadcasts = list(
+        (
+            normalized_season.external_id,
+            normalized_episode.number,
+            normalized_episode.external_id,
+            release,
+        )
+        for normalized_season in normalized.seasons
+        if normalized_season.number is not None
+        for normalized_episode in normalized_season.episodes
+        if normalized_episode.number is not None
+        for release in normalized_episode.releases
+        if release.release_type is ReleaseType.TV_BROADCAST
+    )
+    sequenced_broadcasts.sort(key=lambda item: item[3].release_at)
+    for season_external_id, episode_number, episode_external_id, release in sequenced_broadcasts:
+        highest = ascending_baseline.get(season_external_id, 0)
+        if episode_number <= highest:
+            rerun_release_keys.add(
+                (
+                    season_external_id,
+                    episode_external_id,
+                    release.external_id,
+                )
+            )
+        ascending_baseline[season_external_id] = max(highest, episode_number)
     return RerunDetection(
         episode_keys=frozenset(rerun_episode_keys),
         existing_episode_ids=frozenset(rerun_episode_ids),
+        rerun_release_keys=frozenset(rerun_release_keys),
     )
 
 
@@ -458,8 +516,13 @@ async def import_series(
             for normalized_release in normalized_episode.releases:
                 # Reruns are a linear-TV concept. On-demand releases, including previews,
                 # are never reruns even when the surrounding episode is an old repeat.
+                release_key = (
+                    normalized_season.external_id,
+                    normalized_episode.external_id,
+                    normalized_release.external_id,
+                )
                 release_is_rerun = (
-                    is_rerun or normalized_release.rerun
+                    is_rerun or normalized_release.rerun or release_key in reruns.rerun_release_keys
                 ) and normalized_release.release_type is ReleaseType.TV_BROADCAST
                 release_url = str(normalized_release.url) if normalized_release.url else catalog_url
                 if (

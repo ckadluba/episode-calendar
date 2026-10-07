@@ -48,6 +48,7 @@ class ARDMediathekProvider:
         page_size: int = 100,
         program_url: str | None = None,
         schedule_days: int | None = None,
+        schedule_lookback_days: int | None = None,
     ) -> None:
         settings = get_settings()
         self._client = client
@@ -58,6 +59,11 @@ class ARDMediathekProvider:
         self._program_detail_url = f"{self._program_url.rsplit('/', 1)[0]}/detail"
         self._schedule_days = (
             schedule_days if schedule_days is not None else settings.ardmediathek_schedule_days
+        )
+        self._schedule_lookback_days = (
+            schedule_lookback_days
+            if schedule_lookback_days is not None
+            else settings.ardmediathek_schedule_lookback_days
         )
 
     @property
@@ -120,13 +126,15 @@ class ARDMediathekProvider:
             page += 1
 
         normalized = self._without_catalog_releases(self._normalize(asset_id, teasers))
-        scheduled_releases, scheduled_descriptions = await self._fetch_scheduled_releases(
-            client, normalized.title
-        )
+        (
+            scheduled_releases,
+            scheduled_descriptions,
+            broadcast_targets,
+        ) = await self._fetch_scheduled_releases(client, normalized.title)
         catalog_descriptions = await self._fetch_catalog_descriptions(client, teasers)
         normalized = self._with_descriptions(normalized, catalog_descriptions)
         return self._merge_scheduled_releases(
-            normalized, scheduled_releases, scheduled_descriptions
+            normalized, scheduled_releases, scheduled_descriptions, broadcast_targets
         )
 
     @staticmethod
@@ -152,11 +160,17 @@ class ARDMediathekProvider:
     ) -> tuple[
         dict[str, tuple[NormalizedEpisodeRelease, ...]],
         dict[str, str],
+        dict[str, str],
     ]:
         scheduled: dict[str, list[NormalizedEpisodeRelease]] = defaultdict(list)
         descriptions: dict[str, str] = {}
-        start = datetime.now(UTC).date()
-        for offset in range(max(0, self._schedule_days)):
+        broadcast_targets: dict[str, str] = {}
+        seen_programme_ids: set[str] = set()
+        lookback = max(0, self._schedule_lookback_days)
+        # The programme API answers per day and only publishes a limited window, so past
+        # broadcasts would be skipped without looking back before today.
+        start = datetime.now(UTC).date() - timedelta(days=lookback)
+        for offset in range(lookback + max(0, self._schedule_days)):
             schedule_date = start + timedelta(days=offset)
             try:
                 response = await client.get(
@@ -189,6 +203,12 @@ class ARDMediathekProvider:
                     continue
                 if not isinstance(programme_id, str) or not programme_id:
                     continue
+                if programme_id in seen_programme_ids:
+                    continue
+                seen_programme_ids.add(programme_id)
+                target_episode_id = self._target_episode_id(programme)
+                if target_episode_id:
+                    broadcast_targets[programme_id] = target_episode_id
                 description = programme.get("synopsis")
                 if not isinstance(description, str) or not description.strip():
                     description = await self._fetch_programme_description(client, programme_id)
@@ -202,7 +222,18 @@ class ARDMediathekProvider:
                 )
                 if description:
                     descriptions[release.external_id or programme_id] = description
-        return {title: tuple(releases) for title, releases in scheduled.items()}, descriptions
+        return (
+            {title: tuple(releases) for title, releases in scheduled.items()},
+            descriptions,
+            broadcast_targets,
+        )
+
+    @staticmethod
+    def _target_episode_id(programme: Mapping[str, Any]) -> str | None:
+        links = programme.get("links")
+        target = links.get("target") if isinstance(links, Mapping) else None
+        url_id = target.get("urlId") if isinstance(target, Mapping) else None
+        return url_id if isinstance(url_id, str) and url_id else None
 
     async def _fetch_programme_description(
         self, client: httpx.AsyncClient, programme_id: str
@@ -309,10 +340,14 @@ class ARDMediathekProvider:
         series: NormalizedSeries,
         scheduled_releases: Mapping[str, tuple[NormalizedEpisodeRelease, ...]],
         scheduled_descriptions: Mapping[str, str] | None = None,
+        broadcast_targets: Mapping[str, str] | None = None,
     ) -> NormalizedSeries:
         merged_series = series
         known_titles = {
             episode.title for season in merged_series.seasons for episode in season.episodes
+        }
+        known_external_ids = {
+            episode.external_id for season in merged_series.seasons for episode in season.episodes
         }
         descriptions = scheduled_descriptions or {}
         descriptions_by_episode = {
@@ -321,8 +356,20 @@ class ARDMediathekProvider:
             for episode in season.episodes
             if episode.description
         }
-        title_matches = dict(scheduled_releases)
+        targets = broadcast_targets or {}
+        target_matches: dict[str, list[NormalizedEpisodeRelease]] = defaultdict(list)
+        title_matches: dict[str, tuple[NormalizedEpisodeRelease, ...]] = {}
         for title, releases in scheduled_releases.items():
+            untargeted: list[NormalizedEpisodeRelease] = []
+            for release in releases:
+                target = targets.get(release.external_id or "")
+                if target and target in known_external_ids:
+                    target_matches[target].append(release)
+                else:
+                    untargeted.append(release)
+            if untargeted:
+                title_matches[title] = tuple(untargeted)
+        for title, releases in list(title_matches.items()):
             if title in known_titles:
                 continue
             matching_releases = tuple(
@@ -357,7 +404,10 @@ class ARDMediathekProvider:
                                         "releases": episode.releases
                                         + tuple(
                                             release
-                                            for release in title_matches.get(episode.title, ())
+                                            for release in (
+                                                *target_matches.get(episode.external_id, ()),
+                                                *title_matches.get(episode.title, ()),
+                                            )
                                             if release.external_id
                                             not in {
                                                 existing.external_id
