@@ -225,6 +225,117 @@ async def test_only_tv_release_persists_normalized_rerun_flag(
     assert [release.rerun for release in releases] == [False, True]
 
 
+async def test_later_broadcast_of_same_episode_is_marked_as_rerun(
+    db_session: AsyncSession,
+) -> None:
+    class RepeatBroadcastProvider:
+        slug = "ardmediathek"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="ard-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="ard-season",
+                        number=1,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="ard-episode",
+                                number=1,
+                                title="Ich bin ein Dorfbewohner",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        external_id="premiere-id",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 9, 24, 16, 50, tzinfo=UTC),
+                                    ),
+                                    NormalizedEpisodeRelease(
+                                        external_id="repeat-id",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 8, 21, 15, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(
+        db_session,
+        RepeatBroadcastProvider(),
+        "ignored",
+        reference_time=datetime(2026, 10, 7, tzinfo=UTC),
+    )
+
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    assert [(release.external_id, release.rerun) for release in releases] == [
+        ("premiere-id", False),
+        ("repeat-id", True),
+    ]
+
+
+async def test_later_broadcast_of_earlier_episode_is_marked_as_rerun(
+    db_session: AsyncSession,
+) -> None:
+    class MarathonProvider:
+        slug = "ardmediathek"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="ard-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="ard-season",
+                        number=1,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="ep-5",
+                                number=5,
+                                title="Die Nachricht",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        external_id="ep-5-id",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 1, 16, 50, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                            NormalizedEpisode(
+                                external_id="ep-3",
+                                number=3,
+                                title="Was für ein Theater",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        external_id="ep-3-id",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 8, 22, 5, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(
+        db_session,
+        MarathonProvider(),
+        "ignored",
+        reference_time=datetime(2026, 10, 7, tzinfo=UTC),
+    )
+
+    releases = dict(
+        (release.external_id, release.rerun)
+        for release in await db_session.scalars(select(EpisodeRelease))
+    )
+    assert releases == {"ep-5-id": False, "ep-3-id": True}
+
+
 async def test_catalog_release_replaces_epg_release_at_same_time(
     db_session: AsyncSession,
 ) -> None:
