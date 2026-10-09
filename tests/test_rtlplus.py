@@ -877,3 +877,58 @@ def test_current_season_can_be_read_from_episode_highlight() -> None:
     result = RTLPlusProvider._normalize(RTLPlusProvider.__new__(RTLPlusProvider), "6838", [payload])
 
     assert len(result.seasons[0].episodes[0].releases) == 1
+
+
+def test_normalize_ignores_diffusion_date_for_previous_season_during_transition() -> None:
+    # During a season transition RTL+ keeps the completed season's block on the page
+    # while the page-level diffusion date already points at the upcoming season, which
+    # is announced in the weekday block before it gets a season block of its own.
+    diffusion = int(datetime(2026, 10, 5, 12, 0, tzinfo=ZoneInfo("Europe/Vienna")).timestamp())
+    payload = {
+        "entity": {"id": "11271", "metadata": {"title": "#CoupleChallenge"}},
+        "seo": {
+            "diffusionDate": diffusion,
+            "metadata": {"title": "CoupleChallenge Staffel 5"},
+        },
+        "blocks": [
+            {
+                "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                "content": {
+                    "title": {"short": "Staffel 5"},
+                    "items": [
+                        {
+                            "itemContent": {
+                                "id": f"clip-{episode_number}",
+                                "title": f"Folge {episode_number}",
+                                "highlight": f"Staffel 5 • Folge {episode_number}",
+                            }
+                        }
+                        for episode_number in range(9, 21)
+                    ],
+                },
+            },
+            {
+                "analytics": {"tealium": {"from": "feature.programmation_by_program"}},
+                "content": {
+                    "title": {"short": "Freitags"},
+                    "items": [
+                        {
+                            "itemContent": {
+                                "id": "clip-new",
+                                "title": "#CoupleChallenge",
+                                "highlight": "Staffel 6 • Folge 1 • Folge 1",
+                            }
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+
+    result = RTLPlusProvider._normalize(
+        RTLPlusProvider.__new__(RTLPlusProvider), "11271", [payload]
+    )
+
+    season_five = next(season for season in result.seasons if season.number == 5)
+    assert [episode.number for episode in season_five.episodes] == list(range(9, 21))
+    assert all(episode.releases == () for episode in season_five.episodes)
