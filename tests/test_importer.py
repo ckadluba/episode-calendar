@@ -1032,6 +1032,60 @@ async def test_import_preserves_newer_season_when_only_rerun_is_returned(
     assert sum(release.rerun for release in releases) == 1
 
 
+async def test_import_removes_releases_of_obsolete_season_that_disappears(
+    db_session: AsyncSession,
+) -> None:
+    # A season transition can leave a stale release on the previous season (for example
+    # the finale stamped with the upcoming season's diffusion date). Once the provider
+    # only returns the new season, the obsolete season's stale release must be removed.
+    class TransitionProvider:
+        slug = "rtlplus"
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            number = 5 if self.calls == 1 else 6
+            return NormalizedSeries(
+                external_id="rtl-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id=f"rtl-season-{number}",
+                        number=number,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id=f"rtl-episode-{number}-20",
+                                number=20,
+                                title="Folge 20",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 10, 5, 10, 0, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    provider = TransitionProvider()
+    await import_series(db_session, provider, "ignored")
+    await import_series(db_session, provider, "ignored")
+
+    season_five = await db_session.scalar(select(Season).where(Season.number == 5))
+    assert season_five is not None
+    stale_releases = await db_session.scalar(
+        select(func.count())
+        .select_from(EpisodeRelease)
+        .join(Episode, Episode.id == EpisodeRelease.episode_id)
+        .where(Episode.season_id == season_five.id)
+    )
+    assert stale_releases == 0
+    # The new season's release is still imported.
+    assert (await db_session.scalar(select(func.count()).select_from(EpisodeRelease))) == 1
+
+
 def test_configured_series_reads_provider_lists(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "series.json"
     config_path.write_text(

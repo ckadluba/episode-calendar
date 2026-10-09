@@ -453,6 +453,39 @@ async def import_series(
         )
     )
 
+    # Seasons that disappear from the provider payload are obsolete once a newer season
+    # is present. Remove their releases so a stale release produced during a season
+    # transition (for example a completed season stamped with the upcoming season's
+    # diffusion date) does not linger in the calendar. Seasons that are still returned,
+    # and a newer season temporarily reported alone, are left untouched.
+    newest_imported_season = max(
+        (season.number for season in normalized.seasons if season.number is not None),
+        default=None,
+    )
+    if newest_imported_season is not None:
+        returned_season_external_ids = {season.external_id for season in normalized.seasons}
+        stale_season_ids = [
+            season.id
+            for season in existing_seasons
+            if season.number is not None
+            and season.number < newest_imported_season
+            and season.external_id not in returned_season_external_ids
+        ]
+        if stale_season_ids:
+            stale_episode_ids = select(Episode.id).where(Episode.season_id.in_(stale_season_ids))
+            await session.execute(
+                delete(EpisodeRelease).where(
+                    EpisodeRelease.provider_id == provider.id,
+                    EpisodeRelease.episode_id.in_(stale_episode_ids),
+                )
+            )
+            logger.info(
+                "Removed provider releases for %s obsolete season(s) of %s/%s",
+                len(stale_season_ids),
+                provider_name or adapter.slug,
+                external_id,
+            )
+
     season_count = episode_count = new_episode_count = release_count = 0
     for normalized_season in imported_seasons:
         season = await session.scalar(

@@ -637,6 +637,35 @@ class RTLPlusProvider:
                         season_match = _SEASON_RE.search(str(raw.get("highlight") or ""))
                         if season_match:
                             season_numbers.add(int(season_match.group(1)))
+        # RTL+'s weekday/programmation block identifies the season that is currently
+        # airing even when its layout block uses a different source than the season
+        # blocks (for example while a new season is being announced before its own
+        # season block exists). Without it the previous season would be mistaken for
+        # the current one and inherit the page-level diffusion date of the upcoming
+        # episode.
+        for payload in pages:
+            for block in payload.get("blocks", []):
+                if not isinstance(block, dict):
+                    continue
+                content = block.get("content")
+                if not isinstance(content, dict):
+                    continue
+                content_title = content.get("title")
+                block_title = (
+                    content_title.get("short") if isinstance(content_title, dict) else None
+                )
+                if not isinstance(block_title, str) or not _WEEKDAY_RE.search(block_title):
+                    continue
+                items = content.get("items")
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    raw = item.get("itemContent") if isinstance(item, dict) else None
+                    if not isinstance(raw, dict):
+                        continue
+                    season_match = _SEASON_RE.search(str(raw.get("highlight") or ""))
+                    if season_match:
+                        season_numbers.add(int(season_match.group(1)))
         current_season_number = max(season_numbers, default=None)
         latest_catalog_episode_number = self._latest_catalog_episode_number(
             pages, current_season_number
