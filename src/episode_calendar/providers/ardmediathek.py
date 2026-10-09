@@ -125,7 +125,12 @@ class ARDMediathekProvider:
                 )
             page += 1
 
-        normalized = self._without_catalog_releases(self._normalize(asset_id, teasers))
+        # The catalogue already announces the whole season, including episodes that the
+        # linear programme feed does not publish until roughly a week before their
+        # broadcast. Keep those catalogue releases so upcoming episodes are not missing
+        # from the calendar; scheduled broadcasts are merged on top in
+        # ``_merge_scheduled_releases``.
+        normalized = self._normalize(asset_id, teasers)
         (
             scheduled_releases,
             scheduled_descriptions,
@@ -135,24 +140,6 @@ class ARDMediathekProvider:
         normalized = self._with_descriptions(normalized, catalog_descriptions)
         return self._merge_scheduled_releases(
             normalized, scheduled_releases, scheduled_descriptions, broadcast_targets
-        )
-
-    @staticmethod
-    def _without_catalog_releases(series: NormalizedSeries) -> NormalizedSeries:
-        return series.model_copy(
-            update={
-                "seasons": tuple(
-                    season.model_copy(
-                        update={
-                            "episodes": tuple(
-                                episode.model_copy(update={"releases": ()})
-                                for episode in season.episodes
-                            )
-                        }
-                    )
-                    for season in series.seasons
-                )
-            }
         )
 
     async def _fetch_scheduled_releases(

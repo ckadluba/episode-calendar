@@ -83,14 +83,49 @@ async def test_fetches_numbered_episodes_and_ignores_bonus_content() -> None:
     assert result.title == "Demo Show"
     assert len(result.seasons) == 1
     assert [episode.number for episode in result.seasons[0].episodes] == [1, 2]
-    assert result.seasons[0].episodes[0].releases == ()
+    absent_episode = result.seasons[0].episodes[0]
+    assert [release.release_type for release in absent_episode.releases] == [ReleaseType.STREAMING]
+    assert str(absent_episode.releases[0].url) == "https://www.ardmediathek.de/video/episode-1"
     episode = result.seasons[0].episodes[1]
     assert episode.title == "The Second One"
-    assert len(episode.releases) == 1
-    assert episode.releases[0].external_id == "schedule-2"
-    assert episode.releases[0].release_type is ReleaseType.TV_BROADCAST
-    assert episode.releases[0].release_at == datetime(2026, 9, 22, 20, tzinfo=UTC)
-    assert str(episode.releases[0].url) == "https://www.ardmediathek.de/tv-programm/schedule-2"
+    streaming, broadcast = episode.releases
+    assert streaming.release_type is ReleaseType.STREAMING
+    assert streaming.external_id == "episode-2"
+    assert broadcast.external_id == "schedule-2"
+    assert broadcast.release_type is ReleaseType.TV_BROADCAST
+    assert broadcast.release_at == datetime(2026, 9, 22, 20, tzinfo=UTC)
+    assert str(broadcast.url) == "https://www.ardmediathek.de/tv-programm/schedule-2"
+
+
+async def test_keeps_announced_catalog_episode_when_schedule_is_not_published_yet() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/program"):
+            return httpx.Response(200, json={"channels": []})
+        return httpx.Response(
+            200,
+            json={
+                "pagination": {"totalElements": 2},
+                "teasers": [
+                    teaser("s2e7", "Folge 7: Der Bärenführer (S02/E07)", "2026-10-22T21:15:00Z"),
+                    teaser(
+                        "s2e8", "Folge 8: Abschied & Neubeginn (S02/E08)", "2026-10-22T21:55:00Z"
+                    ),
+                ],
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        result = await ARDMediathekProvider(client=client, schedule_days=1).fetch_series("demo")
+    finally:
+        await client.aclose()
+
+    [season] = result.seasons
+    assert [episode.number for episode in season.episodes] == [7, 8]
+    assert [release.release_type for release in season.episodes[0].releases] == [
+        ReleaseType.STREAMING
+    ]
+    assert season.episodes[0].releases[0].release_at == datetime(2026, 10, 22, 21, 15, tzinfo=UTC)
 
 
 async def test_schedule_window_includes_recent_past_days() -> None:
@@ -173,9 +208,12 @@ async def test_deduplicates_programme_entries_returned_for_several_days() -> Non
 
     episode = result.seasons[0].episodes[0]
     assert episode.title == "The First One"
-    assert len(episode.releases) == 1
-    assert episode.releases[0].external_id == "schedule-1"
-    assert episode.releases[0].release_type is ReleaseType.TV_BROADCAST
+    broadcasts = [
+        release for release in episode.releases if release.release_type is ReleaseType.TV_BROADCAST
+    ]
+    assert len(broadcasts) == 1
+    assert broadcasts[0].external_id == "schedule-1"
+    assert broadcasts[0].release_type is ReleaseType.TV_BROADCAST
 
 
 def test_merges_scheduled_broadcast_with_catalog_episode() -> None:
