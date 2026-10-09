@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -68,7 +69,15 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
     series = Series(provider=provider, external_id="d-series", title="Demo")
     season = Season(series=series, external_id="c-season", number=1)
     episode = Episode(season=season, external_id="e-1", number=1, title="Pilot")
-    release_at = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
+    # Anchor to the Monday of the current calendar week (Europe/Vienna, the API default)
+    # so the seeded releases (which span three days) stay inside the current week
+    # regardless of the weekday the suite runs on.
+    today = datetime.now(ZoneInfo("Europe/Vienna"))
+    release_at = (
+        (today - timedelta(days=today.weekday()))
+        .replace(hour=12, minute=0, second=0, microsecond=0)
+        .astimezone(UTC)
+    )
     episode.releases.append(
         EpisodeRelease(
             provider=provider,
