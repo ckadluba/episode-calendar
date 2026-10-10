@@ -1,9 +1,13 @@
-"""Provider-independent broadcast-slot derivation and EPG folding.
+"""Provider-independent catalogue policy and linear-broadcast merging.
 
-Providers differ in where they obtain the recurring broadcast slots of a running
-season (Joyn reads them from the catalogue releases, RTL+ from its own linear EPG
-premieres), but the mechanism that turns those slots into a rerun decision and
-folds the linear airings back into the real season tree is shared here.
+The catalogue is always the base of a series tree: episodes carry the release
+date/time the provider can read from the catalogue, and undated episodes are
+stamped with a ``dateFromApi=false`` placeholder. The EPG is only supplementary:
+it fills missing dates and announces episodes of running seasons, but never
+overrides a real catalogue date. Providers differ in where they obtain the
+recurring broadcast slots of a running season (Joyn reads them from the catalogue
+releases, RTL+ from its own linear EPG premieres), yet all of them resolve the
+linear airings with the same shared policy.
 """
 
 from __future__ import annotations
@@ -12,8 +16,10 @@ import logging
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
+
+from pydantic import HttpUrl
 
 from episode_calendar.domain import ReleaseType
 from episode_calendar.providers.base import (
@@ -21,6 +27,7 @@ from episode_calendar.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    first_seen_release,
 )
 
 # An airing slot is a local weekday (0-6, or None for a daily slot) plus a local time.
@@ -140,6 +147,17 @@ def latest_episode(
     return season, episode
 
 
+def latest_episode_of(season: NormalizedSeason | None) -> NormalizedEpisode | None:
+    """Return the highest-numbered episode of ``season``, else its last episode."""
+
+    if season is None:
+        return None
+    numbered = [episode for episode in season.episodes if episode.number is not None]
+    if numbered:
+        return max(numbered, key=lambda item: item.number)
+    return season.episodes[-1] if season.episodes else None
+
+
 @dataclass(frozen=True)
 class EpgBroadcast:
     """One linear airing from a provider's EPG, mapped to the shared shape."""
@@ -148,70 +166,244 @@ class EpgBroadcast:
     title: str
     start: datetime
     end: datetime | None = None
+    season_number: int | None = None
+    episode_number: int | None = None
     linked_episode_external_id: str | None = None
+    url: HttpUrl | None = None
 
 
-def fold_broadcasts(
+def _undated(episode: NormalizedEpisode) -> bool:
+    """Whether the catalogue has no real date for ``episode``.
+
+    Derived dates (``date_from_api=false`` without the placeholder marker) count as
+    real dates; only a ``first_seen`` placeholder means "no date found".
+    """
+
+    return not any(not release.placeholder for release in episode.releases)
+
+
+def filter_obsolete_seasons(series: NormalizedSeries) -> NormalizedSeries:
+    """Drop lower-numbered catalogue seasons whose episodes carry no real date.
+
+    A season below the highest-numbered catalogue season whose episodes only have
+    ``dateFromApi=false`` placeholders is obsolete: while a newer season is listed
+    (for example during the transition to the upcoming season) the older one must
+    neither surface in today's calendar nor look like the running season. When no
+    higher season is known the season is kept, since it is the only reference the
+    catalogue provides right now.
+    """
+
+    highest = max(
+        (season.number for season in series.seasons if season.number is not None), default=None
+    )
+    if highest is None:
+        return series
+    seasons = tuple(
+        season
+        for season in series.seasons
+        if not (
+            season.number is not None
+            and season.number < highest
+            and season.episodes
+            and all(_undated(episode) for episode in season.episodes)
+        )
+    )
+    return series.model_copy(update={"seasons": seasons})
+
+
+def ensure_catalog_dates(series: NormalizedSeries, *, now: datetime) -> NormalizedSeries:
+    """Give every catalogue episode a dating release.
+
+    Episodes without any release get the shared ``first_seen`` placeholder
+    (``dateFromApi=false``); providers that already emit one are unaffected.
+    """
+
+    def with_date(episode: NormalizedEpisode) -> NormalizedEpisode:
+        if episode.releases:
+            return episode
+        return episode.model_copy(update={"releases": (first_seen_release(now),)})
+
+    return series.model_copy(
+        update={
+            "seasons": tuple(
+                season.model_copy(
+                    update={"episodes": tuple(with_date(episode) for episode in season.episodes)}
+                )
+                for season in series.seasons
+            )
+        }
+    )
+
+
+def apply_catalog_policy(series: NormalizedSeries, *, now: datetime) -> NormalizedSeries:
+    """Apply the shared catalogue base policy before any EPG merging."""
+
+    return ensure_catalog_dates(filter_obsolete_seasons(series), now=now)
+
+
+def merge_epg(
     series: NormalizedSeries,
     broadcasts: Sequence[EpgBroadcast],
     *,
-    running_season: NormalizedSeason | None,
-    slots: Iterable[Slot],
+    now: datetime | None = None,
     timezone: ZoneInfo,
+    slots: Iterable[Slot] | None = None,
     tolerance: timedelta,
     next_episode_external_id: Callable[[str, int], str],
     logger: logging.Logger | None = None,
 ) -> NormalizedSeries:
-    """Fold linear airings into the real season/episode tree.
+    """Merge linear airings into the catalogue, which always stays authoritative.
 
-    An airing linked to a catalogue episode is attached there. An unlinked airing that
-    matches a recurring slot extends the running season with the next episode number;
-    any other airing (off-slot, or without a running season) is a rerun attached to the
-    latest known episode.
+    For every broadcast the policy first tries to read the season/episode from the
+    airing itself:
+
+    * An explicit catalogue link (``linked_episode_external_id``) or a readable
+      episode number resolved against the given or running season locates a
+      catalogue episode:
+        - an episode the catalogue already dates is left alone and the airing is
+          dropped (the catalogue wins, the airing is only its own broadcast);
+        - an undated catalogue episode gets the airing as a ``dateFromApi=true``
+          broadcast release so the importer replaces the placeholder.
+      A numbered airing without a matching catalogue episode becomes a new episode
+      (same number) carrying the airing.
+
+    * An airing whose season/episode cannot be read uses the slot logic: an airing
+      matching a recurring slot of the running season extends that season with the
+      next episode number (filling an already announced undated next episode if one
+      exists); every other airing is a rerun of the running season's latest episode.
     """
 
-    slots = tuple(slots)
-    catalog_episodes = {
-        episode.external_id: season.external_id
+    now = now or datetime.now(UTC)
+    broadcasts = sorted(broadcasts, key=lambda broadcast: broadcast.start)
+    if not broadcasts:
+        return series
+
+    current_season = running_season(series, now)
+    resolved_slots = (
+        tuple(slots)
+        if slots is not None
+        else (derive_broadcast_slots(current_season, timezone=timezone) if current_season else ())
+    )
+    latest = latest_episode_of(current_season) or latest_episode(series)[1]
+
+    episodes_by_external_id: dict[str, tuple[NormalizedSeason, NormalizedEpisode]] = {
+        episode.external_id: (season, episode)
         for season in series.seasons
         for episode in season.episodes
     }
-    latest_season, latest = latest_episode(series)
-    extra: dict[tuple[str, str], list[NormalizedEpisodeRelease]] = defaultdict(list)
-    created: dict[str, list[NormalizedEpisode]] = defaultdict(list)
-    next_number = {
-        season.external_id: max(
-            (episode.number for episode in season.episodes if episode.number is not None),
-            default=0,
-        )
-        + 1
+    episodes_by_number: dict[tuple[int, int], tuple[NormalizedSeason, NormalizedEpisode]] = {
+        (season.number, episode.number): (season, episode)
         for season in series.seasons
-        if season.number is not None
+        for episode in season.episodes
+        if season.number is not None and episode.number is not None
     }
-    for broadcast in broadcasts:
-        release = NormalizedEpisodeRelease(
+    seasons_by_number = {
+        season.number: season for season in series.seasons if season.number is not None
+    }
+    used_numbers: dict[str, set[int]] = defaultdict(set)
+
+    extra_releases: dict[str, list[NormalizedEpisodeRelease]] = defaultdict(list)
+    created: dict[str, list[NormalizedEpisode]] = defaultdict(list)
+
+    def announced_next(season: NormalizedSeason) -> int:
+        dated = [
+            episode.number
+            for episode in season.episodes
+            if episode.number is not None and not _undated(episode)
+        ]
+        if dated:
+            return max(dated) + 1
+        numbered = [episode.number for episode in season.episodes if episode.number is not None]
+        return max(numbered) + 1 if numbered else 1
+
+    def airing(broadcast: EpgBroadcast, *, rerun: bool = False) -> NormalizedEpisodeRelease:
+        return NormalizedEpisodeRelease(
             external_id=broadcast.external_id,
             release_type=ReleaseType.TV_BROADCAST,
             release_at=broadcast.start,
             available_until=broadcast.end,
-            rerun=not fits_slot(broadcast.start, slots, timezone=timezone, tolerance=tolerance),
+            url=broadcast.url,
+            rerun=rerun,
+            date_from_api=True,
         )
-        linked = broadcast.linked_episode_external_id
-        if linked is not None and linked in catalog_episodes:
-            extra[(catalog_episodes[linked], linked)].append(release)
-            continue
-        if not release.rerun and running_season is not None:
-            number = next_number[running_season.external_id]
-            next_number[running_season.external_id] = number + 1
-            created[running_season.external_id].append(
+
+    for broadcast in broadcasts:
+        target: tuple[NormalizedSeason, NormalizedEpisode] | None = None
+        create_season: NormalizedSeason | None = None
+        if (
+            broadcast.linked_episode_external_id is not None
+            and broadcast.linked_episode_external_id in episodes_by_external_id
+        ):
+            target = episodes_by_external_id[broadcast.linked_episode_external_id]
+        elif broadcast.episode_number is not None:
+            number_season: NormalizedSeason | None = None
+            if broadcast.season_number is not None:
+                number_season = seasons_by_number.get(broadcast.season_number)
+            elif current_season is not None:
+                number_season = current_season
+            if number_season is not None:
+                target = episodes_by_number.get((number_season.number, broadcast.episode_number))
+                if target is None:
+                    create_season = number_season
+            else:
+                candidates = [
+                    (season, episode)
+                    for (season_number, episode_number), (
+                        season,
+                        episode,
+                    ) in episodes_by_number.items()
+                    if episode_number == broadcast.episode_number
+                ]
+                if len(candidates) == 1:
+                    target = candidates[0]
+
+        if create_season is not None:
+            episode_number = broadcast.episode_number
+            assert episode_number is not None
+            used_numbers[create_season.external_id].add(episode_number)
+            created[create_season.external_id].append(
                 NormalizedEpisode(
-                    external_id=next_episode_external_id(running_season.external_id, number),
-                    number=number,
+                    external_id=next_episode_external_id(create_season.external_id, episode_number),
+                    number=episode_number,
                     title=broadcast.title,
-                    releases=(release,),
+                    releases=(airing(broadcast),),
                 )
             )
             continue
+
+        if target is not None:
+            _, episode = target
+            if not _undated(episode):
+                # The catalogue already dates the episode; its own broadcast does not
+                # add information and must not create a second date.
+                continue
+            extra_releases[episode.external_id].append(airing(broadcast))
+            continue
+
+        if current_season is not None and fits_slot(
+            broadcast.start, resolved_slots, timezone=timezone, tolerance=tolerance
+        ):
+            number = announced_next(current_season)
+            while number in used_numbers[current_season.external_id]:
+                number += 1
+            announced = episodes_by_number.get((current_season.number, number))
+            if announced is not None and _undated(announced[1]):
+                # The running season already announces the next episode without a date;
+                # the airing supplies it instead of duplicating the episode.
+                used_numbers[current_season.external_id].add(number)
+                extra_releases[announced[1].external_id].append(airing(broadcast))
+            else:
+                used_numbers[current_season.external_id].add(number)
+                created[current_season.external_id].append(
+                    NormalizedEpisode(
+                        external_id=next_episode_external_id(current_season.external_id, number),
+                        number=number,
+                        title=broadcast.title,
+                        releases=(airing(broadcast),),
+                    )
+                )
+            continue
+
         if latest is None:
             if logger is not None:
                 logger.info(
@@ -219,18 +411,16 @@ def fold_broadcasts(
                     broadcast.start.isoformat(),
                 )
             continue
-        extra[(latest_season.external_id, latest.external_id)].append(
-            release.model_copy(update={"rerun": True})
-        )
+        extra_releases[latest.external_id].append(airing(broadcast, rerun=True))
 
     seasons: list[NormalizedSeason] = []
     for season in series.seasons:
         episodes: list[NormalizedEpisode] = []
         for episode in season.episodes:
-            additions = extra.get((season.external_id, episode.external_id))
+            additions = extra_releases.get(episode.external_id)
             if additions:
                 episode = episode.model_copy(update={"releases": (*episode.releases, *additions)})
             episodes.append(episode)
-        episodes.extend(created.get(season.external_id, ()))
+        episodes.extend(created[season.external_id])
         seasons.append(season.model_copy(update={"episodes": tuple(episodes)}))
     return series.model_copy(update={"seasons": tuple(seasons)})

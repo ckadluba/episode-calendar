@@ -19,6 +19,7 @@ from episode_calendar.providers.base import (
     NormalizedSeries,
     first_seen_release,
 )
+from episode_calendar.providers.epg import filter_obsolete_seasons
 from episode_calendar.providers.http import request_with_retries
 
 _EPISODE_LINK_RE = re.compile(
@@ -99,7 +100,9 @@ class STVProvider:
                 for episode_id in episode_ids
             )
         )
-        return self._normalize(external_id, programme_slug, episode_ids, responses)
+        return filter_obsolete_seasons(
+            self._normalize(external_id, programme_slug, episode_ids, responses)
+        )
 
     async def _request_text(self, client: httpx.AsyncClient, url: str) -> str:
         try:

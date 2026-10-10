@@ -4,6 +4,7 @@ import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -567,7 +568,7 @@ async def test_epg_off_slot_broadcast_is_attached_as_rerun() -> None:
     assert reruns[0].rerun is True
 
 
-async def test_epg_episode_program_links_to_catalog_episode() -> None:
+async def test_epg_linked_catalog_episode_keeps_its_catalog_date() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.read())
         if body["operationName"] == "EpisodeCalendarJoynEpg":
@@ -623,14 +624,17 @@ async def test_epg_episode_program_links_to_catalog_episode() -> None:
     assert len(result.seasons) == 1
     episodes = result.seasons[0].episodes
     assert [item.number for item in episodes] == [1]
+    # The catalogue already dates the episode, so its own broadcast must not add a
+    # second date: the airing is dropped and the catalogue release stays authoritative.
     broadcasts = [
         release
         for release in episodes[0].releases
         if release.release_type is ReleaseType.TV_BROADCAST
     ]
-    assert len(broadcasts) == 1
-    assert broadcasts[0].rerun is False
-    assert broadcasts[0].external_id == "epg:sat1-at:e_1:1791569700"
+    assert broadcasts == []
+    assert episodes[0].releases[0].release_at == datetime(
+        2026, 10, 2, 20, 15, tzinfo=ZoneInfo("Europe/Vienna")
+    )
 
 
 async def test_epg_without_running_season_attaches_rerun_to_latest_episode() -> None:

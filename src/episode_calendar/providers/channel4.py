@@ -20,6 +20,7 @@ from episode_calendar.providers.base import (
     NormalizedSeries,
     first_seen_release,
 )
+from episode_calendar.providers.epg import filter_obsolete_seasons
 
 _DATE_RE = re.compile(
     r"First shown:\s*(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"
@@ -133,7 +134,9 @@ class Channel4Provider:
         except ValueError as exc:
             raise Channel4MalformedResponseError("Channel 4 response was not JSON") from exc
         scheduled_releases = await self._fetch_scheduled_releases(client, slug)
-        return self._normalize(slug, payload, scheduled_releases=scheduled_releases)
+        return filter_obsolete_seasons(
+            self._normalize(slug, payload, scheduled_releases=scheduled_releases)
+        )
 
     @classmethod
     def _normalize(

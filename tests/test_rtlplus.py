@@ -7,6 +7,104 @@ from episode_calendar.domain import ReleaseType
 from episode_calendar.providers.base import NormalizedEpisode, NormalizedSeason, NormalizedSeries
 from episode_calendar.providers.rtlplus import RTLPlusProvider
 
+VIENNA = ZoneInfo("Europe/Vienna")
+
+
+def stream(release_at: datetime, *, external_id: str) -> NormalizedEpisode:
+    return NormalizedEpisode(
+        external_id=external_id,
+        number=int(external_id.rsplit("-", 1)[1]),
+        title=external_id,
+        releases=(
+            {
+                "release_type": ReleaseType.STREAMING,
+                "release_at": release_at,
+            },
+        ),
+    )
+
+
+def test_epg_does_not_mark_same_day_drop_of_premiered_episode_as_preview() -> None:
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    event = RTLPlusProvider._epg_event(
+        {
+            "code": "folge-1",
+            "title": "Demo series",
+            "subtitle": "Folge 1",
+            "diffusion_start_date": "2026-09-30 20:15:00",
+            "diffusion_end_date": "2026-09-30 21:25:00",
+        }
+    )
+    seasons = [
+        NormalizedSeason(
+            external_id="season-1",
+            number=1,
+            episodes=(stream(datetime(2026, 10, 6, 0, 0, tzinfo=VIENNA), external_id="episode-1"),),
+        )
+    ]
+
+    # The drop falls a week after the episode's own premiere: it is the regular drop
+    # cadence, not an exclusive streaming preview.
+    seasons, _ = provider._mark_previews(seasons, event, 1, premieres={1: event.start})
+    assert seasons[0].episodes[0].releases[0].preview is False
+
+
+def test_epg_does_not_mark_cadence_drop_as_preview_of_an_unrelated_episode() -> None:
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    event = RTLPlusProvider._epg_event(
+        {
+            "code": "folge-9",
+            "title": "Demo series",
+            "subtitle": "Folge 9",
+            "diffusion_start_date": "2026-10-21 20:15:00",
+            "diffusion_end_date": "2026-10-21 21:25:00",
+        }
+    )
+    seasons = [
+        NormalizedSeason(
+            external_id="season-1",
+            number=1,
+            episodes=(
+                stream(datetime(2026, 10, 21, 0, 0, tzinfo=VIENNA), external_id="episode-6"),
+            ),
+        )
+    ]
+
+    # Episode 6's drop shares the day with the premiere of episode 9, but its own
+    # premiere already aired on 10-07: the drop is its regular cadence, not a preview.
+    seasons, _ = provider._mark_previews(
+        seasons,
+        event,
+        9,
+        premieres={9: event.start, 6: datetime(2026, 10, 7, 20, 15, 0, tzinfo=VIENNA)},
+    )
+    assert seasons[0].episodes[0].releases[0].preview is False
+
+
+def test_epg_marks_same_day_drop_as_preview_when_the_episode_has_no_airing() -> None:
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    event = RTLPlusProvider._epg_event(
+        {
+            "code": "folge-2",
+            "title": "Demo series",
+            "subtitle": "Folge 2",
+            "diffusion_start_date": "2026-10-07 20:15:00",
+            "diffusion_end_date": "2026-10-07 21:25:00",
+        }
+    )
+    seasons = [
+        NormalizedSeason(
+            external_id="season-1",
+            number=1,
+            episodes=(stream(datetime(2026, 10, 7, 0, 0, tzinfo=VIENNA), external_id="episode-1"),),
+        )
+    ]
+
+    # Episode 1 never airs itself; its same-day drop before another episode's premiere is
+    # the known same-day preview pattern.
+    seasons, _ = provider._mark_previews(seasons, event, 2, premieres={2: event.start})
+    assert seasons[0].episodes[0].releases[0].preview is True
+
 
 def test_normalizes_layout_items_and_schedule() -> None:
     payload = {
@@ -246,10 +344,14 @@ async def test_epg_marks_earlier_catalog_release_as_preview() -> None:
     finally:
         await client.aclose()
 
-    releases = result.seasons[0].episodes[0].releases
-    assert len(releases) == 2
-    assert releases[0].preview is True
-    assert releases[1].release_type is ReleaseType.TV_BROADCAST
+    # The same-day catalogue drop is flagged as a preview; the readable number (6) is
+    # not in the catalogue, so the airing becomes a new dated episode of the running
+    # season (dateFromApi=true) instead of being attached to episode 3.
+    episodes = {episode.number: episode for episode in result.seasons[0].episodes}
+    assert set(episodes) == {3, 6}
+    assert episodes[3].releases[0].preview is True
+    assert episodes[6].releases[0].release_type is ReleaseType.TV_BROADCAST
+    assert episodes[6].releases[0].date_from_api is True
 
 
 async def test_epg_marks_catalog_release_days_before_broadcast_as_preview() -> None:
@@ -309,11 +411,13 @@ async def test_epg_marks_catalog_release_days_before_broadcast_as_preview() -> N
         await client.aclose()
 
     releases = result.seasons[0].episodes[0].releases
+    # The broadcast resolves to a catalogue-dated episode and is dropped; only the
+    # preview flag on the catalogue release survives.
+    assert len(releases) == 1
     assert releases[0].preview is True
-    assert releases[1].release_type is ReleaseType.TV_BROADCAST
 
 
-async def test_epg_episode_number_takes_precedence_over_same_day_catalog_release() -> None:
+async def test_epg_drops_numbered_broadcast_already_dated_in_catalog() -> None:
     endpoint = "https://rtlplus-test.example/guidetv-number-priority"
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -383,7 +487,12 @@ async def test_epg_episode_number_takes_precedence_over_same_day_catalog_release
         await client.aclose()
 
     episodes = {episode.number: episode for episode in result.seasons[0].episodes}
-    assert episodes[7].releases[-1].release_type is ReleaseType.TV_BROADCAST
+    # Both catalogue releases are previews (same-day/days-ahead), and the numbered
+    # airing resolves to the already-dated catalogue episode 7, so it is dropped.
+    assert episodes[7].releases[0].preview is True
+    assert not any(
+        release.release_type is ReleaseType.TV_BROADCAST for release in episodes[7].releases
+    )
     assert episodes[8].releases[0].preview is True
 
 
@@ -527,7 +636,7 @@ async def test_epg_folds_numberless_future_airing_into_running_season() -> None:
     assert added.rerun is False
 
 
-async def test_epg_marks_off_slot_night_repeat_as_rerun() -> None:
+async def test_epg_drops_reruns_of_catalog_dated_episode() -> None:
     endpoint = "https://rtlplus-test.example/guidetv-night-repeat"
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -591,14 +700,13 @@ async def test_epg_marks_off_slot_night_repeat_as_rerun() -> None:
         await client.aclose()
 
     episode = result.seasons[0].episodes[0]
+    # Premiere and repeat both carry the readable number 1, which resolves to the
+    # catalogue-dated episode; the catalogue date wins and both airings are dropped.
     broadcasts = [
         release for release in episode.releases if release.release_type is ReleaseType.TV_BROADCAST
     ]
-    assert [release.release_at for release in broadcasts] == [
-        datetime(2026, 10, 7, 18, 15, tzinfo=UTC),
-        datetime(2026, 10, 7, 22, 15, tzinfo=UTC),
-    ]
-    assert [release.rerun for release in broadcasts] == [False, True]
+    assert broadcasts == []
+    assert [release.release_type for release in episode.releases] == [ReleaseType.STREAMING]
 
 
 def test_epg_event_uses_id_when_code_is_missing() -> None:

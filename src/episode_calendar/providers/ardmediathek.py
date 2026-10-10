@@ -3,25 +3,36 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from episode_calendar.config import get_settings
-from episode_calendar.domain import ReleaseType
+from episode_calendar.domain import TV_BROADCAST_MATCH_TOLERANCE, ReleaseType
 from episode_calendar.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
 )
+from episode_calendar.providers.epg import (
+    EpgBroadcast,
+    filter_obsolete_seasons,
+    merge_epg,
+)
+
+logger = logging.getLogger(__name__)
 
 _EPISODE_RE = re.compile(r"\(S(?P<season>\d+)/E(?P<episode>\d+)\)\s*$")
 _TITLE_RE = re.compile(r"^(?:Folge\s+\d+\s*:\s*)?(?P<title>.*?)\s*\(S\d+/E\d+\)\s*$")
+
+EPG_TIMEZONE = ZoneInfo("Europe/Berlin")
 
 
 class ARDMediathekProviderError(RuntimeError):
@@ -127,18 +138,24 @@ class ARDMediathekProvider:
 
         # The catalogue already announces the whole season, including episodes that the
         # linear programme feed does not publish until roughly a week before their
-        # broadcast. Keep those catalogue releases so upcoming episodes are not missing
-        # from the calendar; scheduled broadcasts are merged on top in
-        # ``_merge_scheduled_releases``.
+        # broadcast. The catalogue is the base: an obsolete lower season is dropped, and
+        # the teaser's ``broadcastedOn`` is only the upcoming linear airing, so the
+        # catalogue release date prefers the on-demand publication date from the episode
+        # detail payload (``_with_streaming_availability``). Scheduled broadcasts are
+        # merged supplementally on top in ``_fold_scheduled_releases``.
         normalized = self._normalize(asset_id, teasers)
+        normalized = filter_obsolete_seasons(normalized)
         (
             scheduled_releases,
             scheduled_descriptions,
             broadcast_targets,
         ) = await self._fetch_scheduled_releases(client, normalized.title)
-        catalog_descriptions = await self._fetch_catalog_descriptions(client, teasers)
+        catalog_descriptions, available_from = await self._fetch_catalog_descriptions(
+            client, teasers
+        )
         normalized = self._with_descriptions(normalized, catalog_descriptions)
-        return self._merge_scheduled_releases(
+        normalized = self._with_streaming_availability(normalized, available_from)
+        return self._fold_scheduled_releases(
             normalized, scheduled_releases, scheduled_descriptions, broadcast_targets
         )
 
@@ -242,22 +259,28 @@ class ARDMediathekProvider:
 
     async def _fetch_catalog_descriptions(
         self, client: httpx.AsyncClient, teasers: list[Mapping[str, Any]]
-    ) -> dict[str, str]:
+    ) -> tuple[dict[str, str], dict[str, datetime]]:
         requests = [
-            self._fetch_catalog_description(client, teaser)
+            self._fetch_catalog_episode(client, teaser)
             for teaser in teasers
             if self._episode_id(teaser) and self._target_url(teaser)
         ]
         results = await asyncio.gather(*requests)
-        return {episode_id: description for episode_id, description in results if description}
+        descriptions = {
+            episode_id: description for episode_id, description, _ in results if description
+        }
+        available_from = {
+            episode_id: published for episode_id, _, published in results if published is not None
+        }
+        return descriptions, available_from
 
-    async def _fetch_catalog_description(
+    async def _fetch_catalog_episode(
         self, client: httpx.AsyncClient, teaser: Mapping[str, Any]
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, datetime | None]:
         episode_id = self._episode_id(teaser)
         target_url = self._target_url(teaser)
         if episode_id is None or target_url is None:
-            return "", None
+            return "", None, None
         try:
             response = await client.get(target_url)
             response.raise_for_status()
@@ -266,16 +289,28 @@ class ARDMediathekProvider:
             raise ARDMediathekHTTPError("ARD episode detail request failed") from exc
         widgets = payload.get("widgets") if isinstance(payload, Mapping) else None
         if not isinstance(widgets, list):
-            return episode_id, None
+            return episode_id, None, None
+        description: str | None = None
+        published: datetime | None = None
         for widget in widgets:
             if not isinstance(widget, Mapping):
                 continue
             embedded = widget.get("mediaCollection", {}).get("embedded")
             meta = embedded.get("meta") if isinstance(embedded, Mapping) else None
-            description = meta.get("synopsis") if isinstance(meta, Mapping) else None
-            if isinstance(description, str) and description.strip():
-                return episode_id, description
-        return episode_id, None
+            if not isinstance(meta, Mapping):
+                continue
+            if description is None:
+                synopsis = meta.get("synopsis")
+                if isinstance(synopsis, str) and synopsis.strip():
+                    description = synopsis
+            if published is None:
+                raw = meta.get("broadcastedOnDateTime")
+                if isinstance(raw, str):
+                    try:
+                        published = self._datetime(raw, "episode.broadcastedOnDateTime")
+                    except ARDMediathekMalformedResponseError:
+                        continue
+        return episode_id, description, published
 
     @staticmethod
     def _episode_id(teaser: Mapping[str, Any]) -> str | None:
@@ -312,6 +347,49 @@ class ARDMediathekProvider:
         )
 
     @staticmethod
+    def _with_streaming_availability(
+        series: NormalizedSeries, available_from: Mapping[str, datetime]
+    ) -> NormalizedSeries:
+        """Prefer the on-demand publication date over the upcoming linear broadcast.
+
+        The teaser ``broadcastedOn`` is the linear airing time, which for pre-published
+        shows lies in the future even though the episode is already streamable. The detail
+        payload's ``broadcastedOnDateTime`` is the date the stream actually went online.
+        """
+
+        if not available_from:
+            return series
+
+        def dated(
+            releases: tuple[NormalizedEpisodeRelease, ...],
+        ) -> tuple[NormalizedEpisodeRelease, ...]:
+            return tuple(
+                release.model_copy(update={"release_at": available_from[release.external_id]})
+                if (
+                    release.release_type is ReleaseType.STREAMING
+                    and release.external_id in available_from
+                )
+                else release
+                for release in releases
+            )
+
+        return series.model_copy(
+            update={
+                "seasons": tuple(
+                    season.model_copy(
+                        update={
+                            "episodes": tuple(
+                                episode.model_copy(update={"releases": dated(episode.releases)})
+                                for episode in season.episodes
+                            )
+                        }
+                    )
+                    for season in series.seasons
+                )
+            }
+        )
+
+    @staticmethod
     def _same_title(left: Any, right: str) -> bool:
         if not isinstance(left, str):
             return False
@@ -322,132 +400,102 @@ class ARDMediathekProvider:
         return normalize(left) == normalize(right)
 
     @classmethod
-    def _merge_scheduled_releases(
+    def _fold_scheduled_releases(
         cls,
         series: NormalizedSeries,
         scheduled_releases: Mapping[str, tuple[NormalizedEpisodeRelease, ...]],
         scheduled_descriptions: Mapping[str, str] | None = None,
         broadcast_targets: Mapping[str, str] | None = None,
+        *,
+        now: datetime | None = None,
     ) -> NormalizedSeries:
-        merged_series = series
-        known_titles = {
-            episode.title for season in merged_series.seasons for episode in season.episodes
+        """Merge planned linear broadcasts through the shared EPG policy.
+
+        Broadcasts that resolve to a catalogue episode (target ``urlId``, else title,
+        else synopsis) are handed to the shared merger, which drops them when the
+        catalogue already dates the episode; only broadcasts without a catalogue home
+        use the slot logic. The episode detail dates (``_with_streaming_availability``)
+        were already applied, so the merged tree keeps the catalogue dates.
+        """
+
+        episodes_by_external_id = {
+            episode.external_id: episode for season in series.seasons for episode in season.episodes
         }
-        known_external_ids = {
-            episode.external_id for season in merged_series.seasons for episode in season.episodes
-        }
-        descriptions = scheduled_descriptions or {}
-        descriptions_by_episode = {
-            cls._description_key(episode.description): episode
-            for season in merged_series.seasons
-            for episode in season.episodes
-            if episode.description
-        }
+        episodes_by_title: dict[str, list[NormalizedEpisode]] = defaultdict(list)
+        description_keys: dict[str, NormalizedEpisode] = {}
+        for season in series.seasons:
+            for episode in season.episodes:
+                if episode.title:
+                    episodes_by_title[episode.title].append(episode)
+                if episode.description:
+                    description_keys[cls._description_key(episode.description)] = episode
         targets = broadcast_targets or {}
-        target_matches: dict[str, list[NormalizedEpisodeRelease]] = defaultdict(list)
-        title_matches: dict[str, tuple[NormalizedEpisodeRelease, ...]] = {}
-        for title, releases in scheduled_releases.items():
-            untargeted: list[NormalizedEpisodeRelease] = []
-            for release in releases:
-                target = targets.get(release.external_id or "")
-                if target and target in known_external_ids:
-                    target_matches[target].append(release)
-                else:
-                    untargeted.append(release)
-            if untargeted:
-                title_matches[title] = tuple(untargeted)
-        for title, releases in list(title_matches.items()):
-            if title in known_titles:
-                continue
-            matching_releases = tuple(
-                release
-                for release in releases
-                if release.external_id
-                and any(
-                    cls._descriptions_match(
-                        descriptions.get(release.external_id), episode.description
+        descriptions = scheduled_descriptions or {}
+        broadcasts: list[EpgBroadcast] = []
+        for title, title_releases in scheduled_releases.items():
+            for release in title_releases:
+                external_id = release.external_id or ""
+                linked_ids = cls._linked_episode_ids(
+                    external_id,
+                    title,
+                    target=targets.get(external_id),
+                    description=descriptions.get(external_id),
+                    episodes_by_external_id=episodes_by_external_id,
+                    episodes_by_title=episodes_by_title,
+                    description_keys=description_keys,
+                )
+                if not linked_ids:
+                    broadcasts.append(
+                        EpgBroadcast(
+                            external_id=external_id,
+                            title=title,
+                            start=release.release_at,
+                            url=release.url,
+                        )
                     )
-                    for episode in descriptions_by_episode.values()
-                )
-            )
-            if matching_releases:
-                scheduled_description = descriptions[matching_releases[0].external_id or ""]
-                matched_episode = next(
-                    episode
-                    for episode in descriptions_by_episode.values()
-                    if cls._descriptions_match(scheduled_description, episode.description)
-                )
-                title_matches[matched_episode.title] = matching_releases
-                title_matches.pop(title, None)
-
-        merged_series = series.model_copy(
-            update={
-                "seasons": tuple(
-                    season.model_copy(
-                        update={
-                            "episodes": tuple(
-                                episode.model_copy(
-                                    update={
-                                        "releases": episode.releases
-                                        + tuple(
-                                            release
-                                            for release in (
-                                                *target_matches.get(episode.external_id, ()),
-                                                *title_matches.get(episode.title, ()),
-                                            )
-                                            if release.external_id
-                                            not in {
-                                                existing.external_id
-                                                for existing in episode.releases
-                                            }
-                                        )
-                                    }
-                                )
-                                for episode in season.episodes
-                            )
-                        }
+                    continue
+                for episode_id in linked_ids:
+                    broadcasts.append(
+                        EpgBroadcast(
+                            external_id=external_id,
+                            title=title,
+                            start=release.release_at,
+                            url=release.url,
+                            linked_episode_external_id=episode_id,
+                        )
                     )
-                    for season in series.seasons
-                )
-            }
+        return merge_epg(
+            series,
+            broadcasts,
+            now=now or datetime.now(UTC),
+            timezone=EPG_TIMEZONE,
+            tolerance=TV_BROADCAST_MATCH_TOLERANCE,
+            next_episode_external_id=lambda season_id, number: f"scheduled:{season_id}:{number}",
+            logger=logger,
         )
 
-        scheduled_only = [
-            (title, releases)
-            for title, releases in title_matches.items()
-            if title not in known_titles
-        ]
-        if not scheduled_only:
-            return merged_series
-
-        scheduled_season = next(
-            (season for season in merged_series.seasons if season.number is None), None
-        )
-        if scheduled_season is None:
-            scheduled_season = NormalizedSeason(
-                external_id=f"{series.external_id}:scheduled",
-                number=None,
-                title="Scheduled",
-            )
-            seasons = (*merged_series.seasons, scheduled_season)
-        else:
-            seasons = merged_series.seasons
-        scheduled_episodes = tuple(
-            NormalizedEpisode(
-                external_id=releases[0].external_id or f"{series.external_id}:{title}",
-                number=None,
-                title=title,
-                releases=releases,
-            )
-            for title, releases in scheduled_only
-        )
-        seasons = tuple(
-            season.model_copy(update={"episodes": season.episodes + scheduled_episodes})
-            if season.external_id == scheduled_season.external_id
-            else season
-            for season in seasons
-        )
-        return merged_series.model_copy(update={"seasons": seasons})
+    @classmethod
+    def _linked_episode_ids(
+        cls,
+        external_id: str,
+        title: str,
+        *,
+        target: str | None,
+        description: str | None,
+        episodes_by_external_id: Mapping[str, NormalizedEpisode],
+        episodes_by_title: Mapping[str, Sequence[NormalizedEpisode]],
+        description_keys: Mapping[str, NormalizedEpisode],
+    ) -> tuple[str, ...]:
+        if target and target in episodes_by_external_id:
+            return (target,)
+        title_matches = episodes_by_title.get(title)
+        if title_matches:
+            return tuple(episode.external_id for episode in title_matches)
+        if description:
+            for _key, episode in description_keys.items():
+                if cls._descriptions_match(description, episode.description):
+                    return (episode.external_id,)
+        return ()
 
     @staticmethod
     def _description_key(value: str | None) -> str:
