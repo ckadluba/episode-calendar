@@ -7,13 +7,15 @@ from episode_calendar.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    first_seen_release,
 )
 from episode_calendar.providers.epg import (
     EpgBroadcast,
     derive_broadcast_slots,
     derive_slots_from_moments,
+    filter_obsolete_seasons,
     fits_slot,
-    fold_broadcasts,
+    merge_epg,
 )
 
 VIENNA = ZoneInfo("Europe/Vienna")
@@ -117,7 +119,7 @@ def test_fits_slot_matches_the_same_weekday_within_tolerance() -> None:
     )
 
 
-def test_fold_broadcasts_extends_running_season_and_flags_reruns() -> None:
+def test_merge_epg_extends_running_season_and_flags_reruns() -> None:
     series = NormalizedSeries(
         external_id="s",
         title="S",
@@ -141,8 +143,7 @@ def test_fold_broadcasts_extends_running_season_and_flags_reruns() -> None:
             ),
         ),
     )
-    running = series.seasons[0]
-    slots = derive_broadcast_slots(running, timezone=VIENNA)
+    slots = derive_broadcast_slots(series.seasons[0], timezone=VIENNA)
     broadcasts = (
         EpgBroadcast(
             external_id="b1",
@@ -156,12 +157,12 @@ def test_fold_broadcasts_extends_running_season_and_flags_reruns() -> None:
         ),
     )
 
-    result = fold_broadcasts(
+    result = merge_epg(
         series,
         broadcasts,
-        running_season=running,
-        slots=slots,
+        now=datetime(2026, 10, 10, tzinfo=UTC),
         timezone=VIENNA,
+        slots=slots,
         tolerance=timedelta(hours=2),
         next_episode_external_id=lambda season_id, number: f"next:{season_id}:{number}",
     )
@@ -173,3 +174,233 @@ def test_fold_broadcasts_extends_running_season_and_flags_reruns() -> None:
     reruns = [release for release in episodes[0].releases if release.rerun]
     assert len(reruns) == 1
     assert reruns[0].release_at == datetime(2026, 10, 14, 22, 15, tzinfo=UTC)
+
+
+def test_merge_epg_fills_undated_catalog_episode_and_drops_dated_one() -> None:
+    now = datetime(2026, 10, 10, tzinfo=UTC)
+    series = NormalizedSeries(
+        external_id="s",
+        title="S",
+        seasons=(
+            NormalizedSeason(
+                external_id="s1",
+                number=1,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="e1",
+                        number=1,
+                        title="e1",
+                        releases=(first_seen_release(now),),
+                    ),
+                    NormalizedEpisode(
+                        external_id="e2",
+                        number=2,
+                        title="e2",
+                        releases=(
+                            NormalizedEpisodeRelease(
+                                external_id="e2-stream",
+                                release_type=ReleaseType.STREAMING,
+                                release_at=datetime(2026, 10, 7, tzinfo=VIENNA),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = merge_epg(
+        series,
+        (
+            EpgBroadcast(
+                external_id="b1",
+                title="e1",
+                start=datetime(2026, 9, 30, 20, 15, tzinfo=VIENNA),
+                episode_number=1,
+            ),
+            EpgBroadcast(
+                external_id="b2",
+                title="e2",
+                start=datetime(2026, 10, 7, 20, 15, tzinfo=VIENNA),
+                episode_number=2,
+            ),
+        ),
+        now=now,
+        timezone=VIENNA,
+        tolerance=timedelta(hours=2),
+        next_episode_external_id=lambda season_id, number: f"next:{season_id}:{number}",
+    )
+
+    announced, dated = result.seasons[0].episodes
+    assert [release.release_type for release in announced.releases if not release.placeholder] == [
+        ReleaseType.TV_BROADCAST,
+    ]
+    assert announced.releases[-1].date_from_api is True
+    assert [release.external_id for release in dated.releases] == ["e2-stream"]
+
+
+def test_merge_epg_creates_numbered_episode_not_in_catalog() -> None:
+    now = datetime(2026, 10, 10, tzinfo=UTC)
+    series = NormalizedSeries(
+        external_id="s",
+        title="S",
+        seasons=(
+            NormalizedSeason(
+                external_id="s1",
+                number=1,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="e1",
+                        number=1,
+                        title="e1",
+                        releases=(first_seen_release(now),),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = merge_epg(
+        series,
+        (
+            EpgBroadcast(
+                external_id="b3",
+                title="e3",
+                start=datetime(2026, 10, 21, 20, 15, tzinfo=VIENNA),
+                episode_number=3,
+            ),
+        ),
+        now=now,
+        timezone=VIENNA,
+        tolerance=timedelta(hours=2),
+        next_episode_external_id=lambda season_id, number: f"scheduled:{season_id}:{number}",
+    )
+
+    episodes = result.seasons[0].episodes
+    assert [episode.number for episode in episodes] == [1, 3]
+    assert episodes[-1].external_id == "scheduled:s1:3"
+    assert episodes[-1].releases[0].date_from_api is True
+
+
+def test_merge_epg_fills_announced_undated_next_episode() -> None:
+    now = datetime(2026, 10, 10, tzinfo=UTC)
+    series = NormalizedSeries(
+        external_id="s",
+        title="S",
+        seasons=(
+            NormalizedSeason(
+                external_id="s1",
+                number=1,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="e1",
+                        number=1,
+                        title="e1",
+                        releases=(
+                            NormalizedEpisodeRelease(
+                                release_type=ReleaseType.TV_BROADCAST,
+                                release_at=datetime(2026, 10, 7, 20, 15, tzinfo=VIENNA),
+                            ),
+                        ),
+                    ),
+                    NormalizedEpisode(
+                        external_id="e2",
+                        number=2,
+                        title="e2",
+                        releases=(first_seen_release(now),),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = merge_epg(
+        series,
+        (
+            EpgBroadcast(
+                external_id="b2",
+                title="e2",
+                start=datetime(2026, 10, 14, 20, 15, tzinfo=VIENNA),
+            ),
+        ),
+        now=now,
+        timezone=VIENNA,
+        tolerance=timedelta(hours=2),
+        next_episode_external_id=lambda season_id, number: f"next:{season_id}:{number}",
+    )
+
+    episodes = result.seasons[0].episodes
+    assert [episode.number for episode in episodes] == [1, 2]
+    assert episodes[1].external_id == "e2"
+    assert [
+        release.release_type for release in episodes[1].releases if not release.placeholder
+    ] == [
+        ReleaseType.TV_BROADCAST,
+    ]
+
+
+def test_filter_obsolete_seasons_drops_undated_seasons_below_the_highest() -> None:
+    series = NormalizedSeries(
+        external_id="s",
+        title="S",
+        seasons=(
+            NormalizedSeason(
+                external_id="s1",
+                number=1,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="e1",
+                        number=1,
+                        title="e1",
+                        releases=(first_seen_release(datetime(2026, 10, 1, tzinfo=UTC)),),
+                    ),
+                ),
+            ),
+            NormalizedSeason(
+                external_id="s2",
+                number=2,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="e2",
+                        number=1,
+                        title="e2",
+                        releases=(
+                            NormalizedEpisodeRelease(
+                                release_type=ReleaseType.STREAMING,
+                                release_at=datetime(2026, 10, 5, tzinfo=VIENNA),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = filter_obsolete_seasons(series)
+
+    assert [season.number for season in result.seasons] == [2]
+
+
+def test_filter_obsolete_seasons_keeps_undated_season_without_higher_season() -> None:
+    series = NormalizedSeries(
+        external_id="s",
+        title="S",
+        seasons=(
+            NormalizedSeason(
+                external_id="s1",
+                number=1,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="e1",
+                        number=1,
+                        title="e1",
+                        releases=(first_seen_release(datetime(2026, 10, 1, tzinfo=UTC)),),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = filter_obsolete_seasons(series)
+
+    assert [season.number for season in result.seasons] == [1]

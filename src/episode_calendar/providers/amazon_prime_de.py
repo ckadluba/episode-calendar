@@ -20,6 +20,7 @@ from episode_calendar.providers.base import (
     NormalizedSeries,
     first_seen_release,
 )
+from episode_calendar.providers.epg import filter_obsolete_seasons
 from episode_calendar.providers.http import request_with_retries
 
 _GERMAN_TIMEZONE = ZoneInfo("Europe/Berlin")
@@ -143,7 +144,7 @@ class AmazonPrimeProvider:
             raise AmazonPrimeMalformedResponseError(
                 f"{self.provider_label} response was not JSON"
             ) from exc
-        return self._normalize(title_id, payload)
+        return filter_obsolete_seasons(self._normalize(title_id, payload))
 
     @classmethod
     def _normalize(cls, title_id: str, payload: Any) -> NormalizedSeries:

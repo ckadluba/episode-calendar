@@ -23,6 +23,7 @@ from episode_calendar.providers.base import (
     episode_title_from_description,
     first_seen_release,
 )
+from episode_calendar.providers.epg import filter_obsolete_seasons
 
 _SEASON_RE = re.compile(r"(?:series|cyfres)\s+(\d+)", re.IGNORECASE)
 _EPISODE_RE = re.compile(
@@ -138,7 +139,7 @@ class BBCIPlayerProvider:
             if scheduled.get("id") not in known_episode_ids:
                 episodes.append(scheduled)
 
-        return self._normalize(pid, programme, episodes)
+        return filter_obsolete_seasons(self._normalize(pid, programme, episodes))
 
     async def _scheduled_episodes(
         self, client: httpx.AsyncClient, pid: str

@@ -27,7 +27,8 @@ from episode_calendar.providers.base import (
 from episode_calendar.providers.epg import (
     EpgBroadcast,
     derive_broadcast_slots,
-    fold_broadcasts,
+    filter_obsolete_seasons,
+    merge_epg,
     running_season,
 )
 
@@ -261,16 +262,18 @@ class JoynProvider:
     async def _apply_epg(
         self, client: httpx.AsyncClient, normalized: NormalizedSeries
     ) -> NormalizedSeries:
-        """Fold upcoming linear broadcasts into the real season/episode tree.
+        """Merge upcoming linear broadcasts into the shared catalogue policy.
 
-        Joyn's EPG lists linear airings that the VOD catalogue does not carry yet. A
-        numberless entry cannot be matched to a season or episode directly, so the recurring
-        broadcast slots of the currently running season decide whether it is a pre-announced
-        regular airing (slot match) or a rerun (off-slot). Regular airings extend the running
-        season with the next episode number; reruns, and entries whose season/episode cannot
-        be derived, are attached to the latest known episode.
+        Joyn's EPG lists linear airings that the VOD catalogue does not carry yet; the
+        shared policy keeps the catalogue authoritative (dates it already knows win) and
+        uses the recurring broadcast slots of the running season to decide whether a
+        numberless airing is a pre-announced regular one (next episode number) or a rerun
+        (attached to the latest episode).
         """
 
+        # The catalogue is the base: an obsolete lower season that looks running (all
+        # placeholder dates) must not distort slot derivation or surface today.
+        normalized = filter_obsolete_seasons(normalized)
         try:
             events = await self._epg_events(client)
         except Exception as exc:  # EPG is supplementary; the catalog remains usable without it.
@@ -319,12 +322,12 @@ class JoynProvider:
             )
             for event in matching
         ]
-        return fold_broadcasts(
+        return merge_epg(
             normalized,
             broadcasts,
-            running_season=current_season,
-            slots=slots,
+            now=self._clock().astimezone(UTC),
             timezone=EPG_TIMEZONE,
+            slots=slots,
             tolerance=EPG_SLOT_TOLERANCE,
             next_episode_external_id=lambda season_id, number: f"epg:next:{season_id}:{number}",
             logger=logger,

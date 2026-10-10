@@ -87,14 +87,10 @@ async def test_fetches_numbered_episodes_and_ignores_bonus_content() -> None:
     assert [release.release_type for release in absent_episode.releases] == [ReleaseType.STREAMING]
     assert str(absent_episode.releases[0].url) == "https://www.ardmediathek.de/video/episode-1"
     episode = result.seasons[0].episodes[1]
+    assert episode.external_id == "episode-2"
     assert episode.title == "The Second One"
-    streaming, broadcast = episode.releases
-    assert streaming.release_type is ReleaseType.STREAMING
-    assert streaming.external_id == "episode-2"
-    assert broadcast.external_id == "schedule-2"
-    assert broadcast.release_type is ReleaseType.TV_BROADCAST
-    assert broadcast.release_at == datetime(2026, 9, 22, 20, tzinfo=UTC)
-    assert str(broadcast.url) == "https://www.ardmediathek.de/tv-programm/schedule-2"
+    # The scheduled broadcast belongs to a catalogue episode, so it is not duplicated.
+    assert [release.release_type for release in episode.releases] == [ReleaseType.STREAMING]
 
 
 async def test_keeps_announced_catalog_episode_when_schedule_is_not_published_yet() -> None:
@@ -208,15 +204,11 @@ async def test_deduplicates_programme_entries_returned_for_several_days() -> Non
 
     episode = result.seasons[0].episodes[0]
     assert episode.title == "The First One"
-    broadcasts = [
-        release for release in episode.releases if release.release_type is ReleaseType.TV_BROADCAST
-    ]
-    assert len(broadcasts) == 1
-    assert broadcasts[0].external_id == "schedule-1"
-    assert broadcasts[0].release_type is ReleaseType.TV_BROADCAST
+    # The scheduled broadcast belongs to a catalogue episode, so it is not duplicated.
+    assert [release.release_type for release in episode.releases] == [ReleaseType.STREAMING]
 
 
-def test_merges_scheduled_broadcast_with_catalog_episode() -> None:
+def test_folds_untitled_scheduled_broadcast_into_running_season() -> None:
     assert ARDMediathekProvider._same_title(
         "Werwölfe - Das Spiel von List und Täuschung",
         "Werwölfe · Das Spiel von List und Täuschung",
@@ -234,32 +226,37 @@ def test_merges_scheduled_broadcast_with_catalog_episode() -> None:
     scheduled = {
         "Ein Funken Hoffnung": (
             NormalizedEpisodeRelease(
-                external_id="schedule-2026-10-01",
+                external_id="schedule-2026-10-06",
                 release_type=ReleaseType.TV_BROADCAST,
-                release_at=datetime(2026, 10, 1, 17, 15, tzinfo=UTC),
-                url="https://www.ardmediathek.de/tv-programm/schedule-2026-10-01",
+                release_at=datetime(2026, 10, 6, 20, 0, tzinfo=UTC),
+                url="https://www.ardmediathek.de/tv-programm/schedule-2026-10-06",
             ),
         ),
         "Fassungslos": (
             NormalizedEpisodeRelease(
-                external_id="schedule-2026-10-01-late",
+                external_id="schedule-2026-10-06-late",
                 release_type=ReleaseType.TV_BROADCAST,
-                release_at=datetime(2026, 10, 1, 17, 15, tzinfo=UTC),
-                url="https://www.ardmediathek.de/tv-programm/schedule-2026-10-01-late",
+                release_at=datetime(2026, 10, 6, 20, 0, tzinfo=UTC),
+                url="https://www.ardmediathek.de/tv-programm/schedule-2026-10-06-late",
             ),
         ),
     }
 
-    result = ARDMediathekProvider._merge_scheduled_releases(series, scheduled)
+    result = ARDMediathekProvider._fold_scheduled_releases(
+        series, scheduled, now=datetime(2026, 10, 6, 12, tzinfo=UTC)
+    )
 
-    assert {release.release_type for release in result.seasons[0].episodes[0].releases} == {
-        ReleaseType.STREAMING,
-        ReleaseType.TV_BROADCAST,
-    }
-    scheduled_season = next(season for season in result.seasons if season.title == "Scheduled")
-    scheduled_episode = scheduled_season.episodes[0]
-    assert scheduled_episode.number is None
-    assert scheduled_episode.title == "Fassungslos"
+    assert not any(season.number is None for season in result.seasons)
+    [season] = result.seasons
+    episode = season.episodes[0]
+    assert episode.external_id == "episode-5"
+    # The broadcast titled after a catalogue episode is dropped; only the untitled one
+    # without a catalogue home is folded into the running season.
+    assert [release.release_type for release in episode.releases] == [ReleaseType.STREAMING]
+    next_numbered = [episode for episode in season.episodes if episode.number == 6]
+    assert len(next_numbered) == 1
+    assert next_numbered[0].title == "Fassungslos"
+    assert next_numbered[0].releases[0].external_id == "schedule-2026-10-06-late"
 
 
 def test_assigns_broadcast_to_target_episode_instead_of_shared_title() -> None:
@@ -289,16 +286,38 @@ def test_assigns_broadcast_to_target_episode_instead_of_shared_title() -> None:
         )
     }
 
-    result = ARDMediathekProvider._merge_scheduled_releases(
-        series, scheduled, None, {"schedule-1": "s2e1"}
+    result = ARDMediathekProvider._fold_scheduled_releases(
+        series, scheduled, None, {"schedule-1": "s2e1"}, now=datetime(2026, 10, 8, 12, tzinfo=UTC)
     )
 
+    # The broadcast belongs to s2e1, which the catalogue already dates, so it is dropped
+    # instead of being attached to both equally titled episodes.
     [first_season, second_season] = result.seasons
     assert [release.release_type for release in first_season.episodes[0].releases] == [
         ReleaseType.STREAMING
     ]
     assert [release.release_type for release in second_season.episodes[0].releases] == [
-        ReleaseType.STREAMING,
-        ReleaseType.TV_BROADCAST,
+        ReleaseType.STREAMING
     ]
     assert not any(season.number is None for season in result.seasons)
+
+
+def test_streaming_release_prefers_publication_date() -> None:
+    series = ARDMediathekProvider._normalize(
+        "demo",
+        [
+            teaser(
+                "episode-4",
+                "Folge 4: Das Komplott (S02/E04)",
+                "2026-10-15T21:15:00Z",
+            )
+        ],
+    )
+    published = ARDMediathekProvider._with_streaming_availability(
+        series, {"episode-4": datetime(2026, 9, 24, 17, 50, tzinfo=UTC)}
+    )
+
+    [release] = published.seasons[0].episodes[0].releases
+    assert release.release_type is ReleaseType.STREAMING
+    # The detail payload's on-demand date wins over the future linear broadcast teaser.
+    assert release.release_at == datetime(2026, 9, 24, 17, 50, tzinfo=UTC)
