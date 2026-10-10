@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 
@@ -27,6 +28,7 @@ from episode_calendar.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    first_seen_release,
 )
 
 EPG_LOOKAHEAD = timedelta(days=14)
@@ -43,7 +45,7 @@ _DATE_RE = re.compile(
     re.IGNORECASE,
 )
 _TABLE_DATE_RE = re.compile(
-    r"(?:[A-Za-zÄÖÜäöü]+\\?\.?\s*,?\s*)?(\d{1,2})\\?\.(\d{1,2})\\?\.?(?:\s*(?:ab|um)?\s*)?"
+    r"(?:[A-Za-zÄÖÜäöü]+\\?\.?\s*,?\s*)?(\d{1,2})\\?\.(\d{1,2})\\?\.\s*,?\s*(?:(?:ab|um)\s*)?"
     r"(\d{1,2})(?::(\d{2}))?\s*(?:Uhr)?",
     re.IGNORECASE,
 )
@@ -55,6 +57,11 @@ _START_DATE_RE = re.compile(
 _WEEKDAY_RE = re.compile(
     r"\b(Montags?|Dienstags?|Mittwochs?|Donnerstags?|Freitags?|Samstags?|Sonntags?)\b",
     re.IGNORECASE,
+)
+_ANCHOR_RE = re.compile(r"Auftakt von Staffel\s+(\d+)", re.IGNORECASE)
+_JSONLD_RE = re.compile(
+    r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+    re.IGNORECASE | re.DOTALL,
 )
 _MONTHS = {
     "januar": 1,
@@ -526,7 +533,112 @@ class RTLPlusProvider:
             if not isinstance(next_page, int) or next_page <= page:
                 raise RTLPlusMalformedResponseError("invalid RTL+ pagination")
             page = next_page
-        return self._normalize(program_id, pages, series_url=series_url)
+        season_anchors = await self._season_anchors(client, pages, series_url)
+        return self._normalize(
+            program_id, pages, series_url=series_url, season_anchors=season_anchors
+        )
+
+    async def _season_anchors(
+        self,
+        client: httpx.AsyncClient,
+        pages: list[dict[str, Any]],
+        series_url: str | None,
+    ) -> dict[int, datetime]:
+        """Read the premiere anchor for completed seasons from RTL+'s "Auftakt" previews.
+
+        RTL+'s JSON catalogue exposes no broadcast dates for a season once it has ended,
+        but each season's "Der Auftakt von Staffel N" preview clip carries a real
+        ``uploadDate`` on its public page. That preview drops exactly one week before
+        episode 1, so the season's episodes stream weekly from ``anchor + 1 week``.
+        """
+
+        anchors: dict[int, datetime] = {}
+        if series_url is None:
+            return anchors
+        for season_number, url in self._sneak_peek_anchors(pages, series_url).items():
+            try:
+                anchor = await self._fetch_upload_date(client, url)
+            except Exception as exc:  # A missing preview must not fail the catalogue import.
+                logger.warning(
+                    "RTL+ anchor preview unavailable for Staffel %s: %s", season_number, exc
+                )
+                continue
+            if anchor is not None:
+                anchors[season_number] = anchor
+        return anchors
+
+    @staticmethod
+    def _sneak_peek_anchors(pages: list[dict[str, Any]], series_url: str) -> dict[int, str]:
+        anchors: dict[int, str] = {}
+        for payload in pages:
+            for block in payload.get("blocks", []):
+                content = block.get("content") if isinstance(block, dict) else None
+                items = content.get("items") if isinstance(content, dict) else None
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    raw = item.get("itemContent") if isinstance(item, dict) else None
+                    if not isinstance(raw, dict):
+                        continue
+                    match = _ANCHOR_RE.search(str(raw.get("highlight") or ""))
+                    if not match:
+                        continue
+                    url = RTLPlusProvider._episode_public_url(raw, series_url)
+                    if url is not None:
+                        anchors[int(match.group(1))] = url
+        return anchors
+
+    @staticmethod
+    def _episode_public_url(raw: dict[str, Any], series_url: str) -> str | None:
+        target: Any = (raw.get("action") or {}).get("target")
+        while isinstance(target, dict):
+            if target.get("type") == "layout":
+                layout = target.get("value_layout") or {}
+                seo = layout.get("seo")
+                identifier = layout.get("id")
+                if (
+                    isinstance(seo, str)
+                    and isinstance(identifier, str)
+                    and identifier.startswith("clip_")
+                ):
+                    return f"{series_url}/video/{seo}-c_{identifier.split('_', 1)[1]}"
+                return None
+            target = (target.get("value_lock") or {}).get("originalTarget")
+        return None
+
+    async def _fetch_upload_date(self, client: httpx.AsyncClient, url: str) -> datetime | None:
+        response = await client.get(url, headers={"Accept": "text/html"})
+        response.raise_for_status()
+        for match in _JSONLD_RE.finditer(response.text):
+            try:
+                data = json.loads(match.group(1))
+            except ValueError:
+                continue
+            value = RTLPlusProvider._find_upload_date(data)
+            if value is None:
+                continue
+            try:
+                return datetime.fromisoformat(value).astimezone(ZoneInfo("Europe/Vienna"))
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def _find_upload_date(data: Any) -> str | None:
+        if isinstance(data, dict):
+            value = data.get("uploadDate")
+            if isinstance(value, str):
+                return value
+            for nested in data.values():
+                found = RTLPlusProvider._find_upload_date(nested)
+                if found is not None:
+                    return found
+        elif isinstance(data, list):
+            for nested in data:
+                found = RTLPlusProvider._find_upload_date(nested)
+                if found is not None:
+                    return found
+        return None
 
     async def _request(
         self, client: httpx.AsyncClient, program_id: str, page: int
@@ -582,6 +694,7 @@ class RTLPlusProvider:
         pages: list[dict[str, Any]],
         *,
         series_url: str | None = None,
+        season_anchors: dict[int, datetime] | None = None,
     ) -> NormalizedSeries:
         first = pages[0]
         entity = first.get("entity")
@@ -667,9 +780,6 @@ class RTLPlusProvider:
                     if season_match:
                         season_numbers.add(int(season_match.group(1)))
         current_season_number = max(season_numbers, default=None)
-        latest_catalog_episode_number = self._latest_catalog_episode_number(
-            pages, current_season_number
-        )
         seo_text = "\n".join(
             str(value)
             for value in (first.get("seo") or {}).get("metadata", {}).values()
@@ -725,6 +835,7 @@ class RTLPlusProvider:
                         int(episode_match.group(1)),
                     )
                     release_at = None
+                    release_date_from_api = True
                     if season_number == current_season_number:
                         if diffusion_episode_number is not None:
                             release_at = diffusion_release + timedelta(
@@ -732,20 +843,32 @@ class RTLPlusProvider:
                             )
                         else:
                             release_at = releases.get(episode_number)
-                    if (
-                        release_at is None
-                        and season_number == current_season_number
-                        and episode_number == latest_catalog_episode_number
-                    ):
-                        release_at = diffusion_release
+                        if release_at is None and diffusion_release is not None:
+                            # Once a season has finished, RTL+ drops the schedule table and
+                            # the weekday block and only the page-level diffusion date
+                            # remains. It originally identifies the last published episode,
+                            # but applying it to every episode of that season that has no
+                            # date is better than stamping the discovery time: it keeps a
+                            # completed season out of today's calendar even though the date
+                            # is wrong for most episodes.
+                            release_at = diffusion_release
+                    elif season_anchors and season_number in season_anchors:
+                        # A completed season exposes no broadcast dates through RTL+'s JSON
+                        # catalogue. Its "Auftakt" preview publishes the premiere week:
+                        # episode 1 streams one week later and the season continues weekly.
+                        # The date is derived rather than read from the catalogue, so it is
+                        # not flagged as API-sourced.
+                        release_at = season_anchors[season_number] + timedelta(weeks=episode_number)
+                        release_date_from_api = False
                     release_tuple = (
-                        ()
+                        (first_seen_release(datetime.now(UTC), url=series_url),)
                         if release_at is None
                         else (
                             NormalizedEpisodeRelease(
                                 release_type=ReleaseType.STREAMING,
                                 release_at=release_at,
                                 url=series_url,
+                                date_from_api=release_date_from_api,
                             ),
                         )
                     )
@@ -760,7 +883,10 @@ class RTLPlusProvider:
                         raise RTLPlusMalformedResponseError(
                             "episode did not match normalized model"
                         ) from exc
-                    seasons.setdefault(season_number, []).append(episode)
+                    episodes_list = seasons.setdefault(season_number, [])
+                    if any(e.number == episode_number for e in episodes_list):
+                        continue
+                    episodes_list.append(episode)
         if current_season_number is not None and has_explicit_schedule:
             current_episodes = seasons.get(current_season_number, [])
             next_episode_number = (
@@ -798,36 +924,6 @@ class RTLPlusProvider:
             for number, episodes in sorted(seasons.items())
         )
         return NormalizedSeries(external_id=program_id, title=title, seasons=normalized_seasons)
-
-    @staticmethod
-    def _latest_catalog_episode_number(
-        pages: list[dict[str, Any]], current_season_number: int | None
-    ) -> int | None:
-        if current_season_number is None:
-            return None
-        episode_numbers: list[int] = []
-        for payload in pages:
-            for block in payload.get("blocks", []):
-                if (
-                    not isinstance(block, dict)
-                    or block.get("analytics", {}).get("tealium", {}).get("from")
-                    != "feature.videos_by_season_by_program"
-                ):
-                    continue
-                content = block.get("content")
-                items = content.get("items", []) if isinstance(content, dict) else []
-                for item in items if isinstance(items, list) else []:
-                    raw = item.get("itemContent") if isinstance(item, dict) else None
-                    highlight = str(raw.get("highlight") or "") if isinstance(raw, dict) else ""
-                    season_match = _SEASON_RE.search(highlight)
-                    episode_match = _EPISODE_RE.search(highlight)
-                    if (
-                        season_match
-                        and episode_match
-                        and int(season_match.group(1)) == current_season_number
-                    ):
-                        episode_numbers.append(int(episode_match.group(1)))
-        return max(episode_numbers, default=None)
 
     @staticmethod
     def _series_url(external_id: str) -> str | None:
@@ -933,6 +1029,13 @@ class RTLPlusProvider:
                 tzinfo=ZoneInfo("Europe/Vienna"),
             )
         if result:
+            latest = max(result.values())
+            for episode, when in list(result.items()):
+                if when < latest - timedelta(days=150):
+                    try:
+                        result[episode] = when.replace(year=when.year + 1)
+                    except ValueError:
+                        pass
             return result
 
         timezone = ZoneInfo("Europe/Vienna")
