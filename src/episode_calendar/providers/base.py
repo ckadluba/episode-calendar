@@ -25,6 +25,8 @@ class NormalizedEpisodeRelease(BaseModel):
     url: HttpUrl | None = None
     preview: bool = False
     rerun: bool = False
+    date_from_api: bool = True
+    placeholder: bool = False
 
     @field_validator("release_at", "available_until")
     @classmethod
@@ -32,6 +34,31 @@ class NormalizedEpisodeRelease(BaseModel):
         if value is not None and (value.tzinfo is None or value.utcoffset() is None):
             raise ValueError("release timestamps must be timezone-aware")
         return value
+
+
+def first_seen_release(
+    now: datetime,
+    *,
+    url: HttpUrl | None = None,
+    available_until: datetime | None = None,
+) -> NormalizedEpisodeRelease:
+    """Placeholder streaming release for a catalogue episode without its own date.
+
+    The provider stamps the discovery time and clears ``date_from_api`` so the importer
+    keeps the earliest value across re-imports until the linear programme supplies a real
+    broadcast date. ``placeholder`` distinguishes this "no date found" case from a date
+    that was merely derived rather than read from the API (for example an RTL+ preview
+    anchor), which also clears ``date_from_api`` but is a real date.
+    """
+
+    return NormalizedEpisodeRelease(
+        release_type=ReleaseType.STREAMING,
+        release_at=now,
+        available_until=available_until,
+        url=url,
+        date_from_api=False,
+        placeholder=True,
+    )
 
 
 class NormalizedEpisode(BaseModel):

@@ -5,9 +5,10 @@ import logging
 import random
 import re
 import unicodedata
+from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from json import JSONDecodeError
 from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
@@ -22,6 +23,7 @@ from episode_calendar.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    first_seen_release,
 )
 
 SERIES_QUERY = """
@@ -95,8 +97,10 @@ query EpisodeCalendarJoynEpg($from: Timestamp!, $to: Timestamp!) {
 
 EPG_LOOKAHEAD = timedelta(days=28)
 MAX_EPG_EVENT_DURATION = timedelta(hours=4)
-EPG_FOLLOWUP_WINDOW = timedelta(days=4)
+# Airing times within this window around a known broadcast slot are treated as that slot.
 EPG_SLOT_TOLERANCE = timedelta(hours=2)
+# A season counts as running while one of its releases is no older than this.
+EPG_RUNNING_WINDOW = timedelta(days=14)
 EPG_TIMEZONE = ZoneInfo("Europe/Vienna")
 logger = logging.getLogger(__name__)
 
@@ -109,6 +113,8 @@ class _EpgEvent:
     title: str
     start: datetime
     end: datetime | None
+    program_type: str
+    program_id: str
 
 
 class JoynProviderError(RuntimeError):
@@ -247,38 +253,44 @@ class JoynProvider:
             )
         except ValidationError as exc:
             raise JoynMalformedResponseError("series did not match the normalized model") from exc
-        epg_season = await self._epg_season(client, normalized)
-        return normalized.model_copy(
-            update={
-                "seasons": normalized.seasons + ((epg_season,) if epg_season is not None else ())
-            }
-        )
+        return await self._apply_epg(client, normalized)
 
-    async def _epg_season(
+    async def _apply_epg(
         self, client: httpx.AsyncClient, normalized: NormalizedSeries
-    ) -> NormalizedSeason | None:
-        """Add upcoming linear broadcasts not in Joyn's VOD catalogue yet.
+    ) -> NormalizedSeries:
+        """Fold upcoming linear broadcasts into the real season/episode tree.
 
-        The EPG has no reliable season/episode relation, so these entries are kept in a
-        synthetic season and deliberately have no episode number. Exact title matching avoids
-        confusing similarly named programmes such as ``FBI: Most Wanted`` with ``MOST WANTED``.
+        Joyn's EPG lists linear airings that the VOD catalogue does not carry yet. A
+        numberless entry cannot be matched to a season or episode directly, so the recurring
+        broadcast slots of the currently running season decide whether it is a pre-announced
+        regular airing (slot match) or a rerun (off-slot). Regular airings extend the running
+        season with the next episode number; reruns, and entries whose season/episode cannot
+        be derived, are attached to the latest known episode.
         """
 
         try:
             events = await self._epg_events(client)
         except Exception as exc:  # EPG is supplementary; the catalog remains usable without it.
             logger.warning("Joyn EPG unavailable for %s: %s", normalized.title, exc)
-            return None
+            return normalized
         catalog_release_times = {
             release.release_at
             for season in normalized.seasons
             for episode in season.episodes
             for release in episode.releases
         }
+        catalog_episodes = {
+            episode.external_id: season.external_id
+            for season in normalized.seasons
+            for episode in season.episodes
+        }
         matching = [
             event
             for event in events
-            if self._same_title(event.title, normalized.title)
+            if (
+                self._same_title(event.title, normalized.title)
+                or (event.program_type == "Episode" and event.program_id in catalog_episodes)
+            )
             and not any(
                 release_at.date() == event.start.date()
                 and abs(release_at - event.start) <= TV_BROADCAST_MATCH_TOLERANCE
@@ -286,55 +298,154 @@ class JoynProvider:
             )
         ]
         if not matching:
-            return None
-        episodes: list[NormalizedEpisode] = []
-        last_regular_event: _EpgEvent | None = None
-        for event in matching:
-            rerun = False
-            if last_regular_event is not None:
-                elapsed = event.start - last_regular_event.start
-                slot_difference = self._slot_difference(event.start, last_regular_event.start)
-                rerun = (
-                    timedelta(0) < elapsed <= EPG_FOLLOWUP_WINDOW
-                    and slot_difference > EPG_SLOT_TOLERANCE
-                )
-                if rerun:
-                    logger.info(
-                        "Classified numberless Joyn EPG release as suspected rerun for %s: "
-                        "release_at=%s, previous_regular=%s, slot_difference=%s",
-                        normalized.title,
-                        event.start.isoformat(),
-                        last_regular_event.start.isoformat(),
-                        slot_difference,
-                    )
-            if not rerun:
-                last_regular_event = event
-            episodes.append(
-                NormalizedEpisode(
-                    external_id=event.external_id,
-                    number=None,
-                    title=event.title,
-                    releases=(
-                        NormalizedEpisodeRelease(
-                            external_id=event.external_id,
-                            release_type=ReleaseType.TV_BROADCAST,
-                            release_at=event.start,
-                            available_until=event.end,
-                            rerun=rerun,
-                        ),
-                    ),
-                )
+            return normalized
+
+        now = self._clock().astimezone(UTC)
+        running_season = self._running_season(normalized, now)
+        slots = self._broadcast_slots(running_season)
+        latest_season, latest_episode = self._latest_episode(normalized)
+
+        extra: dict[tuple[str, str], list[NormalizedEpisodeRelease]] = defaultdict(list)
+        created: dict[str, list[NormalizedEpisode]] = defaultdict(list)
+        next_number = {
+            season.external_id: max(
+                (episode.number for episode in season.episodes if episode.number is not None),
+                default=0,
             )
-        return NormalizedSeason(external_id="joyn-epg", number=None, title="EPG", episodes=episodes)
+            + 1
+            for season in normalized.seasons
+            if season.number is not None
+        }
+        for event in matching:
+            linked_episode = (
+                event.program_id
+                if event.program_type == "Episode" and event.program_id in catalog_episodes
+                else None
+            )
+            release = NormalizedEpisodeRelease(
+                external_id=event.external_id,
+                release_type=ReleaseType.TV_BROADCAST,
+                release_at=event.start,
+                available_until=event.end,
+                rerun=not self._fits_slot(event.start, slots),
+            )
+            if linked_episode is not None:
+                extra[(catalog_episodes[linked_episode], linked_episode)].append(release)
+                continue
+            if not release.rerun and running_season is not None:
+                number = next_number[running_season.external_id]
+                next_number[running_season.external_id] = number + 1
+                created[running_season.external_id].append(
+                    NormalizedEpisode(
+                        external_id=f"epg:next:{running_season.external_id}:{number}",
+                        number=number,
+                        title=event.title,
+                        releases=(release,),
+                    )
+                )
+                continue
+            if latest_episode is None:
+                logger.info(
+                    "Dropping numberless Joyn EPG release without a target episode for %s: %s",
+                    normalized.title,
+                    event.start.isoformat(),
+                )
+                continue
+            extra[(latest_season.external_id, latest_episode.external_id)].append(
+                release.model_copy(update={"rerun": True})
+            )
+
+        seasons: list[NormalizedSeason] = []
+        for season in normalized.seasons:
+            episodes: list[NormalizedEpisode] = []
+            for episode in season.episodes:
+                additions = extra.get((season.external_id, episode.external_id))
+                if additions:
+                    episode = episode.model_copy(
+                        update={"releases": (*episode.releases, *additions)}
+                    )
+                episodes.append(episode)
+            episodes.extend(created.get(season.external_id, ()))
+            seasons.append(season.model_copy(update={"episodes": tuple(episodes)}))
+        return normalized.model_copy(update={"seasons": tuple(seasons)})
 
     @staticmethod
-    def _slot_difference(left: datetime, right: datetime) -> timedelta:
-        left_local = left.astimezone(EPG_TIMEZONE)
-        right_local = right.astimezone(EPG_TIMEZONE)
-        left_minutes = left_local.hour * 60 + left_local.minute
-        right_minutes = right_local.hour * 60 + right_local.minute
-        difference = abs(left_minutes - right_minutes)
-        return timedelta(minutes=min(difference, 24 * 60 - difference))
+    def _running_season(normalized: NormalizedSeries, now: datetime) -> NormalizedSeason | None:
+        cutoff = now - EPG_RUNNING_WINDOW
+        candidates = [
+            season
+            for season in normalized.seasons
+            if season.number is not None
+            and any(
+                release.release_at >= cutoff
+                for episode in season.episodes
+                for release in episode.releases
+            )
+        ]
+        return max(candidates, key=lambda season: season.number, default=None)
+
+    # Number of distinct weekdays a broadcast time must recur on before it is treated as a
+    # daily slot that also matches days not yet present in the catalogue (a daily show like
+    # "Promi Big Brother" only starts with weekday entries).
+    _DAILY_SLOT_MIN_DAYS = 5
+
+    @classmethod
+    def _broadcast_slots(
+        cls, season: NormalizedSeason | None
+    ) -> tuple[tuple[int | None, time], ...]:
+        if season is None:
+            return ()
+        releases = [release for episode in season.episodes for release in episode.releases]
+        # Prefer real linear broadcasts; a season catalogued only with on-demand releases
+        # (for example an RTL+ style drop) falls back to those times.
+        broadcasts = [
+            release.release_at.astimezone(EPG_TIMEZONE)
+            for release in releases
+            if release.release_type is ReleaseType.TV_BROADCAST
+        ]
+        moments = broadcasts or [
+            release.release_at.astimezone(EPG_TIMEZONE)
+            for release in releases
+            if not release.preview
+        ]
+        weekdays_by_time: dict[time, set[int]] = defaultdict(set)
+        for moment in moments:
+            weekdays_by_time[moment.time()].add(moment.weekday())
+        slots: set[tuple[int | None, time]] = set()
+        for slot_time, weekdays in weekdays_by_time.items():
+            daily = len(weekdays) >= cls._DAILY_SLOT_MIN_DAYS
+            for weekday in range(7) if daily else weekdays:
+                slots.add((None if daily else weekday, slot_time))
+        return tuple(slots)
+
+    def _fits_slot(self, start: datetime, slots: tuple[tuple[int | None, time], ...]) -> bool:
+        local = start.astimezone(EPG_TIMEZONE)
+        local_minutes = local.hour * 60 + local.minute
+        for weekday, slot_time in slots:
+            if weekday is not None and weekday != local.weekday():
+                continue
+            slot_minutes = slot_time.hour * 60 + slot_time.minute
+            difference = min(
+                abs(local_minutes - slot_minutes), 24 * 60 - abs(local_minutes - slot_minutes)
+            )
+            if timedelta(minutes=difference) <= EPG_SLOT_TOLERANCE:
+                return True
+        return False
+
+    @staticmethod
+    def _latest_episode(
+        normalized: NormalizedSeries,
+    ) -> tuple[NormalizedSeason | None, NormalizedEpisode | None]:
+        numbered_seasons = [season for season in normalized.seasons if season.number is not None]
+        if not numbered_seasons:
+            return None, None
+        season = max(numbered_seasons, key=lambda item: item.number)
+        numbered_episodes = [episode for episode in season.episodes if episode.number is not None]
+        if numbered_episodes:
+            episode = max(numbered_episodes, key=lambda item: item.number)
+        else:
+            episode = season.episodes[-1] if season.episodes else None
+        return season, episode
 
     async def _epg_events(self, client: httpx.AsyncClient) -> tuple[_EpgEvent, ...]:
         now = self._clock().astimezone(UTC)
@@ -380,6 +491,9 @@ class JoynProvider:
                         # Long entries are usually continuous live/program blocks, not episodes.
                         continue
                     program_id = self._required_string(program.get("id"), "epg program.id")
+                    program_type = self._required_string(
+                        program.get("__typename"), "epg program.__typename"
+                    )
                     external_id = f"epg:{stream_id}:{program_id}:{int(start.timestamp())}"
                     events[external_id] = _EpgEvent(
                         stream_id=stream_id,
@@ -388,6 +502,8 @@ class JoynProvider:
                         title=title,
                         start=start,
                         end=event_end,
+                        program_type=program_type,
+                        program_id=program_id,
                     )
             day = next_day
         return tuple(sorted(events.values(), key=lambda event: event.start))
@@ -509,6 +625,11 @@ class JoynProvider:
                     preview=preview,
                 )
             )
+        else:
+            # The catalogue lists the episode without any date; stamp the discovery
+            # time and let the importer keep the earliest value until a real date
+            # arrives.
+            releases.append(first_seen_release(self._clock(), url=url))
         try:
             return NormalizedEpisode(
                 external_id=episode_id,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 import httpx
@@ -17,6 +17,7 @@ from episode_calendar.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    first_seen_release,
 )
 from episode_calendar.providers.http import request_with_retries
 
@@ -174,7 +175,7 @@ class STVProvider:
             start_time = cls._datetime(
                 cls._string(availability.get("from")) or cls._string(schedule.get("startTime"))
             )
-            if start_time is None or number is None:
+            if number is None:
                 continue
             series_title = series_title or cls._string(programme.get("name"))
             episode_key = (season_number, number)
@@ -189,6 +190,11 @@ class STVProvider:
                         release_type=ReleaseType.STREAMING,
                         release_at=start_time,
                         available_until=cls._datetime(cls._string(availability.get("until"))),
+                        url=f"https://player.stv.tv/episode/{short_id}/{slug or programme_slug}",
+                    )
+                    if start_time is not None
+                    else first_seen_release(
+                        datetime.now(UTC),
                         url=f"https://player.stv.tv/episode/{short_id}/{slug or programme_slug}",
                     ),
                 ),

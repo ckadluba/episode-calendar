@@ -110,6 +110,7 @@ class EpisodeRelease(Base):
     url: Mapped[str | None] = mapped_column(String(2000))
     rerun: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
     preview: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+    date_from_api: Mapped[bool] = mapped_column(default=True, server_default="true", nullable=False)
 
     episode: Mapped[Episode] = relationship(back_populates="releases")
     provider: Mapped[Provider] = relationship(back_populates="releases")

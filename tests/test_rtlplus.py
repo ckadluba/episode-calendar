@@ -650,7 +650,11 @@ def test_normalize_uses_diffusion_date_for_first_episode_without_schedule() -> N
     assert episode.releases[0].release_at == datetime(2026, 9, 22, tzinfo=ZoneInfo("Europe/Vienna"))
 
 
-def test_normalize_assigns_diffusion_date_to_latest_catalog_episode() -> None:
+def test_normalize_assigns_diffusion_date_to_all_undated_catalog_episodes() -> None:
+    # A completed season no longer carries a schedule table or weekday block; the page-level
+    # diffusion date identifies the last published episode. Applying it to every episode of
+    # that season without a date is wrong for most of them, but keeps a finished season out
+    # of today's calendar.
     payload = {
         "entity": {"id": "254773", "metadata": {"title": "Yeliz & Jimi"}},
         "seo": {"diffusionDate": 1791237600, "metadata": {"title": "Yeliz & Jimi"}},
@@ -679,11 +683,10 @@ def test_normalize_assigns_diffusion_date_to_latest_catalog_episode() -> None:
     )
 
     episodes = {episode.number: episode for episode in result.seasons[0].episodes}
-    assert episodes[1].releases == ()
-    assert episodes[2].releases == ()
-    assert episodes[3].releases[0].release_at == datetime(
-        2026, 10, 6, tzinfo=ZoneInfo("Europe/Vienna")
-    )
+    expected = datetime(2026, 10, 6, tzinfo=ZoneInfo("Europe/Vienna"))
+    for number in (1, 2, 3):
+        assert episodes[number].releases[0].release_at == expected
+        assert episodes[number].releases[0].date_from_api is True
 
 
 def test_normalize_anchors_weekly_schedule_to_latest_feed_episode() -> None:
@@ -847,8 +850,12 @@ def test_schedule_is_only_applied_to_current_season() -> None:
         ],
     )
 
-    assert result.seasons[0].episodes[0].releases == ()
-    assert len(result.seasons[1].episodes[0].releases) == 1
+    off_season_releases = result.seasons[0].episodes[0].releases
+    assert len(off_season_releases) == 1
+    assert off_season_releases[0].date_from_api is False
+    current_releases = result.seasons[1].episodes[0].releases
+    assert len(current_releases) == 1
+    assert current_releases[0].date_from_api is True
 
 
 def test_current_season_can_be_read_from_episode_highlight() -> None:
@@ -931,4 +938,160 @@ def test_normalize_ignores_diffusion_date_for_previous_season_during_transition(
 
     season_five = next(season for season in result.seasons if season.number == 5)
     assert [episode.number for episode in season_five.episodes] == list(range(9, 21))
-    assert all(episode.releases == () for episode in season_five.episodes)
+    assert all(
+        len(episode.releases) == 1
+        and episode.releases[0].date_from_api is False
+        and episode.releases[0].placeholder is True
+        for episode in season_five.episodes
+    )
+
+
+def test_normalize_derives_completed_season_dates_from_premiere_anchor() -> None:
+    payload = {
+        "entity": {"id": "4267", "metadata": {"title": "Temptation Island VIP"}},
+        "seo": {"metadata": {"title": "Temptation Island VIP"}},
+        "blocks": [
+            {
+                "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                "content": {
+                    "title": {"short": "Staffel 7 ab 12. Oktober"},
+                    "items": [
+                        {
+                            "itemContent": {
+                                "id": "clip-7",
+                                "title": "Folge 1",
+                                "highlight": "Staffel 7 • Folge 1 • Folge 1",
+                            }
+                        }
+                    ],
+                },
+            },
+            {
+                "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                "content": {
+                    "title": {"short": "Staffel 6"},
+                    "items": [
+                        {
+                            "itemContent": {
+                                "id": f"clip-{episode_number}",
+                                "title": f"Folge {episode_number}",
+                                "highlight": (
+                                    f"Staffel 6 • Folge {episode_number} • Folge {episode_number}"
+                                ),
+                            }
+                        }
+                        for episode_number in (4, 15)
+                    ],
+                },
+            },
+        ],
+    }
+
+    result = RTLPlusProvider._normalize(
+        RTLPlusProvider.__new__(RTLPlusProvider),
+        "4267",
+        [payload],
+        series_url="https://plus.rtl.de/temptation-island-vip-p_4267",
+        season_anchors={6: datetime(2025, 9, 29, tzinfo=ZoneInfo("Europe/Vienna"))},
+    )
+
+    season_six = next(season for season in result.seasons if season.number == 6)
+    episodes = {episode.number: episode for episode in season_six.episodes}
+    assert episodes[4].releases[0].release_at == datetime(
+        2025, 10, 27, tzinfo=ZoneInfo("Europe/Vienna")
+    )
+    assert episodes[15].releases[0].release_at == datetime(
+        2026, 1, 12, tzinfo=ZoneInfo("Europe/Vienna")
+    )
+    assert episodes[4].releases[0].date_from_api is False
+    assert episodes[15].releases[0].date_from_api is False
+    assert episodes[4].releases[0].placeholder is False
+    assert episodes[15].releases[0].placeholder is False
+
+
+def test_episode_public_url_unwraps_locked_target() -> None:
+    raw = {
+        "action": {
+            "target": {
+                "type": "lock",
+                "value_lock": {
+                    "originalTarget": {
+                        "type": "layout",
+                        "value_layout": {
+                            "id": "clip_2131490",
+                            "seo": "vorab-der-auftakt-von-staffel-6",
+                        },
+                    }
+                },
+            }
+        }
+    }
+
+    assert RTLPlusProvider._episode_public_url(
+        raw, "https://plus.rtl.de/temptation-island-vip-p_4267"
+    ) == (
+        "https://plus.rtl.de/temptation-island-vip-p_4267/video/"
+        "vorab-der-auftakt-von-staffel-6-c_2131490"
+    )
+
+
+async def test_season_anchors_read_upload_date_from_public_preview_page() -> None:
+    pages = [
+        {
+            "entity": {"id": "4267", "metadata": {"title": "Temptation Island VIP"}},
+            "blocks": [
+                {
+                    "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                    "content": {
+                        "title": {"short": "Sneak Peeks"},
+                        "items": [
+                            {
+                                "itemContent": {
+                                    "id": "hash-6",
+                                    "highlight": (
+                                        "Sneak Peeks • Folge 6 • Der Auftakt von Staffel 6"
+                                    ),
+                                    "action": {
+                                        "target": {
+                                            "type": "layout",
+                                            "value_layout": {
+                                                "id": "clip_2131490",
+                                                "seo": "vorab-der-auftakt-von-staffel-6",
+                                            },
+                                        }
+                                    },
+                                }
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+    ]
+    requested: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return httpx.Response(
+            200,
+            text=(
+                '<script type="application/ld+json">'
+                '{"@type": "TVEpisode","uploadDate": "2025-09-29T00:00:00+02:00"}'
+                "</script>"
+            ),
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    try:
+        anchors = await provider._season_anchors(
+            client, pages, "https://plus.rtl.de/temptation-island-vip-p_4267"
+        )
+    finally:
+        await client.aclose()
+
+    assert requested == [
+        "https://plus.rtl.de/temptation-island-vip-p_4267/video/"
+        "vorab-der-auftakt-von-staffel-6-c_2131490"
+    ]
+    assert anchors == {6: datetime(2025, 9, 29, tzinfo=ZoneInfo("Europe/Vienna"))}

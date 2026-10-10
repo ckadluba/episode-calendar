@@ -45,8 +45,8 @@ def test_normalize_extracts_seasons_episodes_and_release_dates() -> None:
     )
 
 
-def test_normalize_rejects_responses_without_dated_episodes() -> None:
-    with pytest.raises(AmazonPrimeDEMalformedResponseError, match="no dated episodes"):
+def test_normalize_rejects_responses_without_episodes() -> None:
+    with pytest.raises(AmazonPrimeDEMalformedResponseError, match="no episodes"):
         AmazonPrimeDEProvider._normalize("B0DEMO1234", {"title": "Demo-Serie", "episodes": []})
 
 

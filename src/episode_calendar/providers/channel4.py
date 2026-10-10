@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -18,6 +18,7 @@ from episode_calendar.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    first_seen_release,
 )
 
 _DATE_RE = re.compile(
@@ -170,6 +171,8 @@ class Channel4Provider:
                 releases_by_id[release.external_id] = release
             for scheduled_programme in (scheduled_releases or {}).get(episode_id, ()):
                 releases_by_id[None] = scheduled_programme.release
+            if not releases_by_id:
+                releases_by_id[None] = first_seen_release(datetime.now(UTC))
             episode = NormalizedEpisode(
                 external_id=episode_id,
                 number=episode_number,

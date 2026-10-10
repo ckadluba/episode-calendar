@@ -7,13 +7,18 @@ const series = [
   { id: "series-2", title: "Andere Serie", platform: "Joyn.at", platform_id: "joyn", description: null },
 ];
 
+const platforms = [
+  { id: "rtlplus", name: "RTL+", has_prereleases: true },
+  { id: "joyn", name: "Joyn.at", has_prereleases: true },
+];
+
 const dayLabel = new Intl.DateTimeFormat("de-AT", { weekday: "short", day: "numeric", month: "short" });
 
 function mockApi() {
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
-      const data = url.endsWith("/series") ? series : [];
+      const data = url.endsWith("/platforms") ? platforms : url.endsWith("/series") ? series : [];
       return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }));
     }),
   );
@@ -25,7 +30,9 @@ function mockApiWithEpisode() {
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
-      const data = url.endsWith("/series")
+      const data = url.endsWith("/platforms")
+        ? platforms
+        : url.endsWith("/series")
         ? series
         : [{
             id: "episode-1",
@@ -166,7 +173,9 @@ describe("App preferences", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string) => {
-        const data = url.endsWith("/series")
+        const data = url.endsWith("/platforms")
+          ? [...platforms, { id: "amazon_prime_de", name: "Amazon Prime Video", has_prereleases: false }]
+          : url.endsWith("/series")
           ? [...series, { id: "series-3", title: "Ohne Vorab-Releases", platform: "Amazon Prime Video", platform_id: "amazon_prime_de", description: null }]
           : [];
         return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }));
@@ -345,6 +354,16 @@ describe("calendar releases", () => {
     expect(selectCalendarRelease(episode, true, new Date("2026-10-05T00:00:00Z"), new Date("2026-10-12T00:00:00Z"))).toBe(tv);
     expect(selectCalendarRelease(episode, false, new Date("2026-10-05T00:00:00Z"), new Date("2026-10-12T00:00:00Z"))).toBe(tv);
     expect(selectCalendarRelease(episode, false, new Date("2026-10-12T00:00:00Z"), new Date("2026-10-19T00:00:00Z"))).toBeNull();
+  });
+
+  it("lets a later streaming release win for platforms without prereleases", () => {
+    const streaming = { release_type: "streaming", release_at: "2026-10-13T22:00:00Z", url: "https://ardmediathek.de/demo", preview: false };
+    const tv = { release_type: "tv_broadcast", release_at: "2026-10-07T18:15:00Z", url: null, preview: false };
+    const episode = episodeWithReleases([streaming, tv]);
+
+    expect(selectCalendarRelease(episode, true, new Date("2026-10-12T00:00:00Z"), new Date("2026-10-19T00:00:00Z"), false)).toBe(streaming);
+    expect(selectCalendarRelease(episode, true, new Date("2026-10-05T00:00:00Z"), new Date("2026-10-12T00:00:00Z"), false)).toBeNull();
+    expect(selectCalendarRelease(episode, true, new Date("2026-10-05T00:00:00Z"), new Date("2026-10-12T00:00:00Z"), true)).toBe(tv);
   });
 
   it("keeps every release date of an episode", () => {

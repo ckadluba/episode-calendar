@@ -19,6 +19,12 @@ Alembic, httpx, pytest, uv, and Docker Compose.
   `frontend/src/styles.css`; do not leave its calendar badge on the generic fallback color.
 - Never fetch provider data from an API request. Imports are a separate workflow and must be
   idempotent.
+- Every change to the import/rerun logic (`importer.py` and anything that shapes stored releases)
+  requires a full before/after comparison: run `uv run python -m episode_calendar.importer all`
+  into two empty databases, once with and once without the change, then diff providers, series,
+  seasons, episodes, and `episode_releases` (keyed by external IDs). At minimum do this whenever
+  the change risks unexpected or unwanted side effects on providers other than the one being
+  fixed.
 - Preserve external IDs under provider-scoped uniqueness. Do not move release data onto
   `Episode`; one episode can have multiple `EpisodeRelease` records.
 - Require timezone-aware release timestamps and normalize them to UTC for persistence.
