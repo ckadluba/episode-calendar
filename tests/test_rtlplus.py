@@ -454,7 +454,7 @@ async def test_epg_does_not_mark_already_aired_catalog_release_as_preview() -> N
     assert streaming.preview is False
 
 
-async def test_epg_adds_numberless_future_episode_and_ignores_long_entries() -> None:
+async def test_epg_folds_numberless_future_airing_into_running_season() -> None:
     endpoint = "https://rtlplus-test.example/guidetv-numberless"
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -495,7 +495,21 @@ async def test_epg_adds_numberless_future_episode_and_ignores_long_entries() -> 
             NormalizedSeason(
                 external_id="season-1",
                 number=1,
-                episodes=(NormalizedEpisode(external_id="episode-1", number=1, title="Episode 1"),),
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="episode-1",
+                        number=1,
+                        title="Episode 1",
+                        releases=(
+                            {
+                                "release_type": ReleaseType.STREAMING,
+                                "release_at": datetime(
+                                    2026, 9, 30, 20, 15, tzinfo=ZoneInfo("Europe/Vienna")
+                                ),
+                            },
+                        ),
+                    ),
+                ),
             ),
         ),
     )
@@ -504,10 +518,87 @@ async def test_epg_adds_numberless_future_episode_and_ignores_long_entries() -> 
     finally:
         await client.aclose()
 
-    assert len(result.seasons) == 2
-    assert result.seasons[-1].external_id == "rtlplus-epg"
-    assert len(result.seasons[-1].episodes) == 1
-    assert result.seasons[-1].episodes[0].number is None
+    assert len(result.seasons) == 1
+    episodes = result.seasons[0].episodes
+    assert [episode.number for episode in episodes] == [1, 2]
+    added = episodes[-1].releases[0]
+    assert added.release_type is ReleaseType.TV_BROADCAST
+    assert added.release_at == datetime(2026, 10, 7, 18, 15, tzinfo=UTC)
+    assert added.rerun is False
+
+
+async def test_epg_marks_off_slot_night_repeat_as_rerun() -> None:
+    endpoint = "https://rtlplus-test.example/guidetv-night-repeat"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "rtlde_rtl": [
+                    {
+                        "code": "premiere-1",
+                        "title": "Demo series",
+                        "subtitle": "Folge 1",
+                        "diffusion_start_date": "2026-10-07 20:15:00",
+                        "diffusion_end_date": "2026-10-07 21:15:00",
+                    },
+                    {
+                        "code": "repeat-1",
+                        "title": "Demo series",
+                        "subtitle": "Folge 1",
+                        "diffusion_start_date": "2026-10-08 00:15:00",
+                        "diffusion_end_date": "2026-10-08 01:10:00",
+                    },
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    provider._epg_endpoint = endpoint
+    provider._epg_channels = ("rtlde_rtl",)
+    provider._epg_lookback_days = 21
+    provider._clock = lambda: datetime(2026, 10, 6, tzinfo=UTC)
+    RTLPlusProvider._epg_tasks.clear()
+    normalized = NormalizedSeries(
+        external_id="demo",
+        title="Demo series",
+        seasons=(
+            NormalizedSeason(
+                external_id="season-1",
+                number=1,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="episode-1",
+                        number=1,
+                        title="Folge 1",
+                        releases=(
+                            {
+                                "release_type": ReleaseType.STREAMING,
+                                "release_at": datetime(
+                                    2026, 9, 30, 20, 15, tzinfo=ZoneInfo("Europe/Vienna")
+                                ),
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    try:
+        result = await provider._add_epg(client, normalized)
+    finally:
+        await client.aclose()
+
+    episode = result.seasons[0].episodes[0]
+    broadcasts = [
+        release for release in episode.releases if release.release_type is ReleaseType.TV_BROADCAST
+    ]
+    assert [release.release_at for release in broadcasts] == [
+        datetime(2026, 10, 7, 18, 15, tzinfo=UTC),
+        datetime(2026, 10, 7, 22, 15, tzinfo=UTC),
+    ]
+    assert [release.rerun for release in broadcasts] == [False, True]
 
 
 def test_epg_event_uses_id_when_code_is_missing() -> None:

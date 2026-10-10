@@ -30,6 +30,14 @@ from episode_calendar.providers.base import (
     NormalizedSeries,
     first_seen_release,
 )
+from episode_calendar.providers.epg import (
+    EpgBroadcast,
+    Slot,
+    derive_slots_from_moments,
+    fits_slot,
+    fold_broadcasts,
+    running_season,
+)
 
 EPG_LOOKAHEAD = timedelta(days=14)
 MAX_EPG_EVENT_DURATION = timedelta(hours=4)
@@ -178,9 +186,11 @@ class RTLPlusProvider:
     ) -> NormalizedSeries:
         """Merge RTL+'s linear TV guide into the catalog result.
 
-        Catalog episodes remain authoritative for season/episode metadata and links. The EPG
-        only supplies missing TV dates or creates numberless future entries, matching Joyn's
-        complementary-source semantics.
+        Catalog episodes remain authoritative for season/episode metadata and links. RTL+'s
+        EPG supplies missing TV dates, marks same-day/days-apart catalog releases as previews,
+        and folds the remaining linear airings into the real season tree: airings that match a
+        recurring slot (derived from the EPG's own premiere airings, falling back to the
+        catalog) extend the running season, while off-slot airings become reruns.
         """
 
         try:
@@ -189,112 +199,175 @@ class RTLPlusProvider:
             logger.warning("RTL+ EPG unavailable for %s: %s", normalized.title, exc)
             return normalized
 
-        matching = [event for event in events if self._same_title(event.title, normalized.title)]
+        matching = sorted(
+            (event for event in events if self._same_title(event.title, normalized.title)),
+            key=lambda event: event.start,
+        )
         if not matching:
             return normalized
 
-        seasons = [season.model_copy(deep=True) for season in normalized.seasons]
-        catalog_episodes = [episode for season in seasons for episode in season.episodes]
-        synthetic: list[NormalizedEpisode] = []
-        for event in matching:
-            release = NormalizedEpisodeRelease(
-                external_id=event.external_id,
-                release_type=ReleaseType.TV_BROADCAST,
-                release_at=event.start,
-                available_until=event.end,
+        slots = self._epg_slots(matching)
+        if not slots:
+            catalog_series = normalized.model_copy(
+                update={
+                    "seasons": tuple(season.model_copy(deep=True) for season in normalized.seasons)
+                }
             )
-            # A catalog release earlier on the same day is the known RTL+ preview
-            # pattern, even when the EPG labels another episode number. An episode
-            # whose own premiere already aired cannot gain a preview: its later
-            # same-day drop is a cadence artifact, not an early release.
-            for candidate in tuple(episode for season in seasons for episode in season.episodes):
-                updated_releases = tuple(
-                    existing.model_copy(update={"preview": True})
-                    if (
-                        existing.release_type is ReleaseType.STREAMING
-                        and not existing.preview
-                        and existing.release_at.date() == event.start.date()
-                        and existing.release_at < event.start
-                        and not any(
-                            other.release_type is ReleaseType.TV_BROADCAST
-                            and other.release_at < existing.release_at
-                            for other in candidate.releases
-                        )
-                    )
-                    else existing
-                    for existing in candidate.releases
-                )
-                if updated_releases != candidate.releases:
-                    seasons = self._replace_episode_releases(
-                        seasons, candidate.external_id, updated_releases
-                    )
+            slots = self._catalog_slots(
+                running_season(catalog_series, self._clock().astimezone(UTC))
+            )
+
+        seasons = [season.model_copy(deep=True) for season in normalized.seasons]
+        unlinked: list[EpgBroadcast] = []
+        for event in matching:
             episode_number = self._epg_episode_number(event)
-            target = self._catalog_episode_for_epg(seasons, episode_number, event.start)
-            if target is not None:
-                # A matching catalog release shortly before the linear broadcast is a
-                # preview, even when the two dates are several days apart. This is how
-                # RTL+ publishes episodes such as Sommerhaus S11E7 (catalog: 6 Oct,
-                # TV: 13 Oct). Limit the inference to the EPG look-ahead window so an
-                # unrelated old release is not reclassified when an episode is rerun,
-                # and keep an already-aired episode from gaining a preview.
-                updated_releases = tuple(
-                    existing.model_copy(update={"preview": True})
-                    if (
-                        existing.release_type is ReleaseType.STREAMING
-                        and not existing.preview
-                        and timedelta(0) < event.start - existing.release_at <= EPG_LOOKAHEAD
-                        and not any(
-                            other.release_type is ReleaseType.TV_BROADCAST
-                            and other.release_at < existing.release_at
-                            for other in target.releases
-                        )
-                    )
-                    else existing
-                    for existing in target.releases
-                )
-                if updated_releases != target.releases:
-                    seasons = self._replace_episode_releases(
-                        seasons, target.external_id, updated_releases
-                    )
-                    target = target.model_copy(update={"releases": updated_releases})
-                if not any(
-                    existing.release_at.date() == event.start.date()
-                    and abs(existing.release_at - event.start) <= EPG_MATCH_TOLERANCE
-                    for existing in target.releases
-                ):
-                    updated_releases += (release,)
-                if updated_releases != target.releases:
-                    seasons = self._replace_episode_releases(
-                        seasons, target.external_id, updated_releases
-                    )
-                continue
+            seasons, target = self._mark_previews(seasons, event, episode_number)
             if any(
-                existing.release_at.date() == event.start.date()
-                and abs(existing.release_at - event.start) <= EPG_MATCH_TOLERANCE
-                for episode in catalog_episodes
-                for existing in episode.releases
+                release.release_at.date() == event.start.date()
+                and abs(release.release_at - event.start) <= EPG_MATCH_TOLERANCE
+                for season in seasons
+                for episode in season.episodes
+                for release in episode.releases
             ):
                 continue
-            synthetic.append(
-                NormalizedEpisode(
+            if target is not None:
+                # Attach the airing immediately: later events' preview inference must see
+                # that the episode's premiere already aired (see _mark_previews).
+                release = NormalizedEpisodeRelease(
                     external_id=event.external_id,
-                    number=None,
+                    release_type=ReleaseType.TV_BROADCAST,
+                    release_at=event.start,
+                    available_until=event.end,
+                    rerun=not fits_slot(
+                        event.start, slots, timezone=EPG_TIMEZONE, tolerance=EPG_MATCH_TOLERANCE
+                    ),
+                )
+                seasons = self._replace_episode_releases(
+                    seasons, target.external_id, (*target.releases, release)
+                )
+                continue
+            unlinked.append(
+                EpgBroadcast(
+                    external_id=event.external_id,
                     title=event.title,
-                    description=event.description,
-                    releases=(release,),
+                    start=event.start,
+                    end=event.end,
                 )
             )
 
-        if synthetic:
-            seasons.append(
-                NormalizedSeason(
-                    external_id="rtlplus-epg",
-                    number=None,
-                    title="EPG",
-                    episodes=tuple(synthetic),
+        series = normalized.model_copy(update={"seasons": tuple(seasons)})
+        current_season = running_season(series, self._clock().astimezone(UTC))
+        return fold_broadcasts(
+            series,
+            unlinked,
+            running_season=current_season,
+            slots=slots,
+            timezone=EPG_TIMEZONE,
+            tolerance=EPG_MATCH_TOLERANCE,
+            next_episode_external_id=lambda season_id, number: f"epg:next:{season_id}:{number}",
+            logger=logger,
+        )
+
+    def _mark_previews(
+        self,
+        seasons: list[NormalizedSeason],
+        event: _EpgEvent,
+        episode_number: int | None,
+    ) -> tuple[list[NormalizedSeason], NormalizedEpisode | None]:
+        """Flag catalog releases earlier than the linear broadcast as previews.
+
+        A catalog release earlier on the same day is the known RTL+ preview pattern, even
+        when the EPG labels another episode number. An episode whose own premiere already
+        aired cannot gain a preview: its later same-day drop is a cadence artifact, not an
+        early release. A matching target release shortly before the broadcast is likewise a
+        preview, even when the two dates are several days apart (RTL+ publishes the stream up
+        to a week before the linear premiere).
+        """
+
+        for candidate in tuple(episode for season in seasons for episode in season.episodes):
+            updated_releases = tuple(
+                existing.model_copy(update={"preview": True})
+                if (
+                    existing.release_type is ReleaseType.STREAMING
+                    and not existing.preview
+                    and existing.release_at.date() == event.start.date()
+                    and existing.release_at < event.start
+                    and not any(
+                        other.release_type is ReleaseType.TV_BROADCAST
+                        and other.release_at < existing.release_at
+                        for other in candidate.releases
+                    )
                 )
+                else existing
+                for existing in candidate.releases
             )
-        return normalized.model_copy(update={"seasons": tuple(seasons)})
+            if updated_releases != candidate.releases:
+                seasons = self._replace_episode_releases(
+                    seasons, candidate.external_id, updated_releases
+                )
+
+        target = self._catalog_episode_for_epg(seasons, episode_number, event.start)
+        if target is not None:
+            updated_releases = tuple(
+                existing.model_copy(update={"preview": True})
+                if (
+                    existing.release_type is ReleaseType.STREAMING
+                    and not existing.preview
+                    and timedelta(0) < event.start - existing.release_at <= EPG_LOOKAHEAD
+                    and not any(
+                        other.release_type is ReleaseType.TV_BROADCAST
+                        and other.release_at < existing.release_at
+                        for other in target.releases
+                    )
+                )
+                else existing
+                for existing in target.releases
+            )
+            if updated_releases != target.releases:
+                seasons = self._replace_episode_releases(
+                    seasons, target.external_id, updated_releases
+                )
+                target = target.model_copy(update={"releases": updated_releases})
+        return seasons, target
+
+    def _epg_slots(self, events: list[_EpgEvent]) -> tuple[Slot, ...]:
+        """Derive broadcast slots from the EPG's own premiere airings.
+
+        The earliest airing of each episode number is its linear premiere; its weekday and
+        time form the recurring slot. Later airings of the same episode (night repeats) and
+        numberless entries do not define the slot.
+        """
+
+        first_by_number: dict[int, datetime] = {}
+        for event in events:
+            number = self._epg_episode_number(event)
+            if number is None:
+                continue
+            if number not in first_by_number or event.start < first_by_number[number]:
+                first_by_number[number] = event.start
+        return derive_slots_from_moments(first_by_number.values(), timezone=EPG_TIMEZONE)
+
+    def _catalog_slots(self, season: NormalizedSeason | None) -> tuple[Slot, ...]:
+        """Fallback slots from the running season's catalogue release times.
+
+        This is the RTL+ counterpart to Joyn's catalogue-derived slots, but preview
+        releases count as slot sources too: RTL+ drops the stream on the same weekday and
+        time as the linear broadcast, and those releases are flagged as previews exactly
+        when an EPG event was seen.
+        """
+
+        if season is None:
+            return ()
+        releases = [release for episode in season.episodes for release in episode.releases]
+        broadcasts = [
+            release.release_at
+            for release in releases
+            if release.release_type is ReleaseType.TV_BROADCAST
+        ]
+        moments = broadcasts or [
+            release.release_at for release in releases if not release.placeholder
+        ]
+        return derive_slots_from_moments(moments, timezone=EPG_TIMEZONE)
 
     async def _epg_events(self, client: httpx.AsyncClient) -> tuple[_EpgEvent, ...]:
         now = self._clock().astimezone(UTC)

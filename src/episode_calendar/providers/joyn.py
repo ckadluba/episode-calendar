@@ -5,10 +5,9 @@ import logging
 import random
 import re
 import unicodedata
-from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from json import JSONDecodeError
 from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
@@ -24,6 +23,12 @@ from episode_calendar.providers.base import (
     NormalizedSeason,
     NormalizedSeries,
     first_seen_release,
+)
+from episode_calendar.providers.epg import (
+    EpgBroadcast,
+    derive_broadcast_slots,
+    fold_broadcasts,
+    running_season,
 )
 
 SERIES_QUERY = """
@@ -99,8 +104,6 @@ EPG_LOOKAHEAD = timedelta(days=28)
 MAX_EPG_EVENT_DURATION = timedelta(hours=4)
 # Airing times within this window around a known broadcast slot are treated as that slot.
 EPG_SLOT_TOLERANCE = timedelta(hours=2)
-# A season counts as running while one of its releases is no older than this.
-EPG_RUNNING_WINDOW = timedelta(days=14)
 EPG_TIMEZONE = ZoneInfo("Europe/Vienna")
 logger = logging.getLogger(__name__)
 
@@ -300,152 +303,32 @@ class JoynProvider:
         if not matching:
             return normalized
 
-        now = self._clock().astimezone(UTC)
-        running_season = self._running_season(normalized, now)
-        slots = self._broadcast_slots(running_season)
-        latest_season, latest_episode = self._latest_episode(normalized)
-
-        extra: dict[tuple[str, str], list[NormalizedEpisodeRelease]] = defaultdict(list)
-        created: dict[str, list[NormalizedEpisode]] = defaultdict(list)
-        next_number = {
-            season.external_id: max(
-                (episode.number for episode in season.episodes if episode.number is not None),
-                default=0,
-            )
-            + 1
-            for season in normalized.seasons
-            if season.number is not None
-        }
-        for event in matching:
-            linked_episode = (
-                event.program_id
-                if event.program_type == "Episode" and event.program_id in catalog_episodes
-                else None
-            )
-            release = NormalizedEpisodeRelease(
-                external_id=event.external_id,
-                release_type=ReleaseType.TV_BROADCAST,
-                release_at=event.start,
-                available_until=event.end,
-                rerun=not self._fits_slot(event.start, slots),
-            )
-            if linked_episode is not None:
-                extra[(catalog_episodes[linked_episode], linked_episode)].append(release)
-                continue
-            if not release.rerun and running_season is not None:
-                number = next_number[running_season.external_id]
-                next_number[running_season.external_id] = number + 1
-                created[running_season.external_id].append(
-                    NormalizedEpisode(
-                        external_id=f"epg:next:{running_season.external_id}:{number}",
-                        number=number,
-                        title=event.title,
-                        releases=(release,),
-                    )
-                )
-                continue
-            if latest_episode is None:
-                logger.info(
-                    "Dropping numberless Joyn EPG release without a target episode for %s: %s",
-                    normalized.title,
-                    event.start.isoformat(),
-                )
-                continue
-            extra[(latest_season.external_id, latest_episode.external_id)].append(
-                release.model_copy(update={"rerun": True})
-            )
-
-        seasons: list[NormalizedSeason] = []
-        for season in normalized.seasons:
-            episodes: list[NormalizedEpisode] = []
-            for episode in season.episodes:
-                additions = extra.get((season.external_id, episode.external_id))
-                if additions:
-                    episode = episode.model_copy(
-                        update={"releases": (*episode.releases, *additions)}
-                    )
-                episodes.append(episode)
-            episodes.extend(created.get(season.external_id, ()))
-            seasons.append(season.model_copy(update={"episodes": tuple(episodes)}))
-        return normalized.model_copy(update={"seasons": tuple(seasons)})
-
-    @staticmethod
-    def _running_season(normalized: NormalizedSeries, now: datetime) -> NormalizedSeason | None:
-        cutoff = now - EPG_RUNNING_WINDOW
-        candidates = [
-            season
-            for season in normalized.seasons
-            if season.number is not None
-            and any(
-                release.release_at >= cutoff
-                for episode in season.episodes
-                for release in episode.releases
-            )
-        ]
-        return max(candidates, key=lambda season: season.number, default=None)
-
-    # Number of distinct weekdays a broadcast time must recur on before it is treated as a
-    # daily slot that also matches days not yet present in the catalogue (a daily show like
-    # "Promi Big Brother" only starts with weekday entries).
-    _DAILY_SLOT_MIN_DAYS = 5
-
-    @classmethod
-    def _broadcast_slots(
-        cls, season: NormalizedSeason | None
-    ) -> tuple[tuple[int | None, time], ...]:
-        if season is None:
-            return ()
-        releases = [release for episode in season.episodes for release in episode.releases]
-        # Prefer real linear broadcasts; a season catalogued only with on-demand releases
-        # (for example an RTL+ style drop) falls back to those times.
+        current_season = running_season(normalized, self._clock().astimezone(UTC))
+        slots = derive_broadcast_slots(current_season, timezone=EPG_TIMEZONE)
         broadcasts = [
-            release.release_at.astimezone(EPG_TIMEZONE)
-            for release in releases
-            if release.release_type is ReleaseType.TV_BROADCAST
-        ]
-        moments = broadcasts or [
-            release.release_at.astimezone(EPG_TIMEZONE)
-            for release in releases
-            if not release.preview
-        ]
-        weekdays_by_time: dict[time, set[int]] = defaultdict(set)
-        for moment in moments:
-            weekdays_by_time[moment.time()].add(moment.weekday())
-        slots: set[tuple[int | None, time]] = set()
-        for slot_time, weekdays in weekdays_by_time.items():
-            daily = len(weekdays) >= cls._DAILY_SLOT_MIN_DAYS
-            for weekday in range(7) if daily else weekdays:
-                slots.add((None if daily else weekday, slot_time))
-        return tuple(slots)
-
-    def _fits_slot(self, start: datetime, slots: tuple[tuple[int | None, time], ...]) -> bool:
-        local = start.astimezone(EPG_TIMEZONE)
-        local_minutes = local.hour * 60 + local.minute
-        for weekday, slot_time in slots:
-            if weekday is not None and weekday != local.weekday():
-                continue
-            slot_minutes = slot_time.hour * 60 + slot_time.minute
-            difference = min(
-                abs(local_minutes - slot_minutes), 24 * 60 - abs(local_minutes - slot_minutes)
+            EpgBroadcast(
+                external_id=event.external_id,
+                title=event.title,
+                start=event.start,
+                end=event.end,
+                linked_episode_external_id=(
+                    event.program_id
+                    if event.program_type == "Episode" and event.program_id in catalog_episodes
+                    else None
+                ),
             )
-            if timedelta(minutes=difference) <= EPG_SLOT_TOLERANCE:
-                return True
-        return False
-
-    @staticmethod
-    def _latest_episode(
-        normalized: NormalizedSeries,
-    ) -> tuple[NormalizedSeason | None, NormalizedEpisode | None]:
-        numbered_seasons = [season for season in normalized.seasons if season.number is not None]
-        if not numbered_seasons:
-            return None, None
-        season = max(numbered_seasons, key=lambda item: item.number)
-        numbered_episodes = [episode for episode in season.episodes if episode.number is not None]
-        if numbered_episodes:
-            episode = max(numbered_episodes, key=lambda item: item.number)
-        else:
-            episode = season.episodes[-1] if season.episodes else None
-        return season, episode
+            for event in matching
+        ]
+        return fold_broadcasts(
+            normalized,
+            broadcasts,
+            running_season=current_season,
+            slots=slots,
+            timezone=EPG_TIMEZONE,
+            tolerance=EPG_SLOT_TOLERANCE,
+            next_episode_external_id=lambda season_id, number: f"epg:next:{season_id}:{number}",
+            logger=logger,
+        )
 
     async def _epg_events(self, client: httpx.AsyncClient) -> tuple[_EpgEvent, ...]:
         now = self._clock().astimezone(UTC)
