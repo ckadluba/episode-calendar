@@ -21,6 +21,7 @@ from episode_calendar.providers.base import (
     NormalizedSeason,
     NormalizedSeries,
     episode_title_from_description,
+    first_seen_release,
 )
 
 _SEASON_RE = re.compile(r"(?:series|cyfres)\s+(\d+)", re.IGNORECASE)
@@ -257,9 +258,10 @@ class BBCIPlayerProvider:
         raw_title = raw.get("title")
         title = raw_title.strip() if isinstance(raw_title, str) else ""
         release = cls._release(raw)
-        if release is None:
-            return None
         subtitle = raw.get("subtitle")
+        number = cls._episode_number(subtitle)
+        if release is None and number is None:
+            return None
         description = cls._description(raw)
         episode_title = cls._episode_title(
             raw, title or episode_title_from_description(description, "Episode")
@@ -270,20 +272,26 @@ class BBCIPlayerProvider:
             or _GENERIC_EPISODE_TITLE_RE.fullmatch(episode_title)
         ):
             episode_title = episode_title_from_description(description, title or "Episode")
-        return NormalizedEpisode(
-            external_id=episode_id,
-            number=cls._episode_number(subtitle),
-            title=episode_title,
-            description=description,
-            releases=(
+        url = f"https://www.bbc.co.uk/iplayer/episode/{episode_id}"
+        releases = (
+            (
                 NormalizedEpisodeRelease(
                     external_id=episode_id,
                     release_type=ReleaseType.STREAMING,
                     release_at=release[0],
                     available_until=release[1],
-                    url=f"https://www.bbc.co.uk/iplayer/episode/{episode_id}",
+                    url=url,
                 ),
-            ),
+            )
+            if release is not None
+            else (first_seen_release(datetime.now(UTC), url=url),)
+        )
+        return NormalizedEpisode(
+            external_id=episode_id,
+            number=number,
+            title=episode_title,
+            description=description,
+            releases=releases,
         )
 
     @classmethod

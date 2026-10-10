@@ -18,6 +18,7 @@ from episode_calendar.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    first_seen_release,
 )
 from episode_calendar.providers.http import request_with_retries
 
@@ -159,11 +160,11 @@ class AmazonPrimeProvider:
                 f"{cls.provider_label} response lacks a series title"
             )
 
-        episodes: dict[str, tuple[int | None, int, str, str | None, datetime]] = {}
+        episodes: dict[str, tuple[int | None, int, str, str | None, datetime | None]] = {}
         cls._collect_episodes(payload, episodes, cls._find_positive_int(payload, "seasonNumber"))
         if not episodes:
             raise AmazonPrimeMalformedResponseError(
-                f"{cls.provider_label} response contains no dated episodes"
+                f"{cls.provider_label} response contains no episodes"
             )
 
         seasons: dict[int | None, list[NormalizedEpisode]] = {}
@@ -178,20 +179,25 @@ class AmazonPrimeProvider:
                 f"https://www.primevideo.com/-/{cls.marketplace}/detail/"
                 f"{quote(external_id, safe='.-_')}"
             )
+            releases = (
+                (first_seen_release(datetime.now(UTC), url=url),)
+                if release_at is None
+                else (
+                    NormalizedEpisodeRelease(
+                        external_id=external_id,
+                        release_type=ReleaseType.STREAMING,
+                        release_at=release_at,
+                        url=url,
+                    ),
+                )
+            )
             seasons.setdefault(season_number, []).append(
                 NormalizedEpisode(
                     external_id=external_id,
                     number=episode_number,
                     title=title,
                     description=description,
-                    releases=(
-                        NormalizedEpisodeRelease(
-                            external_id=external_id,
-                            release_type=ReleaseType.STREAMING,
-                            release_at=release_at,
-                            url=url,
-                        ),
-                    ),
+                    releases=releases,
                 )
             )
 
@@ -215,7 +221,7 @@ class AmazonPrimeProvider:
     def _collect_episodes(
         cls,
         value: Any,
-        episodes: dict[str, tuple[int | None, int, str, str | None, datetime]],
+        episodes: dict[str, tuple[int | None, int, str, str | None, datetime | None]],
         season_hint: int | None = None,
     ) -> None:
         if isinstance(value, list):
@@ -228,11 +234,11 @@ class AmazonPrimeProvider:
         season_number = cls._positive_int(value, "seasonNumber", "seasonIndex", "season")
         current_season = season_number or season_hint
         episode_number = cls._positive_int(
-            value, "episodeNumber", "episodeIndex", "episodeSequence", "sequenceNumber"
+            value, "episodeNumber", "episodeIndex", "episodeSequence"
         )
         external_id = cls._first_string(value, "titleId", "titleID", "gti", "GTI", "catalogId")
         release_at = cls._release_at(value)
-        if episode_number is not None and external_id is not None and release_at is not None:
+        if episode_number is not None and external_id is not None:
             title = (
                 cls._first_string(
                     value,
