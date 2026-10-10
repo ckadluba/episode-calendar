@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 type Series = { id: string; title: string; platform: string; platform_id: string; description: string | null };
+type Platform = { id: string; name: string; has_prereleases: boolean };
 export type Release = { release_type: string; release_at: string; url: string | null; preview: boolean };
 type Episode = {
   id: string; series_id: string; season_number: number | null; number: number | null;
@@ -12,7 +13,6 @@ const API_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.repla
 const TIMEZONE = "Europe/Vienna";
 const CACHE_PREFIX = "episode-calendar-cache-v2";
 const PREVIEW_PREFERENCES_KEY = "episode-calendar-preview-preferences";
-const PREVIEW_UNAVAILABLE_PLATFORMS = new Set(["bbc_iplayer", "channel4", "ardmediathek", "stv", "amazon_prime_de", "amazon_prime_uk"]);
 
 type CachedValue<T> = { timestamp: number; data: T };
 
@@ -90,6 +90,7 @@ export function selectCalendarRelease(
   includePreview: boolean,
   from?: Date,
   to?: Date,
+  hasPrereleases = true,
 ): Release | null {
   // Select one canonical release for the episode before applying the calendar
   // window. Otherwise the same episode can appear once as a preview and again
@@ -110,8 +111,9 @@ export function selectCalendarRelease(
   const regular = newest(regularCatalogReleases);
   // A regular streaming date after the linear premiere is a catalog artifact
   // (RTL+ catalog times are prereleases that precede their EPG airing) and must
-  // not displace the premiere in the calendar.
-  const canonical = tv && regular && Date.parse(regular.release_at) > Date.parse(tv.release_at)
+  // not displace the premiere in the calendar. Platforms without prereleases do
+  // not have this artifact, so a later catalog date is the actual premiere.
+  const canonical = hasPrereleases && tv && regular && Date.parse(regular.release_at) > Date.parse(tv.release_at)
     ? tv
     : (regular ?? tv);
   const selected = (includePreview ? newest(previewReleases) : null) ?? canonical;
@@ -147,10 +149,11 @@ export function sortCalendarItems(items: CalendarItem[], seriesById: ReadonlyMap
   });
 }
 
-function SeriesFilterPage({ series, selectedIds, previewPreferences, onSave, onDiscard }: {
+function SeriesFilterPage({ series, selectedIds, previewPreferences, previewEnabledPlatforms, onSave, onDiscard }: {
   series: Series[];
   selectedIds: string[];
   previewPreferences: PreviewPreferences;
+  previewEnabledPlatforms: ReadonlySet<string>;
   onSave: (ids: string[], previewPreferences: PreviewPreferences) => void;
   onDiscard: () => void;
 }) {
@@ -206,7 +209,7 @@ function SeriesFilterPage({ series, selectedIds, previewPreferences, onSave, onD
             }}
           />
           {group.platform}
-        </label></h2>{!PREVIEW_UNAVAILABLE_PLATFORMS.has(group.platformId) && <label className="preview-filter-option">
+        </label></h2>{previewEnabledPlatforms.has(group.platformId) && <label className="preview-filter-option">
             <input
               type="checkbox"
               aria-label={`Vorab-Releases für ${group.platform} anzeigen`}
@@ -232,6 +235,7 @@ function SeriesFilterPage({ series, selectedIds, previewPreferences, onSave, onD
 export function App() {
   const [week, setWeek] = useState<CalendarWeek>(() => readLocal<CalendarWeek>("episode-calendar-week", "current"));
   const [series, setSeries] = useState<Series[]>([]);
+  const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [selectedSeriesIds, setSelectedSeriesIds] = useState<string[]>([]);
   const [previewPreferences, setPreviewPreferences] = useState<PreviewPreferences>({});
@@ -241,6 +245,15 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hideCandidate, setHideCandidate] = useState<{ seriesId: string; title: string } | null>(null);
+
+  const hasPrereleasesByPlatform = useMemo(
+    () => new Map(platforms.map((platform) => [platform.id, platform.has_prereleases])),
+    [platforms],
+  );
+  const previewEnabledPlatforms = useMemo(
+    () => new Set(platforms.filter((platform) => platform.has_prereleases).map((platform) => platform.id)),
+    [platforms],
+  );
 
   useEffect(() => {
     if (!hideCandidate) return;
@@ -298,29 +311,37 @@ export function App() {
   }, [previewPreferences]);
   useEffect(() => {
     const seriesKey = `${CACHE_PREFIX}:${API_URL}:series`;
+    const platformsKey = `${CACHE_PREFIX}:${API_URL}:platforms`;
     const episodesKey = `${CACHE_PREFIX}:${API_URL}:episodes:${week}:${TIMEZONE}`;
     const cachedSeries = readCache<Series[]>(seriesKey);
+    const cachedPlatforms = readCache<Platform[]>(platformsKey);
     const cachedEpisodes = readCache<Episode[]>(episodesKey);
     if (cachedSeries) setSeries(cachedSeries.data);
+    if (cachedPlatforms) setPlatforms(cachedPlatforms.data);
     if (cachedEpisodes) setEpisodes(cachedEpisodes.data);
 
     const load = async () => {
       setLoading(!cachedSeries || !cachedEpisodes); setError(null);
       try {
-        const [seriesResponse, episodeResponse] = await Promise.all([
+        const [seriesResponse, platformsResponse, episodeResponse] = await Promise.all([
           fetch(`${API_URL}/api/v1/series`).then(async (response) => {
             if (!response.ok) throw new Error(`Serien konnten nicht geladen werden (${response.status}).`);
             return response.json();
           }),
+          fetch(`${API_URL}/api/v1/platforms`)
+            .then(async (response) => (response.ok ? response.json() : []))
+            .catch(() => []),
           fetch(`${API_URL}/api/v1/episodes/${week}-week?timezone=${encodeURIComponent(TIMEZONE)}&includePreviews=all&includeReleaseHistory=true`).then(async (response) => {
             if (!response.ok) throw new Error(`Episoden konnten nicht geladen werden (${response.status}).`);
             return response.json();
           }),
         ]);
         if (!Array.isArray(seriesResponse) || !Array.isArray(episodeResponse)) throw new Error("Ungültige API-Antwort");
+        const platformsList: Platform[] = Array.isArray(platformsResponse) ? platformsResponse : [];
         writeCache(seriesKey, seriesResponse);
+        writeCache(platformsKey, platformsList);
         writeCache(episodesKey, episodeResponse);
-        setSeries(seriesResponse); setEpisodes(episodeResponse);
+        setSeries(seriesResponse); setPlatforms(platformsList); setEpisodes(episodeResponse);
       } catch (cause) {
         if (!cachedSeries || !cachedEpisodes) setError(cause instanceof Error ? cause.message : "Die API ist nicht erreichbar.");
       }
@@ -342,6 +363,7 @@ export function App() {
         previewPreferences[episode.platform_id] !== false,
         weekStart,
         weekEnd,
+        hasPrereleasesByPlatform.get(episode.platform_id) ?? true,
       );
       return release ? [{ episode, release }] : [];
     });
@@ -356,6 +378,7 @@ export function App() {
     series={series}
     selectedIds={selectedSeriesIds}
     previewPreferences={previewPreferences}
+    previewEnabledPlatforms={previewEnabledPlatforms}
     onSave={(ids, preferences) => { setSelectedSeriesIds(ids); setPreviewPreferences(preferences); setFilterOpen(false); }}
     onDiscard={() => setFilterOpen(false)}
   />;

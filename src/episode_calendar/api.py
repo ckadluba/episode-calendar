@@ -13,7 +13,11 @@ from sqlalchemy.orm import selectinload
 from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.db.session import get_session
 from episode_calendar.domain import ReleaseType
-from episode_calendar.series_config import displayable_series_by_platform
+from episode_calendar.series_config import (
+    configured_platforms,
+    displayable_series_by_platform,
+    has_prereleases_by_platform,
+)
 
 router = APIRouter(prefix="/api/v1")
 DEFAULT_TIMEZONE = "Europe/Vienna"
@@ -50,7 +54,9 @@ def _preview_filter(platforms: frozenset[str] | None):
     )
 
 
-def _select_release(releases: list[EpisodeRelease]) -> EpisodeRelease | None:
+def _select_release(
+    releases: list[EpisodeRelease], *, has_prereleases: bool = True
+) -> EpisodeRelease | None:
     """Select the canonical release while keeping previews ahead of TV fallbacks.
 
     A later TV listing must not replace a preview release that was already
@@ -60,7 +66,9 @@ def _select_release(releases: list[EpisodeRelease]) -> EpisodeRelease | None:
 
     A regular streaming date that falls *after* the linear premiere is a catalog
     artifact (RTL+ catalog times are prereleases that precede their EPG airing)
-    and must not displace the actual premiere in the calendar.
+    and must not displace the actual premiere in the calendar. That inference only
+    holds for platforms that publish prereleases; without prereleases a later
+    catalog date is the premiere and must win over an earlier TV listing.
     """
 
     def newest(items: list[EpisodeRelease]) -> EpisodeRelease | None:
@@ -72,7 +80,12 @@ def _select_release(releases: list[EpisodeRelease]) -> EpisodeRelease | None:
     tv_releases = [item for item in releases if item.release_type == ReleaseType.TV_BROADCAST]
     tv = newest(tv_releases)
     regular = newest(regular_catalog_releases)
-    if tv is not None and regular is not None and regular.release_at > tv.release_at:
+    if (
+        has_prereleases
+        and tv is not None
+        and regular is not None
+        and regular.release_at > tv.release_at
+    ):
         regular = None
     return regular or newest(preview_releases) or tv
 
@@ -86,6 +99,12 @@ class SeriesResponse(BaseModel):
     description: str | None
     platform: str
     platform_id: str
+
+
+class PlatformResponse(BaseModel):
+    id: str
+    name: str
+    has_prereleases: bool
 
 
 class EpisodeReleaseResponse(BaseModel):
@@ -133,6 +152,19 @@ async def list_series(
             displayable_series[item.provider.slug] is None
             or item.external_id in displayable_series[item.provider.slug]
         )
+    ]
+
+
+@router.get("/platforms", response_model=list[PlatformResponse])
+async def list_platforms() -> list[PlatformResponse]:
+    return [
+        PlatformResponse(
+            id=platform.identifier,
+            name=platform.name,
+            has_prereleases=platform.has_prereleases,
+        )
+        for platform in configured_platforms()
+        if platform.display
     ]
 
 
@@ -184,39 +216,29 @@ async def list_episodes(
         statement = statement.where(Season.series_id == series)
     if platform is not None:
         statement = statement.where(Series.provider.has(Provider.slug == platform))
-    if from_ is not None:
-        statement = statement.where(
-            Episode.releases.any(
-                and_(
-                    EpisodeRelease.release_at >= from_,
-                    EpisodeRelease.rerun.is_(False) if not include_reruns else True,
-                    _preview_filter(preview_platforms),
-                )
-            )
-        )
-    if to is not None:
-        statement = statement.where(
-            Episode.releases.any(
-                and_(
-                    EpisodeRelease.release_at <= to,
-                    EpisodeRelease.rerun.is_(False) if not include_reruns else True,
-                    _preview_filter(preview_platforms),
-                )
-            )
-        )
+    if from_ is not None or to is not None:
+        window_conditions = [_preview_filter(preview_platforms)]
+        if not include_reruns:
+            window_conditions.append(EpisodeRelease.rerun.is_(False))
+        if from_ is not None:
+            window_conditions.append(EpisodeRelease.release_at >= from_)
+        if to is not None:
+            window_conditions.append(EpisodeRelease.release_at <= to)
+        statement = statement.where(Episode.releases.any(and_(*window_conditions)))
     statement = statement.order_by(EpisodeRelease.release_at, Episode.id)
     rows = (await session.execute(statement)).all()
     displayable_series = displayable_series_by_platform()
-    unique_rows: dict[uuid.UUID, tuple[Episode, uuid.UUID, int | None]] = {}
+    unique_rows: dict[uuid.UUID, tuple[Episode, uuid.UUID, int | None, str]] = {}
     for episode, series_id, season_number, external_id, provider_slug in rows:
         if provider_slug not in displayable_series:
             continue
         configured_ids = displayable_series[provider_slug]
         if configured_ids is not None and external_id not in configured_ids:
             continue
-        unique_rows.setdefault(episode.id, (episode, series_id, season_number))
+        unique_rows.setdefault(episode.id, (episode, series_id, season_number, provider_slug))
+    prerelease_platforms = has_prereleases_by_platform()
     responses = []
-    for episode, series_id, season_number in unique_rows.values():
+    for episode, series_id, season_number, provider_slug in unique_rows.values():
         releases = [
             item
             for item in episode.releases
@@ -228,7 +250,9 @@ async def list_episodes(
             )
         ]
         if not include_release_history and releases:
-            selected_release = _select_release(releases)
+            selected_release = _select_release(
+                releases, has_prereleases=prerelease_platforms.get(provider_slug, True)
+            )
             releases = [selected_release] if selected_release else []
         responses.append(
             EpisodeResponse(

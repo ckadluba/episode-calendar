@@ -16,6 +16,7 @@ class ConfiguredPlatform:
     name: str
     run_import: bool
     display: bool
+    has_prereleases: bool
     series: tuple[tuple[str, bool, bool], ...]
 
 
@@ -56,6 +57,11 @@ def configured_platform(provider: str) -> ConfiguredPlatform:
             raise RuntimeError(
                 f"Series configuration platform {provider!r} needs boolean run_import and display"
             )
+        has_prereleases = raw_platform.get("hasPrereleases", True)
+        if not isinstance(has_prereleases, bool):
+            raise RuntimeError(
+                f"Series configuration platform {provider!r} needs a boolean hasPrereleases"
+            )
         identifiers = raw_platform.get("series")
         if not isinstance(identifiers, list):
             raise RuntimeError(f"Series configuration platform {provider!r} needs a series list")
@@ -64,6 +70,7 @@ def configured_platform(provider: str) -> ConfiguredPlatform:
             name=name.strip(),
             run_import=run_import,
             display=display,
+            has_prereleases=has_prereleases,
             series=_configured_series(provider, identifiers),
         )
 
@@ -99,6 +106,38 @@ def _configured_series(
         if value:
             normalized.append((value, run_import, display))
     return tuple(normalized)
+
+
+def configured_platforms() -> tuple[ConfiguredPlatform, ...]:
+    """Return every platform from the JSON config in declaration order."""
+
+    platforms = _load_series_config().get("platforms")
+    if not isinstance(platforms, list):
+        raise RuntimeError("Series configuration must contain a platforms list")
+    result: list[ConfiguredPlatform] = []
+    for raw_platform in platforms:
+        if not isinstance(raw_platform, Mapping):
+            raise RuntimeError("Series configuration platforms must be objects")
+        platform_id = raw_platform.get("id")
+        if not isinstance(platform_id, str) or not platform_id.strip():
+            raise RuntimeError("Series configuration platforms must contain a string id")
+        result.append(configured_platform(platform_id.strip()))
+    return tuple(result)
+
+
+def platform_has_prereleases(provider: str) -> bool:
+    """Return whether a platform publishes prereleases, defaulting to True when unknown."""
+
+    try:
+        return configured_platform(provider).has_prereleases
+    except RuntimeError:
+        return True
+
+
+def has_prereleases_by_platform() -> dict[str, bool]:
+    """Map platform identifiers to whether they publish prerelease releases."""
+
+    return {platform.identifier: platform.has_prereleases for platform in configured_platforms()}
 
 
 def configured_series(provider: str) -> tuple[str, ...]:
