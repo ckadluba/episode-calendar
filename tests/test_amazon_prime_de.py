@@ -30,6 +30,7 @@ def test_normalize_extracts_seasons_episodes_and_release_dates() -> None:
                         "episodeNumber": 1,
                         "title": "Erster Abend",
                         "releaseDate": "2026-09-25",
+                        "duration": 1621,
                     },
                 ],
             }
@@ -39,6 +40,8 @@ def test_normalize_extracts_seasons_episodes_and_release_dates() -> None:
     assert result.title == "Demo-Serie"
     assert result.seasons[0].number == 1
     assert [episode.number for episode in result.seasons[0].episodes] == [1, 2]
+    assert result.seasons[0].episodes[0].duration_minutes == 27
+    assert result.seasons[0].episodes[1].duration_minutes is None
     assert result.seasons[0].episodes[0].releases[0].release_at.tzinfo is UTC
     assert str(result.seasons[0].episodes[0].releases[0].url) == (
         "https://www.primevideo.com/-/de/detail/ep-1"
@@ -70,6 +73,7 @@ def test_normalize_handles_prime_detail_payload_and_german_dates() -> None:
                                 "episodeNumber": 1,
                                 "releaseDate": "13. Mai 2026",
                                 "title": "Payback Time",
+                                "runtime": "1 Std. 26 Min.",
                             }
                         }
                     ]
@@ -81,6 +85,7 @@ def test_normalize_handles_prime_detail_payload_and_german_dates() -> None:
     assert result.title == "LOL: Last One Laughing"
     assert result.seasons[0].number == 7
     assert result.seasons[0].episodes[0].number == 1
+    assert result.seasons[0].episodes[0].duration_minutes == 86
     assert result.seasons[0].episodes[0].releases[0].release_at.isoformat() == (
         "2026-05-12T22:00:00+00:00"
     )

@@ -25,6 +25,7 @@ def payload() -> dict:
                         "programmeId": "78327-007",
                         "fullTitle": "Series 8 Episode 7",
                         "description": "A description",
+                        "durationLabel": "47 mins",
                         "dateLabel": "First shown: Fri 17 Jul 2026",
                         "hrefLink": "/programmes/demo/on-demand/78327-007",
                     }
@@ -49,6 +50,7 @@ async def test_fetches_public_json_and_normalizes_episode() -> None:
     episode = result.seasons[0].episodes[0]
     assert result.title == "Demo"
     assert episode.external_id == "78327-007"
+    assert episode.duration_minutes == 47
     assert episode.releases[0].release_type is ReleaseType.STREAMING
     assert episode.releases[0].release_at == datetime(2026, 7, 17, tzinfo=ZoneInfo("Europe/London"))
 
@@ -75,6 +77,29 @@ def test_merges_scheduled_tv_broadcast_release() -> None:
         ReleaseType.STREAMING,
         ReleaseType.TV_BROADCAST,
     }
+
+
+def test_scheduled_only_episode_carries_its_duration() -> None:
+    release = NormalizedEpisodeRelease(
+        release_type=ReleaseType.TV_BROADCAST,
+        release_at=datetime(2026, 9, 22, 21, tzinfo=ZoneInfo("UTC")),
+    )
+    scheduled_programme = _ScheduledProgramme(
+        external_id="78327-099",
+        season_number=8,
+        episode_number=9,
+        title="Demo",
+        description="A scheduled demo",
+        release=release,
+        duration_minutes=76,
+    )
+    result = Channel4Provider._normalize(
+        "demo", payload(), scheduled_releases={"78327-099": (scheduled_programme,)}
+    )
+
+    scheduled_episode = result.seasons[0].episodes[1]
+    assert scheduled_episode.external_id == "78327-099"
+    assert scheduled_episode.duration_minutes == 76
 
 
 def test_rejects_missing_brand_data() -> None:

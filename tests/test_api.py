@@ -166,7 +166,9 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
     provider = Provider(slug="joyn", name="Joyn.at")
     series = Series(provider=provider, external_id="d-series", title="Demo")
     season = Season(series=series, external_id="c-season", number=1)
-    episode = Episode(season=season, external_id="e-1", number=1, title="Pilot")
+    episode = Episode(
+        season=season, external_id="e-1", number=1, title="Pilot", duration_minutes=45
+    )
     # Anchor to the Monday of the current calendar week (Europe/Vienna, the API default)
     # so the seeded releases (which span three days) stay inside the current week
     # regardless of the weekday the suite runs on.
@@ -236,6 +238,7 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
         )
         assert response.status_code == 200
         assert response.json()[0]["title"] == "Pilot"
+        assert response.json()[0]["duration_minutes"] == 45
         assert len(response.json()[0]["releases"]) == 1
         assert response.json()[0]["releases"][0]["rerun"] is False
         assert response.json()[0]["releases"][0]["preview"] is False

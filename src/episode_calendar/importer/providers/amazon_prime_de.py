@@ -17,6 +17,8 @@ from episode_calendar.importer.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    duration_minutes_from_seconds,
+    duration_minutes_from_text,
     first_seen_release,
 )
 from episode_calendar.importer.providers.epg import filter_obsolete_seasons
@@ -161,7 +163,9 @@ class AmazonPrimeProvider:
                 f"{cls.provider_label} response lacks a series title"
             )
 
-        episodes: dict[str, tuple[int | None, int, str, str | None, datetime | None]] = {}
+        episodes: dict[
+            str, tuple[int | None, int, str, str | None, datetime | None, int | None]
+        ] = {}
         cls._collect_episodes(payload, episodes, cls._find_positive_int(payload, "seasonNumber"))
         if not episodes:
             raise AmazonPrimeMalformedResponseError(
@@ -175,6 +179,7 @@ class AmazonPrimeProvider:
             title,
             description,
             release_at,
+            duration_minutes,
         ) in episodes.items():
             url = (
                 f"https://www.primevideo.com/-/{cls.marketplace}/detail/"
@@ -198,6 +203,7 @@ class AmazonPrimeProvider:
                     number=episode_number,
                     title=title,
                     description=description,
+                    duration_minutes=duration_minutes,
                     releases=releases,
                 )
             )
@@ -222,7 +228,7 @@ class AmazonPrimeProvider:
     def _collect_episodes(
         cls,
         value: Any,
-        episodes: dict[str, tuple[int | None, int, str, str | None, datetime | None]],
+        episodes: dict[str, tuple[int | None, int, str, str | None, datetime | None, int | None]],
         season_hint: int | None = None,
     ) -> None:
         if isinstance(value, list):
@@ -253,6 +259,11 @@ class AmazonPrimeProvider:
                 or f"Episode {episode_number}"
             )
             description = cls._first_string(value, "synopsis", "description", "summary")
+            duration_minutes = duration_minutes_from_seconds(value.get("duration"))
+            if duration_minutes is None:
+                duration_minutes = duration_minutes_from_text(
+                    cls._first_string(value, "runtime", "durationString")
+                )
             if external_id not in episodes:
                 episodes[external_id] = (
                     current_season,
@@ -260,6 +271,7 @@ class AmazonPrimeProvider:
                     title,
                     description,
                     release_at,
+                    duration_minutes,
                 )
 
         for key, child in value.items():

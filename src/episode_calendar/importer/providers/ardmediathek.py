@@ -19,6 +19,7 @@ from episode_calendar.importer.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    duration_minutes_from_seconds,
 )
 from episode_calendar.importer.providers.epg import (
     EpgBroadcast,
@@ -562,6 +563,7 @@ class ARDMediathekProvider:
                     external_id=episode_id,
                     number=episode_number,
                     title=episode_title or f"Episode {episode_number}",
+                    duration_minutes=duration_minutes_from_seconds(teaser.get("duration")),
                     releases=(
                         NormalizedEpisodeRelease(
                             external_id=episode_id,

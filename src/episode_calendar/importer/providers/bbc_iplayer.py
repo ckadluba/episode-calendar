@@ -19,6 +19,8 @@ from episode_calendar.importer.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    duration_minutes_from_iso8601,
+    duration_minutes_from_text,
     episode_title_from_description,
     first_seen_release,
 )
@@ -171,6 +173,7 @@ class BBCIPlayerProvider:
                         continue
                     planned_episode = dict(raw_episode)
                     planned_episode["_planned_release_at"] = planned_at
+                    planned_episode["_planned_duration"] = item.get("duration")
                     planned_episode["versions"] = []
                     scheduled.append(planned_episode)
         return scheduled
@@ -292,8 +295,28 @@ class BBCIPlayerProvider:
             number=number,
             title=episode_title,
             description=description,
+            duration_minutes=cls._duration_minutes(raw),
             releases=releases,
         )
+
+    @classmethod
+    def _duration_minutes(cls, raw: Mapping[str, Any]) -> int | None:
+        for version in cls._list(raw.get("versions", []), "episode.versions"):
+            duration = version.get("duration")
+            if not isinstance(duration, Mapping):
+                continue
+            minutes = duration_minutes_from_iso8601(duration.get("value"))
+            if minutes is None:
+                minutes = duration_minutes_from_text(duration.get("text"))
+            if minutes is not None:
+                return minutes
+        scheduled = raw.get("_planned_duration")
+        if isinstance(scheduled, Mapping):
+            minutes = duration_minutes_from_iso8601(scheduled.get("value"))
+            if minutes is None:
+                minutes = duration_minutes_from_text(scheduled.get("text"))
+            return minutes
+        return None
 
     @classmethod
     def _release(cls, raw: Mapping[str, Any]) -> tuple[datetime, datetime | None] | None:

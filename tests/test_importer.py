@@ -77,6 +77,51 @@ async def test_import_updates_existing_metadata(db_session: AsyncSession) -> Non
     assert persisted.provider.slug == "joyn"
 
 
+class DurationProvider:
+    slug = "joyn"
+
+    def __init__(self, duration_minutes: int | None) -> None:
+        self._duration_minutes = duration_minutes
+
+    async def fetch_series(self, external_id: str) -> NormalizedSeries:
+        return NormalizedSeries(
+            external_id="joyn-series",
+            title="Demo",
+            seasons=(
+                NormalizedSeason(
+                    external_id="joyn-season",
+                    number=1,
+                    episodes=(
+                        NormalizedEpisode(
+                            external_id="joyn-episode",
+                            number=1,
+                            title="Pilot",
+                            duration_minutes=self._duration_minutes,
+                            releases=(
+                                NormalizedEpisodeRelease(
+                                    release_type=ReleaseType.STREAMING,
+                                    release_at=datetime(2026, 9, 6, 18, 30, tzinfo=UTC),
+                                    url="https://www.joyn.at/episode",
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+
+async def test_import_persists_and_updates_episode_duration(db_session: AsyncSession) -> None:
+    await import_series(db_session, DurationProvider(45), "ignored")
+    episode = await db_session.scalar(select(Episode))
+    assert episode is not None
+    assert episode.duration_minutes == 45
+
+    await import_series(db_session, DurationProvider(50), "ignored")
+    await db_session.refresh(episode)
+    assert episode.duration_minutes == 50
+
+
 class SyntheticEpgProvider:
     slug = "joyn"
 

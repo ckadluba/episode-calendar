@@ -127,6 +127,7 @@ class EpisodeResponse(BaseModel):
     number: int | None
     title: str
     description: str | None
+    duration_minutes: int | None
     releases: list[EpisodeReleaseResponse]
     platform: str
     platform_id: str
@@ -264,6 +265,7 @@ async def list_episodes(
                 number=episode.number,
                 title=episode.title,
                 description=episode.description,
+                duration_minutes=episode.duration_minutes,
                 releases=[EpisodeReleaseResponse.model_validate(item) for item in releases],
                 platform=next(
                     (item.provider.name for item in episode.releases if item.provider), "unknown"

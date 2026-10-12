@@ -1,9 +1,60 @@
+import math
+import re
 from datetime import datetime
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator
 
 from episode_calendar.shared.domain import ReleaseType
+
+_ISO_DURATION_RE = re.compile(
+    r"^P(?:(?P<days>\d+(?:[.,]\d+)?)D)?"
+    r"(?:T(?:(?P<hours>\d+(?:[.,]\d+)?)H)?"
+    r"(?:(?P<minutes>\d+(?:[.,]\d+)?)M)?"
+    r"(?:(?P<seconds>\d+(?:[.,]\d+)?)S)?)?$",
+    re.IGNORECASE,
+)
+_DURATION_TEXT_RE = re.compile(
+    r"(?P<number>\d+(?:[.,]\d+)?)\s*"
+    r"(?P<unit>h\b|hrs?\b|hours?\b|hour\b|std\.?\b|stunden\b|stunde\b|"
+    r"minuten\b|minute\b|mins?\b|min\.?\b|m\b)",
+    re.IGNORECASE,
+)
+_HOUR_UNITS = frozenset({"h", "hr", "hrs", "hour", "hours", "std", "std.", "stunde", "stunden"})
+
+
+def duration_minutes_from_seconds(seconds: int | float | None) -> int | None:
+    """Round a non-negative second count to whole minutes, half-up."""
+    if seconds is None or isinstance(seconds, bool):
+        return None
+    if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds < 0:
+        return None
+    return int(seconds / 60 + 0.5)
+
+
+def duration_minutes_from_iso8601(value: str | None) -> int | None:
+    """Convert an ISO 8601 duration such as ``PT1H4M59.136S`` to whole minutes."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    match = _ISO_DURATION_RE.fullmatch(value.strip())
+    if match is None:
+        return None
+    days, hours, minutes, seconds = (
+        float(part.replace(",", ".")) if part else 0.0 for part in match.groups()
+    )
+    return int(days * 1440 + hours * 60 + minutes + seconds / 60 + 0.5)
+
+
+def duration_minutes_from_text(value: str | None) -> int | None:
+    """Parse a human-readable duration such as ``1 hr 16 mins`` or ``1 Std. 26 Min.``."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    total = 0.0
+    for match in _DURATION_TEXT_RE.finditer(value):
+        number = float(match.group("number").replace(",", "."))
+        unit = match.group("unit").casefold()
+        total += number * 60 if unit in _HOUR_UNITS else number
+    return int(total + 0.5) if total > 0 else None
 
 
 def episode_title_from_description(description: str | None, fallback: str) -> str:
@@ -68,6 +119,7 @@ class NormalizedEpisode(BaseModel):
     number: int | None = None
     title: str
     description: str | None = None
+    duration_minutes: int | None = None
     releases: tuple[NormalizedEpisodeRelease, ...] = ()
 
 

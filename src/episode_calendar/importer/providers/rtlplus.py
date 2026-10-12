@@ -27,6 +27,7 @@ from episode_calendar.importer.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    duration_minutes_from_iso8601,
     first_seen_release,
 )
 from episode_calendar.importer.providers.epg import (
@@ -601,8 +602,13 @@ class RTLPlusProvider:
                 raise RTLPlusMalformedResponseError("invalid RTL+ pagination")
             page = next_page
         season_anchors = await self._season_anchors(client, pages, series_url)
+        durations = await self._episode_durations(client, pages, series_url)
         return self._normalize(
-            program_id, pages, series_url=series_url, season_anchors=season_anchors
+            program_id,
+            pages,
+            series_url=series_url,
+            season_anchors=season_anchors,
+            durations=durations,
         )
 
     async def _season_anchors(
@@ -633,6 +639,68 @@ class RTLPlusProvider:
             if anchor is not None:
                 anchors[season_number] = anchor
         return anchors
+
+    async def _episode_durations(
+        self,
+        client: httpx.AsyncClient,
+        pages: list[dict[str, Any]],
+        series_url: str | None,
+    ) -> dict[str, int]:
+        """Read each episode's runtime from its public page's JSON-LD.
+
+        RTL+'s layout exposes no duration field, but the public episode page carries the
+        runtime as a schema.org ``duration`` (for example ``PT51M56S``). Every episode is
+        fetched once, concurrently; a missing or failed lookup is logged and skipped.
+        """
+
+        urls = self._episode_page_urls(pages, series_url)
+        if not urls:
+            return {}
+        semaphore = asyncio.Semaphore(8)
+
+        async def resolve(identifier: str, url: str) -> tuple[str, int | None]:
+            async with semaphore:
+                try:
+                    return identifier, await self._fetch_duration_minutes(client, url)
+                except Exception as exc:  # A missing runtime must not fail the import.
+                    logger.warning("RTL+ episode duration unavailable for %s: %s", url, exc)
+                    return identifier, None
+
+        results = await asyncio.gather(
+            *(resolve(identifier, url) for identifier, url in urls.items())
+        )
+        return {identifier: minutes for identifier, minutes in results if minutes is not None}
+
+    @staticmethod
+    def _episode_page_urls(pages: list[dict[str, Any]], series_url: str | None) -> dict[str, str]:
+        if series_url is None:
+            return {}
+        urls: dict[str, str] = {}
+        for payload in pages:
+            for block in payload.get("blocks", []):
+                content = block.get("content") if isinstance(block, dict) else None
+                items = content.get("items") if isinstance(content, dict) else None
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    raw = item.get("itemContent") if isinstance(item, dict) else None
+                    if not isinstance(raw, dict):
+                        continue
+                    analytics = raw.get("action", {}).get("analytics", {}).get("tealium", {})
+                    if analytics.get("clip_type") not in (None, "vi"):
+                        continue
+                    highlight = str(raw.get("highlight") or "")
+                    identifier = raw.get("id")
+                    if (
+                        identifier is None
+                        or not _SEASON_RE.search(highlight)
+                        or not _EPISODE_RE.search(highlight)
+                    ):
+                        continue
+                    url = RTLPlusProvider._episode_public_url(raw, series_url)
+                    if url is not None:
+                        urls[str(identifier)] = url
+        return urls
 
     @staticmethod
     def _sneak_peek_anchors(pages: list[dict[str, Any]], series_url: str) -> dict[int, str]:
@@ -673,15 +741,20 @@ class RTLPlusProvider:
             target = (target.get("value_lock") or {}).get("originalTarget")
         return None
 
-    async def _fetch_upload_date(self, client: httpx.AsyncClient, url: str) -> datetime | None:
+    async def _fetch_jsonld_documents(self, client: httpx.AsyncClient, url: str) -> list[Any]:
         response = await client.get(url, headers={"Accept": "text/html"})
         response.raise_for_status()
+        documents: list[Any] = []
         for match in _JSONLD_RE.finditer(response.text):
             try:
-                data = json.loads(match.group(1))
+                documents.append(json.loads(match.group(1)))
             except ValueError:
                 continue
-            value = RTLPlusProvider._find_upload_date(data)
+        return documents
+
+    async def _fetch_upload_date(self, client: httpx.AsyncClient, url: str) -> datetime | None:
+        for data in await self._fetch_jsonld_documents(client, url):
+            value = RTLPlusProvider._find_jsonld_string(data, "uploadDate")
             if value is None:
                 continue
             try:
@@ -690,19 +763,29 @@ class RTLPlusProvider:
                 continue
         return None
 
+    async def _fetch_duration_minutes(self, client: httpx.AsyncClient, url: str) -> int | None:
+        for data in await self._fetch_jsonld_documents(client, url):
+            value = RTLPlusProvider._find_jsonld_string(data, "duration")
+            if value is None:
+                continue
+            minutes = duration_minutes_from_iso8601(value)
+            if minutes is not None:
+                return minutes
+        return None
+
     @staticmethod
-    def _find_upload_date(data: Any) -> str | None:
+    def _find_jsonld_string(data: Any, key: str) -> str | None:
         if isinstance(data, dict):
-            value = data.get("uploadDate")
+            value = data.get(key)
             if isinstance(value, str):
                 return value
             for nested in data.values():
-                found = RTLPlusProvider._find_upload_date(nested)
+                found = RTLPlusProvider._find_jsonld_string(nested, key)
                 if found is not None:
                     return found
         elif isinstance(data, list):
             for nested in data:
-                found = RTLPlusProvider._find_upload_date(nested)
+                found = RTLPlusProvider._find_jsonld_string(nested, key)
                 if found is not None:
                     return found
         return None
@@ -762,6 +845,7 @@ class RTLPlusProvider:
         *,
         series_url: str | None = None,
         season_anchors: dict[int, datetime] | None = None,
+        durations: Mapping[str, int] | None = None,
     ) -> NormalizedSeries:
         first = pages[0]
         entity = first.get("entity")
@@ -944,6 +1028,7 @@ class RTLPlusProvider:
                             external_id=str(raw["id"]),
                             number=episode_number,
                             title=str(raw.get("title") or f"Folge {episode_number}"),
+                            duration_minutes=(durations or {}).get(str(raw["id"])),
                             releases=release_tuple,
                         )
                     except ValidationError as exc:

@@ -14,5 +14,5 @@ Video title ID (an ASIN or `amzn1.dv.gti...`).
   [Amazon Prime DE](amazon_prime_de.md).
 - **Inherited quirks**: the `Accept-Language: de-DE,...` header and the `Europe/Berlin` timezone
   used for date-only/naive values are **not** overridden, so UK responses are requested with a
-  German locale and date-only UK strings are interpreted in Berlin time (`amazon_prime_de.py:125`,
-  `amazon_prime_de.py:291`).
+  German locale and date-only UK strings are interpreted in Berlin time (`amazon_prime_de.py:127`,
+  `amazon_prime_de.py:303`).
