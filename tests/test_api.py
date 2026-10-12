@@ -324,6 +324,12 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
         assert response.status_code == 200
         assert response.json() == []
 
+        response = await client.get(
+            "/api/v1/episodes/after-next-week", params={"series": str(series.id)}
+        )
+        assert response.status_code == 200
+        assert response.json() == []
+
         last_week_window = (release_at - timedelta(hours=1), release_at + timedelta(hours=1))
         monkeypatch.setattr(
             "episode_calendar.api.routes._calendar_week_window",

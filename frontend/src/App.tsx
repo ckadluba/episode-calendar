@@ -49,13 +49,15 @@ function writeCache<T>(key: string, data: T) {
   }
 }
 
-type CalendarWeek = "last" | "current" | "next";
+type CalendarWeek = "last" | "current" | "next" | "after-next";
 type PreviewPreferences = Record<string, boolean>;
+
+const WEEK_OFFSETS: Record<CalendarWeek, number> = { last: -7, current: 0, next: 7, "after-next": 14 };
 
 function weekDays(week: CalendarWeek) {
   const now = new Date();
   const day = (now.getDay() + 6) % 7;
-  const weekOffset = week === "last" ? -7 : week === "next" ? 7 : 0;
+  const weekOffset = WEEK_OFFSETS[week];
   const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + weekOffset);
   return Array.from({ length: 7 }, (_, offset) => {
     const date = new Date(monday); date.setDate(monday.getDate() + offset); return date;
@@ -385,8 +387,8 @@ export function App() {
   />;
 
   return <main className="app-shell">
-    <header className="hero"><p className="eyebrow">EPISODE CALENDAR</p><h1>{week === "last" ? "Was lief letzte Woche?" : week === "next" ? "Was läuft nächste Woche?" : "Was läuft diese Woche?"}</h1><p className="subtitle">Neue Episoden deiner Serien auf einen Blick. Zukünftige Daten können unvollständig sein.</p></header>
-    <nav className="week-switch" aria-label="Woche"><button className={week === "last" ? "active" : ""} onClick={() => setWeek("last")}>Letzte Woche</button><button className={week === "current" ? "active" : ""} onClick={() => setWeek("current")}>Diese Woche</button><button className={week === "next" ? "active" : ""} onClick={() => setWeek("next")}>Nächste Woche</button></nav>
+    <header className="hero"><p className="eyebrow">EPISODE CALENDAR</p><h1>{week === "last" ? "Was lief letzte Woche?" : week === "next" ? "Was läuft nächste Woche?" : week === "after-next" ? "Was läuft übernächste Woche?" : "Was läuft diese Woche?"}</h1><p className="subtitle">Neue Episoden deiner Serien auf einen Blick. Zukünftige Daten können unvollständig sein.</p></header>
+    <nav className="week-switch" aria-label="Woche"><button className={week === "last" ? "active" : ""} onClick={() => setWeek("last")}>Letzte Woche</button><button className={week === "current" ? "active" : ""} onClick={() => setWeek("current")}>Diese Woche</button><button className={week === "next" ? "active" : ""} onClick={() => setWeek("next")}>Nächste Woche</button><button className={week === "after-next" ? "active" : ""} onClick={() => setWeek("after-next")}>Übernächste Woche</button></nav>
     <section className="filters" aria-label="Filter"><button className="filter-button" type="button" disabled={!seriesSelectionInitialized} onClick={() => setFilterOpen(true)}>Filter</button><span>{selectedSeriesIds.length} von {series.length} Serien ausgewählt</span></section>
     {loading && <p className="status">Kalender wird geladen …</p>}
     {error && <p className="status error">{error}<br /><small>Prüfe, ob die API unter {API_URL} läuft.</small></p>}
