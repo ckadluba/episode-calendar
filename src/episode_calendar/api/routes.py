@@ -368,3 +368,28 @@ async def list_next_week_episodes(
         include_release_history=include_release_history,
         session=session,
     )
+
+
+@router.get("/episodes/after-next-week", response_model=list[EpisodeResponse])
+async def list_after_next_week_episodes(
+    series: uuid.UUID | None = None,
+    platform: str | None = None,
+    timezone: str = DEFAULT_TIMEZONE,
+    include_reruns: bool = Query(default=False, alias="includeReruns"),  # noqa: B008
+    include_previews: str = Query(default="all", alias="includePreviews"),  # noqa: B008
+    include_release_history: bool = Query(  # noqa: B008
+        default=False, alias="includeReleaseHistory"
+    ),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> list[EpisodeResponse]:
+    start, end = _calendar_week_window(offset=2, timezone_name=timezone)
+    return await list_episodes(
+        from_=start,
+        to=end - timedelta(microseconds=1),
+        series=series,
+        platform=platform,
+        include_reruns=include_reruns,
+        include_previews=include_previews,
+        include_release_history=include_release_history,
+        session=session,
+    )

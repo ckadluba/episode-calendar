@@ -89,6 +89,15 @@ describe("App preferences", () => {
     expect(screen.getByText(/Neue Episoden deiner Serien.*Zukünftige Daten können unvollständig sein\./)).toBeInTheDocument();
   });
 
+  it("uses a future-oriented heading for the week after next", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Übernächste Woche" }));
+    expect(screen.getByRole("button", { name: "Übernächste Woche" })).toHaveClass("active");
+    expect(screen.getByRole("heading", { name: "Was läuft übernächste Woche?" })).toBeInTheDocument();
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/episodes/after-next-week?")));
+  });
+
   it("uses abbreviated weekday labels in the calendar", async () => {
     render(<App />);
 

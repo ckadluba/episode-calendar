@@ -190,6 +190,7 @@ GET http://localhost:8000/api/v1/episodes?from=2026-09-06T00:00:00Z&to=2026-09-1
 GET http://localhost:8000/api/v1/episodes/last-week?timezone=Europe/Vienna
 GET http://localhost:8000/api/v1/episodes/current-week?timezone=Europe/Vienna
 GET http://localhost:8000/api/v1/episodes/next-week?platform=rtlplus
+GET http://localhost:8000/api/v1/episodes/after-next-week?platform=rtlplus
 ```
 
 Episode results are ordered by release time. `from`, `to`, `series`, `platform`, `timezone`,
