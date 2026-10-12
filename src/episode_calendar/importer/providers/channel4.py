@@ -11,16 +11,16 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from episode_calendar.config import get_settings
-from episode_calendar.domain import ReleaseType
-from episode_calendar.providers.base import (
+from episode_calendar.importer.config import get_importer_settings
+from episode_calendar.importer.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
     first_seen_release,
 )
-from episode_calendar.providers.epg import filter_obsolete_seasons
+from episode_calendar.importer.providers.epg import filter_obsolete_seasons
+from episode_calendar.shared.domain import ReleaseType
 
 _DATE_RE = re.compile(
     r"First shown:\s*(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"
@@ -98,7 +98,7 @@ class Channel4Provider:
         tv_guide_url: str | None = None,
         schedule_days: int | None = None,
     ) -> None:
-        settings = get_settings()
+        settings = get_importer_settings()
         self._client = client
         self._timeout = timeout if timeout is not None else settings.channel4_timeout_seconds
         self._base_url = (base_url or settings.channel4_base_url).rstrip("/")

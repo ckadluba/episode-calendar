@@ -3,13 +3,13 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from episode_calendar.domain import ReleaseType
-from episode_calendar.providers.base import NormalizedEpisodeRelease
-from episode_calendar.providers.channel4 import (
+from episode_calendar.importer.providers.base import NormalizedEpisodeRelease
+from episode_calendar.importer.providers.channel4 import (
     Channel4MalformedResponseError,
     Channel4Provider,
     _ScheduledProgramme,
 )
+from episode_calendar.shared.domain import ReleaseType
 
 
 def payload() -> dict:

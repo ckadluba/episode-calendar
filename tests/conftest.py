@@ -1,7 +1,7 @@
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from episode_calendar.db.base import Base
+from episode_calendar.shared.db.base import Base
 
 
 @pytest_asyncio.fixture

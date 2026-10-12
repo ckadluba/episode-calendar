@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import logging
 from collections import defaultdict
@@ -14,24 +13,16 @@ from uuid import UUID
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
-from episode_calendar.db.session import get_session_factory
-from episode_calendar.domain import TV_BROADCAST_MATCH_TOLERANCE, ReleaseType
-from episode_calendar.providers.amazon_prime_de import AmazonPrimeDEProvider
-from episode_calendar.providers.amazon_prime_uk import AmazonPrimeUKProvider
-from episode_calendar.providers.ardmediathek import ARDMediathekProvider
-from episode_calendar.providers.base import (
+from episode_calendar.importer.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeries,
     ProviderAdapter,
 )
-from episode_calendar.providers.bbc_iplayer import BBCIPlayerProvider
-from episode_calendar.providers.channel4 import Channel4Provider
-from episode_calendar.providers.joyn import JoynProvider
-from episode_calendar.providers.rtlplus import RTLPlusProvider
-from episode_calendar.providers.stv import STVProvider
-from episode_calendar.series_config import configured_platform, platform_has_prereleases
-from episode_calendar.series_config import configured_series as _configured_series
+from episode_calendar.shared.db.models import Episode, EpisodeRelease, Provider, Season, Series
+from episode_calendar.shared.db.session import get_session_factory
+from episode_calendar.shared.domain import TV_BROADCAST_MATCH_TOLERANCE, ReleaseType
+from episode_calendar.shared.series_config import configured_platform, platform_has_prereleases
+from episode_calendar.shared.series_config import configured_series as _configured_series
 
 logger = logging.getLogger(__name__)
 
@@ -599,38 +590,6 @@ async def _promote_tv_broadcast_release(
     return release
 
 
-async def import_configured_joyn() -> None:
-    await import_configured("joyn", JoynProvider)
-
-
-async def import_configured_rtlplus() -> None:
-    await import_configured("rtlplus", RTLPlusProvider)
-
-
-async def import_configured_bbc_iplayer() -> None:
-    await import_configured("bbc_iplayer", BBCIPlayerProvider)
-
-
-async def import_configured_channel4() -> None:
-    await import_configured("channel4", Channel4Provider)
-
-
-async def import_configured_ardmediathek() -> None:
-    await import_configured("ardmediathek", ARDMediathekProvider)
-
-
-async def import_configured_stv() -> None:
-    await import_configured("stv", STVProvider)
-
-
-async def import_configured_amazon_prime_de() -> None:
-    await import_configured("amazon_prime_de", AmazonPrimeDEProvider)
-
-
-async def import_configured_amazon_prime_uk() -> None:
-    await import_configured("amazon_prime_uk", AmazonPrimeUKProvider)
-
-
 async def import_configured(
     provider_slug: str,
     adapter_factory: type[ProviderAdapter],
@@ -707,76 +666,3 @@ async def _import_identifier(
         result.releases,
     )
     return True
-
-
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    parser = argparse.ArgumentParser(description="Import configured provider catalogs")
-    parser.add_argument(
-        "provider",
-        choices=(
-            "joyn",
-            "rtlplus",
-            "bbc_iplayer",
-            "channel4",
-            "ardmediathek",
-            "stv",
-            "amazon_prime_de",
-            "amazon_prime_uk",
-            "all",
-        ),
-    )
-    args = parser.parse_args()
-    if args.provider == "joyn":
-        asyncio.run(import_configured_joyn())
-    elif args.provider == "rtlplus":
-        asyncio.run(import_configured_rtlplus())
-    elif args.provider == "bbc_iplayer":
-        asyncio.run(import_configured_bbc_iplayer())
-    elif args.provider == "channel4":
-        asyncio.run(import_configured_channel4())
-    elif args.provider == "ardmediathek":
-        asyncio.run(import_configured_ardmediathek())
-    elif args.provider == "stv":
-        asyncio.run(import_configured_stv())
-    elif args.provider == "amazon_prime_de":
-        asyncio.run(import_configured_amazon_prime_de())
-    elif args.provider == "amazon_prime_uk":
-        asyncio.run(import_configured_amazon_prime_uk())
-    else:
-
-        async def run_all() -> None:
-            providers = (
-                ("joyn", JoynProvider),
-                ("rtlplus", RTLPlusProvider),
-                ("bbc_iplayer", BBCIPlayerProvider),
-                ("channel4", Channel4Provider),
-                ("ardmediathek", ARDMediathekProvider),
-                ("stv", STVProvider),
-                ("amazon_prime_de", AmazonPrimeDEProvider),
-                ("amazon_prime_uk", AmazonPrimeUKProvider),
-            )
-            results = await asyncio.gather(
-                *(
-                    import_configured(provider_slug, factory)
-                    for provider_slug, factory in providers
-                ),
-                return_exceptions=True,
-            )
-            failures = [result for result in results if isinstance(result, Exception)]
-            for (provider_slug, _), result in zip(providers, results, strict=True):
-                if isinstance(result, Exception):
-                    provider_name = provider_slug
-                    try:
-                        provider_name = configured_platform(provider_slug).name
-                    except RuntimeError:
-                        pass
-                    logger.error("Provider import failed for %s: %s", provider_name, result)
-            if failures:
-                raise RuntimeError("one or more provider imports failed") from failures[0]
-
-        asyncio.run(run_all())
-
-
-if __name__ == "__main__":
-    main()

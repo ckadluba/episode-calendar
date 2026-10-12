@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from episode_calendar.main import app
+from episode_calendar.api.main import app
 
 
 def test_application_starts_and_reports_health() -> None:

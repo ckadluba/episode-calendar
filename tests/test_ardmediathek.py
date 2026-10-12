@@ -3,9 +3,9 @@ from typing import Any
 
 import httpx
 
-from episode_calendar.domain import ReleaseType
-from episode_calendar.providers.ardmediathek import ARDMediathekProvider
-from episode_calendar.providers.base import NormalizedEpisodeRelease
+from episode_calendar.importer.providers.ardmediathek import ARDMediathekProvider
+from episode_calendar.importer.providers.base import NormalizedEpisodeRelease
+from episode_calendar.shared.domain import ReleaseType
 
 
 def teaser(

@@ -5,10 +5,10 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from episode_calendar.api import _select_release
-from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
-from episode_calendar.domain import ReleaseType
-from episode_calendar.main import create_app
+from episode_calendar.api.main import create_app
+from episode_calendar.api.routes import _select_release
+from episode_calendar.shared.db.models import Episode, EpisodeRelease, Provider, Season, Series
+from episode_calendar.shared.domain import ReleaseType
 
 
 def test_select_release_keeps_preview_before_later_tv_release() -> None:
@@ -96,7 +96,7 @@ async def test_episodes_do_not_leak_into_adjacent_weeks(
     db_session: AsyncSession, monkeypatch
 ) -> None:
     monkeypatch.setattr(
-        "episode_calendar.api.displayable_series_by_platform", lambda: {"joyn": None}
+        "episode_calendar.api.routes.displayable_series_by_platform", lambda: {"joyn": None}
     )
     provider = Provider(slug="joyn", name="Joyn.at")
     series = Series(provider=provider, external_id="d-series", title="Demo")
@@ -124,7 +124,7 @@ async def test_episodes_do_not_leak_into_adjacent_weeks(
     async def override_session():
         yield db_session
 
-    from episode_calendar.db.session import get_session
+    from episode_calendar.shared.db.session import get_session
 
     app.dependency_overrides[get_session] = override_session
     async with httpx.AsyncClient(
@@ -161,7 +161,7 @@ async def test_episodes_do_not_leak_into_adjacent_weeks(
 @pytest.mark.asyncio
 async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatch) -> None:
     monkeypatch.setattr(
-        "episode_calendar.api.displayable_series_by_platform", lambda: {"joyn": None}
+        "episode_calendar.api.routes.displayable_series_by_platform", lambda: {"joyn": None}
     )
     provider = Provider(slug="joyn", name="Joyn.at")
     series = Series(provider=provider, external_id="d-series", title="Demo")
@@ -214,7 +214,7 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
     async def override_session():
         yield db_session
 
-    from episode_calendar.db.session import get_session
+    from episode_calendar.shared.db.session import get_session
 
     app.dependency_overrides[get_session] = override_session
     async with httpx.AsyncClient(
@@ -323,7 +323,7 @@ async def test_series_and_episode_endpoints(db_session: AsyncSession, monkeypatc
 
         last_week_window = (release_at - timedelta(hours=1), release_at + timedelta(hours=1))
         monkeypatch.setattr(
-            "episode_calendar.api._calendar_week_window",
+            "episode_calendar.api.routes._calendar_week_window",
             lambda offset=0, timezone_name="Europe/Vienna": (
                 last_week_window if offset == -1 else (release_at, release_at + timedelta(days=7))
             ),

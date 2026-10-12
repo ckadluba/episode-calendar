@@ -1,14 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from episode_calendar.api import router as api_router
-from episode_calendar.config import get_settings
+from episode_calendar.api.config import get_api_settings
+from episode_calendar.api.routes import router as api_router
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Episode Calendar", version="0.1.0")
     origins = [
-        origin.strip() for origin in get_settings().cors_origins.split(",") if origin.strip()
+        origin.strip() for origin in get_api_settings().cors_origins.split(",") if origin.strip()
     ]
     app.add_middleware(
         CORSMiddleware,

@@ -5,14 +5,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from episode_calendar.db.models import (
+from episode_calendar.shared.db.models import (
     Episode,
     EpisodeRelease,
     Provider,
     Season,
     Series,
 )
-from episode_calendar.domain import ReleaseType
+from episode_calendar.shared.domain import ReleaseType
 
 
 async def test_domain_tree_and_release_are_persisted(db_session: AsyncSession) -> None:

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from episode_calendar.config import get_settings
+from episode_calendar.shared.config import get_settings
 
 
 @dataclass(frozen=True)

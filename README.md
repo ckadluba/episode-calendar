@@ -5,14 +5,45 @@ release dates from streaming providers.
 
 ## Architecture
 
-The FastAPI application and async SQLAlchemy persistence layer live in `src/episode_calendar`.
+```mermaid
+flowchart TD
+    subgraph providers["Providers & platform APIs"]
+        direction LR
+        joyn["Joyn adapter"] --> joyn_api["Joyn.at API"]
+        rtl["RTL+ adapter"] --> rtl_api["RTL+ API"]
+        more["..."]
+    end
+
+    importer["Scheduled importer job<br/>python -m episode_calendar.importer"]
+    db[("PostgreSQL")]
+    api["FastAPI service<br/>episode_calendar.api.main"]
+    frontend["React/Vite frontend"]
+
+    providers -->|fetch + normalize| importer
+    importer -->|idempotent upsert| db
+    db -->|read| api
+    api -->|JSON over HTTP| frontend
+```
+
+Everything lives in the `src/episode_calendar` package, split into three components:
+
+- `shared/` — the shared settings base, domain types, series configuration, and the async
+  SQLAlchemy persistence layer used by both components.
+- `api/` — the FastAPI read service (`episode_calendar.api.main:app`) with its routes in
+  `api/routes.py` and its settings in `api/config.py`.
+- `importer/` — the import job (`python -m episode_calendar.importer`), with the provider
+  adapters under `importer/providers/`, the import logic in `importer/service.py`, and the
+  provider/import settings in `importer/config.py`.
+
 The domain model is `Provider -> Series -> Season -> Episode -> EpisodeRelease`; releases are
 separate so an episode can have multiple streaming or broadcast releases. Provider IDs are
 scoped by provider and imports use idempotent upserts.
 
-Provider adapters implement the generic abstraction in `providers/base.py`. Joyn Austria, RTL+,
-Channel 4, and ARD Mediathek are isolated in their provider modules. The importer fetches complete series trees, normalizes
-them, and persists them. API requests read PostgreSQL and never call providers directly.
+Provider adapters implement the generic abstraction in `importer/providers/base.py`. Each
+provider (Joyn Austria, RTL+, BBC iPlayer, Channel 4, ARD Mediathek, STV Player, Amazon Prime DE,
+and Amazon Prime UK) is isolated in its own module. The importer fetches complete series trees,
+normalizes them, and persists them. API requests read PostgreSQL and never call providers
+directly.
 
 ## Development
 
@@ -38,22 +69,49 @@ Never commit `.env`, provider keys, OAuth values, service-account keys, or Terra
 
 ### Local Development
 
-Set up the backend once:
+The common local flow, from a clean checkout:
+
+1. Prepare the environment once:
+
+   ```shell
+   cp .env.example .env
+   uv sync
+   ```
+
+2. Build and start PostgreSQL and the API container; migrations run on startup:
+
+   ```shell
+   docker compose up -d --build app
+   ```
+
+3. Import provider data (set provider credentials first, see
+   [Provider configuration and import](#provider-configuration-and-import)):
+
+   ```shell
+   uv run python -m episode_calendar.importer all
+   ```
+
+4. Start the frontend in a second terminal:
+
+   ```shell
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+The API is available at <http://localhost:8000> (`GET /health` reports its status) and the
+frontend at <http://localhost:5173>. The rest of this section covers the alternatives and
+details.
+
+#### Run the backend without Docker
+
+Run PostgreSQL in Docker but the API on the host:
 
 ```shell
-cp .env.example .env
-uv sync
 docker compose up -d db
 uv run alembic upgrade head
+uv run uvicorn episode_calendar.api.main:app --reload
 ```
-
-Start the backend in one terminal:
-
-```shell
-uv run uvicorn episode_calendar.main:app --reload
-```
-
-The API is available at <http://localhost:8000>; `GET /health` reports its status.
 
 #### Provider configuration and import
 
@@ -82,9 +140,11 @@ Maintain provider series in `config/series.json` (override with `SERIES_CONFIG_P
 ```
 
 Each platform has an `id`, a display `name`, and a `series` list. Optional `run_import` and
-`display` booleans default to `true` at platform and series level. All series entries use an
-`id` field. The optional `comment` field is only documentation for humans; it does not configure
-or override the provider's series title.
+`display` booleans default to `true` at platform and series level. The optional platform-level
+`hasPrereleases` boolean (default `true`) declares whether the platform publishes early streaming
+prereleases; when `false`, imported releases are never marked as previews. All series entries use
+an `id` field. The optional `comment` field is only documentation for humans; it does not
+configure or override the provider's series title.
 For Joyn, open `joyn.at`, accept consent, open Developer Tools → Network, reload a series
 page, select `api.joyn.de/graphql`, and copy its `x-api-key` header to `JOYN_API_KEY` in
 `.env`. For RTL+, reload `plus.rtl.de`, accept the cookie banner, select the request to
@@ -124,7 +184,9 @@ Useful API requests:
 ```http
 GET http://localhost:8000/api/v1/series
 GET http://localhost:8000/api/v1/series/{id}
+GET http://localhost:8000/api/v1/platforms
 GET http://localhost:8000/api/v1/episodes?from=2026-09-06T00:00:00Z&to=2026-09-13T23:59:59Z
+GET http://localhost:8000/api/v1/episodes/last-week?timezone=Europe/Vienna
 GET http://localhost:8000/api/v1/episodes/current-week?timezone=Europe/Vienna
 GET http://localhost:8000/api/v1/episodes/next-week?platform=rtlplus
 ```
@@ -403,7 +465,7 @@ account:
 ```shell
 terraform -chdir=infra apply
 gcloud scheduler jobs list --location=europe-west3
-gcloud scheduler jobs run episode-calendar-import--periodic --location=europe-west3
+gcloud scheduler jobs run episode-calendar-import-periodic --location=europe-west3
 ```
 
 Cloud Scheduler currently provides three jobs per billing account per month at no charge; one
@@ -439,7 +501,7 @@ After changing application code, `config/series.json`, or API behavior:
    gcloud run jobs execute episode-calendar-migrate --region=europe-west3 --project=PROJECT_ID --wait
    gcloud run jobs execute episode-calendar-import --region=europe-west3 --project=PROJECT_ID --wait
    ```
-5. Verify `/health` and the API. The periodoc scheduler continues to execute the existing import job.
+5. Verify `/health` and the API. The periodic scheduler continues to execute the existing import job.
 
 ## License
 

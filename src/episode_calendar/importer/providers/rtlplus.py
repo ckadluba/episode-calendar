@@ -21,16 +21,15 @@ from zoneinfo import ZoneInfo
 import httpx
 from pydantic import ValidationError
 
-from episode_calendar.config import get_settings
-from episode_calendar.domain import ReleaseType
-from episode_calendar.providers.base import (
+from episode_calendar.importer.config import get_importer_settings
+from episode_calendar.importer.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
     first_seen_release,
 )
-from episode_calendar.providers.epg import (
+from episode_calendar.importer.providers.epg import (
     EpgBroadcast,
     Slot,
     derive_slots_from_moments,
@@ -38,6 +37,7 @@ from episode_calendar.providers.epg import (
     merge_epg,
     running_season,
 )
+from episode_calendar.shared.domain import ReleaseType
 
 EPG_LOOKAHEAD = timedelta(days=14)
 MAX_EPG_EVENT_DURATION = timedelta(hours=4)
@@ -132,7 +132,7 @@ class RTLPlusProvider:
         epg_lookback_days: int | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
-        settings = get_settings()
+        settings = get_importer_settings()
         self._client = client
         self._timeout = timeout if timeout is not None else settings.rtlplus_timeout_seconds
         self._endpoint_template = endpoint_template or settings.rtlplus_layout_url

@@ -10,17 +10,17 @@ from urllib.parse import quote
 
 import httpx
 
-from episode_calendar.config import get_settings
-from episode_calendar.domain import ReleaseType
-from episode_calendar.providers.base import (
+from episode_calendar.importer.config import get_importer_settings
+from episode_calendar.importer.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
     first_seen_release,
 )
-from episode_calendar.providers.epg import filter_obsolete_seasons
-from episode_calendar.providers.http import request_with_retries
+from episode_calendar.importer.providers.epg import filter_obsolete_seasons
+from episode_calendar.importer.providers.http import request_with_retries
+from episode_calendar.shared.domain import ReleaseType
 
 _EPISODE_LINK_RE = re.compile(
     r"(?:https?://player\.stv\.tv)?/episode/([a-z0-9]{4})(?:/([^\"'?#<\s]+))?",
@@ -60,7 +60,7 @@ class STVProvider:
         max_retries: int | None = None,
         backoff: float | None = None,
     ) -> None:
-        settings = get_settings()
+        settings = get_importer_settings()
         self._client = client
         self._timeout = timeout if timeout is not None else settings.stv_timeout_seconds
         self._player_url = (player_url or settings.stv_player_url).rstrip("/")

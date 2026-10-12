@@ -7,21 +7,21 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
-from episode_calendar.domain import ReleaseType
 from episode_calendar.importer import (
     ImportResult,
     configured_series,
     import_configured,
     import_series,
 )
-from episode_calendar.providers.base import (
+from episode_calendar.importer.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
 )
-from episode_calendar.series_config import displayable_series_by_platform
+from episode_calendar.shared.db.models import Episode, EpisodeRelease, Provider, Season, Series
+from episode_calendar.shared.domain import ReleaseType
+from episode_calendar.shared.series_config import displayable_series_by_platform
 
 
 class FakeProvider:
@@ -1647,7 +1647,7 @@ def test_configured_series_reads_provider_lists(tmp_path, monkeypatch) -> None:
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "episode_calendar.series_config.get_settings",
+        "episode_calendar.shared.series_config.get_settings",
         lambda: SimpleNamespace(series_config_path=str(config_path)),
     )
 
@@ -1664,7 +1664,7 @@ def test_configured_series_display_flags(tmp_path, monkeypatch) -> None:
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "episode_calendar.series_config.get_settings",
+        "episode_calendar.shared.series_config.get_settings",
         lambda: SimpleNamespace(series_config_path=str(config_path)),
     )
 
@@ -1680,7 +1680,7 @@ def test_displayable_series_keeps_legacy_ids_when_all_series_are_visible(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "episode_calendar.series_config.get_settings",
+        "episode_calendar.shared.series_config.get_settings",
         lambda: SimpleNamespace(series_config_path=str(config_path)),
     )
 
@@ -1695,7 +1695,7 @@ def test_configured_bbc_series_accepts_labeled_ids(tmp_path, monkeypatch) -> Non
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "episode_calendar.series_config.get_settings",
+        "episode_calendar.shared.series_config.get_settings",
         lambda: SimpleNamespace(series_config_path=str(config_path)),
     )
 
@@ -1749,16 +1749,18 @@ async def test_configured_imports_run_in_parallel_and_isolate_failures(monkeypat
         )
 
     monkeypatch.setattr(
-        "episode_calendar.importer.configured_platform",
+        "episode_calendar.importer.service.configured_platform",
         lambda provider: SimpleNamespace(
             series=(("working", True, True), ("broken", True, True)),
             name="Test Provider",
             run_import=True,
         ),
     )
-    monkeypatch.setattr("episode_calendar.importer.get_session_factory", lambda: SessionFactory())
-    monkeypatch.setattr("episode_calendar.importer.import_series", fake_import_series)
-    caplog.set_level(logging.INFO, logger="episode_calendar.importer")
+    monkeypatch.setattr(
+        "episode_calendar.importer.service.get_session_factory", lambda: SessionFactory()
+    )
+    monkeypatch.setattr("episode_calendar.importer.service.import_series", fake_import_series)
+    caplog.set_level(logging.INFO, logger="episode_calendar.importer.service")
 
     with pytest.raises(RuntimeError, match="1 of 2 Test Provider imports failed"):
         await import_configured("demo", lambda: SimpleNamespace(slug="demo"), "Test Provider")
@@ -1772,12 +1774,12 @@ async def test_configured_imports_run_in_parallel_and_isolate_failures(monkeypat
 @pytest.mark.asyncio
 async def test_import_skips_inactive_platform(monkeypatch, caplog) -> None:
     monkeypatch.setattr(
-        "episode_calendar.importer.configured_platform",
+        "episode_calendar.importer.service.configured_platform",
         lambda provider: SimpleNamespace(
             name="Test Provider", run_import=False, series=(("ignored", True, True),)
         ),
     )
-    caplog.set_level(logging.INFO, logger="episode_calendar.importer")
+    caplog.set_level(logging.INFO, logger="episode_calendar.importer.service")
 
     await import_configured("demo", lambda: SimpleNamespace(slug="demo"), "Unused Name")
 

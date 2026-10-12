@@ -9,13 +9,13 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
-from episode_calendar.domain import ReleaseType
-from episode_calendar.providers.joyn import (
+from episode_calendar.importer.providers.joyn import (
     JoynGraphQLError,
     JoynHTTPError,
     JoynMalformedResponseError,
     JoynProvider,
 )
+from episode_calendar.shared.domain import ReleaseType
 
 
 def episode(

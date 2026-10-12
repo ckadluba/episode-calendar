@@ -1,15 +1,14 @@
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from episode_calendar.domain import ReleaseType
-from episode_calendar.providers.base import (
+from episode_calendar.importer.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
     first_seen_release,
 )
-from episode_calendar.providers.epg import (
+from episode_calendar.importer.providers.epg import (
     EpgBroadcast,
     derive_broadcast_slots,
     derive_slots_from_moments,
@@ -17,6 +16,7 @@ from episode_calendar.providers.epg import (
     fits_slot,
     merge_epg,
 )
+from episode_calendar.shared.domain import ReleaseType
 
 VIENNA = ZoneInfo("Europe/Vienna")
 

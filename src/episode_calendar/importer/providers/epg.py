@@ -21,14 +21,14 @@ from zoneinfo import ZoneInfo
 
 from pydantic import HttpUrl
 
-from episode_calendar.domain import ReleaseType
-from episode_calendar.providers.base import (
+from episode_calendar.importer.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
     first_seen_release,
 )
+from episode_calendar.shared.domain import ReleaseType
 
 # An airing slot is a local weekday (0-6, or None for a daily slot) plus a local time.
 Slot = tuple[int | None, time]

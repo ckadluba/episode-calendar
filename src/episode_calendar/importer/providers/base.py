@@ -3,7 +3,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator
 
-from episode_calendar.domain import ReleaseType
+from episode_calendar.shared.domain import ReleaseType
 
 
 def episode_title_from_description(description: str | None, fallback: str) -> str:
