@@ -13,9 +13,8 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
-from episode_calendar.config import get_settings
-from episode_calendar.domain import ReleaseType
-from episode_calendar.providers.base import (
+from episode_calendar.importer.config import get_importer_settings
+from episode_calendar.importer.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
     NormalizedSeason,
@@ -23,7 +22,8 @@ from episode_calendar.providers.base import (
     episode_title_from_description,
     first_seen_release,
 )
-from episode_calendar.providers.epg import filter_obsolete_seasons
+from episode_calendar.importer.providers.epg import filter_obsolete_seasons
+from episode_calendar.shared.domain import ReleaseType
 
 _SEASON_RE = re.compile(r"(?:series|cyfres)\s+(\d+)", re.IGNORECASE)
 _EPISODE_RE = re.compile(
@@ -62,7 +62,7 @@ class BBCIPlayerProvider:
         schedule_channels: str | None = None,
         schedule_days: int | None = None,
     ) -> None:
-        settings = get_settings()
+        settings = get_importer_settings()
         self._client = client
         self._endpoint = endpoint or settings.bbc_iplayer_api_url
         self._timeout = timeout if timeout is not None else settings.bbc_iplayer_timeout_seconds

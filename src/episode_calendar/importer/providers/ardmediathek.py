@@ -13,19 +13,19 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from episode_calendar.config import get_settings
-from episode_calendar.domain import TV_BROADCAST_MATCH_TOLERANCE, ReleaseType
-from episode_calendar.providers.base import (
+from episode_calendar.importer.config import get_importer_settings
+from episode_calendar.importer.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
 )
-from episode_calendar.providers.epg import (
+from episode_calendar.importer.providers.epg import (
     EpgBroadcast,
     filter_obsolete_seasons,
     merge_epg,
 )
+from episode_calendar.shared.domain import TV_BROADCAST_MATCH_TOLERANCE, ReleaseType
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class ARDMediathekProvider:
         schedule_days: int | None = None,
         schedule_lookback_days: int | None = None,
     ) -> None:
-        settings = get_settings()
+        settings = get_importer_settings()
         self._client = client
         self._endpoint = endpoint or settings.ardmediathek_api_url
         self._timeout = timeout if timeout is not None else settings.ardmediathek_timeout_seconds

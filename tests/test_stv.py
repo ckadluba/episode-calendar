@@ -4,8 +4,8 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
-from episode_calendar.domain import ReleaseType
-from episode_calendar.providers.stv import STVMalformedResponseError, STVProvider
+from episode_calendar.importer.providers.stv import STVMalformedResponseError, STVProvider
+from episode_calendar.shared.domain import ReleaseType
 
 SUMMARY_HTML = """
 <html>

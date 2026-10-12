@@ -1,14 +1,11 @@
 from functools import lru_cache
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from episode_calendar.shared.config import Settings
 
 
-class Settings(BaseSettings):
-    """Runtime configuration loaded from environment variables."""
+class ImporterSettings(Settings):
+    """Configuration for provider imports and their HTTP adapters."""
 
-    database_url: str
-    app_name: str = "episode-calendar"
-    debug: bool = False
     joyn_api_key: str | None = None
     joyn_graphql_url: str = "https://api.joyn.de/graphql"
     joyn_timeout_seconds: float = 10.0
@@ -50,14 +47,8 @@ class Settings(BaseSettings):
     import_delay_seconds: float = 1.0
     import_max_retries: int = 3
     import_backoff_seconds: float = 1.0
-    series_config_path: str = "config/series.json"
-    cors_origins: str = (
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173"
-    )
-
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
 @lru_cache
-def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+def get_importer_settings() -> ImporterSettings:
+    return ImporterSettings()  # type: ignore[call-arg]

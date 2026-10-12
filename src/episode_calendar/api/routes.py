@@ -10,10 +10,10 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from episode_calendar.db.models import Episode, EpisodeRelease, Provider, Season, Series
-from episode_calendar.db.session import get_session
-from episode_calendar.domain import ReleaseType
-from episode_calendar.series_config import (
+from episode_calendar.shared.db.models import Episode, EpisodeRelease, Provider, Season, Series
+from episode_calendar.shared.db.session import get_session
+from episode_calendar.shared.domain import ReleaseType
+from episode_calendar.shared.series_config import (
     configured_platforms,
     displayable_series_by_platform,
     has_prereleases_by_platform,

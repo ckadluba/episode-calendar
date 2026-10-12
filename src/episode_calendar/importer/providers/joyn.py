@@ -15,22 +15,22 @@ from zoneinfo import ZoneInfo
 import httpx
 from pydantic import ValidationError
 
-from episode_calendar.config import get_settings
-from episode_calendar.domain import TV_BROADCAST_MATCH_TOLERANCE, ReleaseType
-from episode_calendar.providers.base import (
+from episode_calendar.importer.config import get_importer_settings
+from episode_calendar.importer.providers.base import (
     NormalizedEpisode,
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
     first_seen_release,
 )
-from episode_calendar.providers.epg import (
+from episode_calendar.importer.providers.epg import (
     EpgBroadcast,
     derive_broadcast_slots,
     filter_obsolete_seasons,
     merge_epg,
     running_season,
 )
+from episode_calendar.shared.domain import TV_BROADCAST_MATCH_TOLERANCE, ReleaseType
 
 SERIES_QUERY = """
 query EpisodeCalendarSeries($path: String!) {
@@ -158,7 +158,7 @@ class JoynProvider:
         client: httpx.AsyncClient | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
-        settings = get_settings() if api_key is None else None
+        settings = get_importer_settings() if api_key is None else None
         self._api_key = (
             api_key if api_key is not None else (settings.joyn_api_key if settings else None)
         )

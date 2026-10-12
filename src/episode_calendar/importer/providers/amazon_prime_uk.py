@@ -1,6 +1,6 @@
 """Amazon Prime Video United Kingdom detail-page adapter."""
 
-from episode_calendar.providers.amazon_prime_de import AmazonPrimeProvider
+from episode_calendar.importer.providers.amazon_prime_de import AmazonPrimeProvider
 
 
 class AmazonPrimeUKProvider(AmazonPrimeProvider):

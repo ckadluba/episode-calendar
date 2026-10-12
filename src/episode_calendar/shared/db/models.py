@@ -6,9 +6,9 @@ from datetime import datetime
 from sqlalchemy import Enum, ForeignKey, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from episode_calendar.db.base import Base
-from episode_calendar.db.types import UTCDateTime
-from episode_calendar.domain import ReleaseType
+from episode_calendar.shared.db.base import Base
+from episode_calendar.shared.db.types import UTCDateTime
+from episode_calendar.shared.domain import ReleaseType
 
 
 class Provider(Base):

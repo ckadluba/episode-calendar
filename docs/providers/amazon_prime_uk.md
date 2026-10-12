@@ -1,11 +1,10 @@
 # Amazon Prime UK
 
-Der Provider `amazon_prime_uk` verwendet denselben Prime-Video-Detailseiten-Adapter wie
-`amazon_prime_de`. Er ruft die öffentliche, nicht dokumentierte Detailseiten-API mit der
-UK-Marketplace-URL auf und normalisiert Staffeln, Episoden und Veröffentlichungsdaten in
-das gemeinsame Datenmodell.
+The `amazon_prime_uk` provider uses the same Prime Video detail-page adapter as
+`amazon_prime_de`. It calls the public, undocumented detail-page API with the UK marketplace URL
+and normalizes seasons, episodes, and release dates into the shared data model.
 
-Die konfigurierte Serien-ID ist die Prime-Video-Titel-ID. Für den ersten Test ist
-`0JAJ59KRPSJY5QIDTK0WTBWMR6` für `LOL: Last One Laughing UK` hinterlegt.
+The configured series identifier is the Prime Video title ID. For the first test,
+`0JAJ59KRPSJY5QIDTK0WTBWMR6` is configured for `LOL: Last One Laughing UK`.
 
-Die API ist nicht als öffentliche Consumer-API dokumentiert und kann sich jederzeit ändern.
+The API is not documented as a public consumer API and may change at any time.

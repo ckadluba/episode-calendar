@@ -51,7 +51,7 @@ scheduling are intentionally outside this provider.
 Example:
 
 ```python
-from episode_calendar.providers.joyn import JoynProvider
+from episode_calendar.importer.providers.joyn import JoynProvider
 
 series = await JoynProvider(api_key="<JOYN_API_KEY>").get_series("so-denkt-oesterreich")
 ```

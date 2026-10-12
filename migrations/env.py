@@ -5,9 +5,9 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from episode_calendar.config import get_settings
-from episode_calendar.db import models  # noqa: F401
-from episode_calendar.db.base import Base
+from episode_calendar.shared.config import get_settings
+from episode_calendar.shared.db import models  # noqa: F401
+from episode_calendar.shared.db.base import Base
 
 config = context.config
 if config.config_file_name is not None:

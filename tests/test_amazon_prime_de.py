@@ -3,11 +3,11 @@ from datetime import UTC
 import httpx
 import pytest
 
-from episode_calendar.providers.amazon_prime_de import (
+from episode_calendar.importer.providers.amazon_prime_de import (
     AmazonPrimeDEMalformedResponseError,
     AmazonPrimeDEProvider,
 )
-from episode_calendar.providers.amazon_prime_uk import AmazonPrimeUKProvider
+from episode_calendar.importer.providers.amazon_prime_uk import AmazonPrimeUKProvider
 
 
 def test_normalize_extracts_seasons_episodes_and_release_dates() -> None:

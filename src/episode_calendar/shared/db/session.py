@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from episode_calendar.config import get_settings
+from episode_calendar.shared.config import get_settings
 
 
 @lru_cache

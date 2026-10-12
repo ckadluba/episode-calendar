@@ -19,4 +19,4 @@ COPY src ./src
 RUN uv sync --frozen --no-dev
 
 EXPOSE 8000
-CMD ["uv", "run", "--no-sync", "uvicorn", "episode_calendar.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "--no-sync", "uvicorn", "episode_calendar.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

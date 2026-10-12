@@ -3,9 +3,13 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from episode_calendar.domain import ReleaseType
-from episode_calendar.providers.base import NormalizedEpisode, NormalizedSeason, NormalizedSeries
-from episode_calendar.providers.rtlplus import RTLPlusProvider
+from episode_calendar.importer.providers.base import (
+    NormalizedEpisode,
+    NormalizedSeason,
+    NormalizedSeries,
+)
+from episode_calendar.importer.providers.rtlplus import RTLPlusProvider
+from episode_calendar.shared.domain import ReleaseType
 
 VIENNA = ZoneInfo("Europe/Vienna")
 
