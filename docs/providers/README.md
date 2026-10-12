@@ -12,6 +12,9 @@ its specialties and deviations from it.
   `NormalizedSeries -> NormalizedSeason -> NormalizedEpisode -> NormalizedEpisodeRelease`.
 - **Releases.** `release_type` is `streaming` or `tv_broadcast`; `release_at` must be
   timezone-aware and is persisted in UTC. External IDs are provider-scoped and stable.
+- **Duration.** `NormalizedEpisode.duration_minutes` is an optional whole-minute runtime stored on
+  the episode (never on a release). Adapters normalize the provider value with the shared helpers
+  below; providers without a runtime leave it `None`, and it never affects rerun/date policy.
 - **Idempotent import.** Adapters only return data; `importer/service.py` upserts it. No adapter
   writes to the database, and no adapter is called from an API request.
 - **Catalogue is authoritative.** The provider catalogue is the base of every series tree. Linear
@@ -26,7 +29,10 @@ its specialties and deviations from it.
 ## Shared helpers
 
 - `base.py` — `first_seen_release()` (a `date_from_api=false`, `placeholder=true` streaming
-  placeholder for a catalogue episode without a provider date) and `episode_title_from_description()`.
+  placeholder for a catalogue episode without a provider date), `episode_title_from_description()`,
+  and the duration helpers `duration_minutes_from_seconds()` (half-up),
+  `duration_minutes_from_iso8601()` (e.g. `PT1H4M59.136S`), and `duration_minutes_from_text()`
+  (e.g. `1 hr 16 mins`, `1 Std. 26 Min.`).
 - `http.py` — `request_with_retries()` (retries `429`/`5xx` and request errors, honours
   `Retry-After`).
 - `epg.py` — `apply_catalog_policy()` (`filter_obsolete_seasons()` + `ensure_catalog_dates()`),

@@ -14,14 +14,18 @@ def teaser(
     broadcasted_on: str,
     *,
     available_to: str | None = "2027-09-25T03:00:00Z",
+    duration: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "id": episode_id,
         "longTitle": title,
         "broadcastedOn": broadcasted_on,
         "availableTo": available_to,
         "show": {"title": "Demo Show"},
     }
+    if duration is not None:
+        payload["duration"] = duration
+    return payload
 
 
 async def test_fetches_numbered_episodes_and_ignores_bonus_content() -> None:
@@ -59,6 +63,7 @@ async def test_fetches_numbered_episodes_and_ignores_bonus_content() -> None:
                         "episode-2",
                         "Folge 2: The Second One (S01/E02)",
                         "2026-09-22T20:00:00Z",
+                        duration=3088,
                     ),
                     teaser(
                         "bonus-1",
@@ -89,6 +94,7 @@ async def test_fetches_numbered_episodes_and_ignores_bonus_content() -> None:
     episode = result.seasons[0].episodes[1]
     assert episode.external_id == "episode-2"
     assert episode.title == "The Second One"
+    assert episode.duration_minutes == 51
     # The scheduled broadcast belongs to a catalogue episode, so it is not duplicated.
     assert [release.release_type for release in episode.releases] == [ReleaseType.STREAMING]
 

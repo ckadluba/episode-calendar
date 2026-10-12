@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Enum, ForeignKey, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Enum, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from episode_calendar.shared.db.base import Base
@@ -80,6 +80,7 @@ class Episode(Base):
     number: Mapped[int | None]
     title: Mapped[str] = mapped_column(String(500))
     description: Mapped[str | None] = mapped_column(Text)
+    duration_minutes: Mapped[int | None] = mapped_column(Integer)
 
     season: Mapped[Season] = relationship(back_populates="episodes")
     releases: Mapped[list[EpisodeRelease]] = relationship(

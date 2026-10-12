@@ -37,6 +37,7 @@ def episode(
         "title": title,
         "path": path or f"/serien/demo/episode-{number}",
         "markings": markings,
+        "video": {"id": f"v_{episode_id}", "duration": 6549},
     }
 
 
@@ -109,6 +110,7 @@ async def test_normalizes_one_season_with_multiple_episodes() -> None:
     assert result.title == "Demo series"
     assert len(result.seasons) == 1
     assert [item.number for item in result.seasons[0].episodes] == [1, 2]
+    assert result.seasons[0].episodes[0].duration_minutes == 109
     assert result.seasons[0].episodes[0].releases[0].release_type is ReleaseType.STREAMING
     assert str(result.seasons[0].episodes[0].releases[0].url) == (
         "https://www.joyn.at/serien/demo/episode-1"

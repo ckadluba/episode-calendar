@@ -27,6 +27,7 @@ def api_response(*, episode_id: str, number: int, start: str) -> dict:
             "playerSeries": {"name": "Series 25", "episodeIndex": number},
             "schedule": {"startTime": start},
             "availability": {"until": "2026-12-07T23:59:00+0000"},
+            "video": {"_duration": "1 hr 16 mins"},
             "id": episode_id,
         },
     }
@@ -74,6 +75,7 @@ async def test_fetch_series_uses_stv_api_metadata() -> None:
     episode = result.seasons[0].episodes[0]
     assert episode.title == "Episode 1"
     assert episode.description == "Summary 1"
+    assert episode.duration_minutes == 76
     assert episode.releases[0].release_type is ReleaseType.STREAMING
     assert episode.releases[0].release_at == datetime(2025, 11, 16, 21, tzinfo=ZoneInfo("UTC"))
     assert episode.releases[0].available_until == datetime(

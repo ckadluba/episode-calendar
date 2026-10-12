@@ -16,6 +16,7 @@ from episode_calendar.importer.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    duration_minutes_from_text,
     first_seen_release,
 )
 from episode_calendar.importer.providers.epg import filter_obsolete_seasons
@@ -182,11 +183,13 @@ class STVProvider:
                 continue
             series_title = series_title or cls._string(programme.get("name"))
             episode_key = (season_number, number)
+            video = cls._mapping(result.get("video"))
             episode = NormalizedEpisode(
                 external_id=cls._string(result.get("guid")) or short_id,
                 number=number,
                 title=title,
                 description=cls._string(result.get("summary")),
+                duration_minutes=duration_minutes_from_text(cls._string(video.get("_duration"))),
                 releases=(
                     NormalizedEpisodeRelease(
                         external_id=cls._string(result.get("guid")) or short_id,

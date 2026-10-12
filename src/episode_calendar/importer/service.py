@@ -415,6 +415,7 @@ async def import_series(
                     number=normalized_episode.number,
                     title=normalized_episode.title,
                     description=normalized_episode.description,
+                    duration_minutes=normalized_episode.duration_minutes,
                 )
                 session.add(episode)
                 await session.flush()
@@ -423,6 +424,7 @@ async def import_series(
                 episode.number = normalized_episode.number
                 episode.title = normalized_episode.title
                 episode.description = normalized_episode.description
+                episode.duration_minutes = normalized_episode.duration_minutes
                 if reconciled:
                     episode.external_id = normalized_episode.external_id
             episode_count += 1

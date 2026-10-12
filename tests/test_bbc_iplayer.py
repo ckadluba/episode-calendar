@@ -23,7 +23,11 @@ def episode(
         "versions": []
         if start is None
         else [
-            {"kind": "original", "availability": {"start": start, "end": "2026-10-01T20:00:00Z"}}
+            {
+                "kind": "original",
+                "duration": {"text": "1h 5m", "value": "PT1H4M59.136S"},
+                "availability": {"start": start, "end": "2026-10-01T20:00:00Z"},
+            }
         ],
     }
 
@@ -74,6 +78,7 @@ async def test_normalizes_programme_and_paginates_episodes() -> None:
     normalized = result.seasons[0].episodes[0]
     assert normalized.number == 1
     assert normalized.title == "One"
+    assert normalized.duration_minutes == 65
     assert normalized.releases[0].release_type is ReleaseType.STREAMING
     assert normalized.releases[0].release_at == datetime(2026, 9, 21, 20, tzinfo=UTC)
 
@@ -88,6 +93,7 @@ async def test_imports_scheduled_episode_before_iplayer_availability() -> None:
                         "elements": [
                             {
                                 "scheduled_start": "2026-09-26T19:00:00Z",
+                                "duration": {"value": "PT45M"},
                                 "episode": {
                                     **episode("planned", "Demo", "Series 3: Week 1", start=None),
                                     "tleo_id": "m1234567",
@@ -114,6 +120,7 @@ async def test_imports_scheduled_episode_before_iplayer_availability() -> None:
     release = result.seasons[0].episodes[0].releases[0]
     assert result.seasons[0].episodes[0].number == 1
     assert result.seasons[0].episodes[0].title == "Week 1"
+    assert result.seasons[0].episodes[0].duration_minutes == 45
     assert release.release_at == datetime(2026, 9, 26, 19, tzinfo=UTC)
     assert release.available_until is None
 

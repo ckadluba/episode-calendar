@@ -17,6 +17,8 @@ from episode_calendar.importer.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    duration_minutes_from_seconds,
+    duration_minutes_from_text,
     first_seen_release,
 )
 from episode_calendar.importer.providers.epg import filter_obsolete_seasons
@@ -79,6 +81,7 @@ class _ScheduledProgramme:
     title: str
     description: str | None
     release: NormalizedEpisodeRelease
+    duration_minutes: int | None = None
 
 
 class Channel4Provider:
@@ -172,15 +175,23 @@ class Channel4Provider:
             releases_by_id = {}
             if release is not None:
                 releases_by_id[release.external_id] = release
-            for scheduled_programme in (scheduled_releases or {}).get(episode_id, ()):
+            scheduled_programmes = (scheduled_releases or {}).get(episode_id, ())
+            for scheduled_programme in scheduled_programmes:
                 releases_by_id[None] = scheduled_programme.release
             if not releases_by_id:
                 releases_by_id[None] = first_seen_release(datetime.now(UTC))
+            duration_minutes = cls._duration_minutes(raw)
+            if duration_minutes is None:
+                for scheduled_programme in scheduled_programmes:
+                    if scheduled_programme.duration_minutes is not None:
+                        duration_minutes = scheduled_programme.duration_minutes
+                        break
             episode = NormalizedEpisode(
                 external_id=episode_id,
                 number=episode_number,
                 title=str(raw.get("fullTitle") or raw.get("title") or f"Episode {episode_number}"),
                 description=raw.get("description") or raw.get("summary"),
+                duration_minutes=duration_minutes,
                 releases=tuple(releases_by_id.values()),
             )
             seasons.setdefault(season_number, []).append(episode)
@@ -198,6 +209,7 @@ class Channel4Provider:
                         number=programme.episode_number,
                         title=programme.title,
                         description=programme.description,
+                        duration_minutes=programme.duration_minutes,
                         releases=(programme.release,),
                     )
                 )
@@ -216,6 +228,13 @@ class Channel4Provider:
                 for number, episodes_for_season in sorted(seasons.items())
             ),
         )
+
+    @staticmethod
+    def _duration_minutes(raw: dict[str, Any]) -> int | None:
+        minutes = duration_minutes_from_text(raw.get("durationLabel"))
+        if minutes is None:
+            minutes = duration_minutes_from_seconds(raw.get("durationSeconds"))
+        return minutes
 
     @staticmethod
     def _release(raw: dict[str, Any]) -> NormalizedEpisodeRelease | None:
@@ -291,6 +310,9 @@ class Channel4Provider:
                         release_type=ReleaseType.TV_BROADCAST,
                         release_at=release_at,
                         url=f"https://www.channel4.com{url}" if isinstance(url, str) else None,
+                    ),
+                    duration_minutes=duration_minutes_from_seconds(
+                        programme.get("durationSeconds")
                     ),
                 )
                 programmes_by_id.setdefault(episode_id, []).append(scheduled_programme)

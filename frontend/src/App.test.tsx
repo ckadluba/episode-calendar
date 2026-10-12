@@ -41,6 +41,7 @@ function mockApiWithEpisode() {
             number: 1,
             title: "Pilot",
             description: null,
+            duration_minutes: 47,
             platform: "RTL+",
             platform_id: "rtlplus",
             releases: [{ release_type: "streaming", release_at: new Date().toISOString(), url: "https://example.test/1", preview: false }],
@@ -215,8 +216,15 @@ describe("App preferences", () => {
     });
   });
 
-  it("hides a series from its calendar tile after confirming", async () => {
+  it("shows the episode duration in minutes when the API provides it", async () => {
     mockApiWithEpisode();
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
+    expect(screen.getByText(/Pilot · 47 Min/)).toBeInTheDocument();
+  });
+
+  it("hides a series from its calendar tile after confirming", async () => {    mockApiWithEpisode();
     render(<App />);
 
     await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
@@ -307,6 +315,7 @@ describe("calendar releases", () => {
     number: 1,
     title: "Pilot",
     description: null,
+    duration_minutes: 47,
     platform: "Joyn.at",
     platform_id: "joyn",
     releases,
@@ -374,6 +383,7 @@ describe("calendar releases", () => {
       number: 1,
       title: "Pilot",
       description: null,
+      duration_minutes: null,
       platform: "ARD Mediathek",
       platform_id: "ardmediathek",
       releases: [
@@ -403,6 +413,7 @@ describe("calendar releases", () => {
         number: episodeNumber,
         title: id,
         description: null,
+        duration_minutes: null,
         platform: "Test",
         platform_id: "test",
         releases: [],

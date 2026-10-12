@@ -1298,3 +1298,98 @@ async def test_season_anchors_read_upload_date_from_public_preview_page() -> Non
         "vorab-der-auftakt-von-staffel-6-c_2131490"
     ]
     assert anchors == {6: datetime(2025, 9, 29, tzinfo=ZoneInfo("Europe/Vienna"))}
+
+
+def test_normalize_sets_episode_duration_from_mapping() -> None:
+    payload = {
+        "entity": {"id": "4267", "metadata": {"title": "Temptation Island VIP"}},
+        "seo": {"metadata": {"title": "Temptation Island VIP"}},
+        "blocks": [
+            {
+                "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                "content": {
+                    "title": {"short": "Staffel 7"},
+                    "items": [
+                        {
+                            "itemContent": {
+                                "id": "clip-1",
+                                "title": "Folge 1",
+                                "highlight": "Staffel 7 • Folge 1 • Folge 1",
+                                "action": {"analytics": {"tealium": {"clip_type": "vi"}}},
+                            }
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+
+    result = RTLPlusProvider._normalize(
+        RTLPlusProvider.__new__(RTLPlusProvider),
+        "4267",
+        [payload],
+        durations={"clip-1": 52},
+    )
+
+    episode = result.seasons[0].episodes[0]
+    assert episode.external_id == "clip-1"
+    assert episode.duration_minutes == 52
+
+
+async def test_episode_durations_read_jsonld_from_public_episode_page() -> None:
+    pages = [
+        {
+            "entity": {"id": "4267", "metadata": {"title": "Temptation Island VIP"}},
+            "blocks": [
+                {
+                    "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                    "content": {
+                        "title": {"short": "Staffel 7"},
+                        "items": [
+                            {
+                                "itemContent": {
+                                    "id": "clip-1",
+                                    "title": "Folge 1",
+                                    "highlight": "Staffel 7 • Folge 1 • Folge 1",
+                                    "action": {
+                                        "analytics": {"tealium": {"clip_type": "vi"}},
+                                        "target": {
+                                            "type": "layout",
+                                            "value_layout": {
+                                                "id": "clip_2150934",
+                                                "seo": "folge-1",
+                                            },
+                                        },
+                                    },
+                                }
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+    ]
+    requested: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return httpx.Response(
+            200,
+            text=(
+                '<script type="application/ld+json">'
+                '{"@type": "TVEpisode","duration": "PT51M56S"}'
+                "</script>"
+            ),
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    try:
+        durations = await provider._episode_durations(
+            client, pages, "https://plus.rtl.de/temptation-island-vip-p_4267"
+        )
+    finally:
+        await client.aclose()
+
+    assert requested == ["https://plus.rtl.de/temptation-island-vip-p_4267/video/folge-1-c_2150934"]
+    assert durations == {"clip-1": 52}

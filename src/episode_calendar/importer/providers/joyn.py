@@ -21,6 +21,9 @@ from episode_calendar.importer.providers.base import (
     NormalizedEpisodeRelease,
     NormalizedSeason,
     NormalizedSeries,
+    duration_minutes_from_iso8601,
+    duration_minutes_from_seconds,
+    duration_minutes_from_text,
     first_seen_release,
 )
 from episode_calendar.importer.providers.epg import (
@@ -55,6 +58,10 @@ query EpisodeCalendarSeries($path: String!) {
                         title
                         path
                         markings
+                        video {
+                            id
+                            duration
+                        }
                     }
                 }
             }
@@ -78,6 +85,10 @@ query EpisodeCalendarSeason($id: ID!, $first: Int!, $offset: Int!) {
             title
             path
             markings
+            video {
+                id
+                duration
+            }
         }
     }
 }
@@ -479,6 +490,16 @@ class JoynProvider:
         preview = preview_marked and (starts_at is None or airdate is None or starts_at < airdate)
         path = episode.get("path")
         url = self._episode_url(path)
+        video = episode.get("video")
+        duration_minutes = None
+        if isinstance(video, Mapping):
+            video_duration = video.get("duration")
+            if isinstance(video_duration, (int, float)) and not isinstance(video_duration, bool):
+                duration_minutes = duration_minutes_from_seconds(video_duration)
+            elif isinstance(video_duration, str):
+                duration_minutes = duration_minutes_from_iso8601(video_duration)
+                if duration_minutes is None:
+                    duration_minutes = duration_minutes_from_text(video_duration)
         releases: list[NormalizedEpisodeRelease] = []
         if starts_at is not None:
             releases.append(
@@ -521,6 +542,7 @@ class JoynProvider:
                 external_id=episode_id,
                 number=self._optional_int(episode.get("number"), "episode.number"),
                 title=self._required_string(episode.get("title"), "episode.title"),
+                duration_minutes=duration_minutes,
                 releases=tuple(releases),
             )
         except ValidationError as exc:
