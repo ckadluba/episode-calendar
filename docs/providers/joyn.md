@@ -1,57 +1,49 @@
-# Joyn Austria provider
+# Joyn Austria (`joyn`)
 
-`JoynProvider` retrieves public catalog metadata from Joyn Austria and returns the generic
-normalized provider DTOs. It does not play or download video and does not require a Joyn user
-account.
+`JoynProvider` reads public catalogue metadata from Joyn **Austria** over the Joyn web GraphQL API
+(`https://api.joyn.de/graphql`). It does not play or download video and needs no Joyn account. See
+the [shared provider behavior](README.md) for everything it does *not* document here.
 
-## Current API contract
+## Specialties and deviations
 
-The following contract was verified against the live Austria website and API on 2026-09-06,
-using the public series page at [joyn.at](https://www.joyn.at/serien/so-denkt-oesterreich):
+- **Path-based series identifier.** The configured `id` is a `joyn.at` series path/slug or a full
+  URL; `_series_path()` strips the host or otherwise prefixes `/serien/`. The normalized series
+  `external_id` is the `series.id` returned by the API, not the configured value (`joyn.py:196`,
+  `joyn.py:530`).
+- **Full GraphQL POST documents** (not persisted queries) with `operationName`/`variables`/`query`
+  for the operations `EpisodeCalendarSeries`, `EpisodeCalendarSeason`, and `EpisodeCalendarJoynEpg`
+  (`joyn.py:36`, `joyn.py:67`, `joyn.py:87`).
+- **Required public web-client key and fixed headers.** `x-api-key` is taken from `JOYN_API_KEY`
+  and raises when missing; requests also send `Joyn-Platform: web`,
+  `Joyn-Client-Version: 5.1579.1`, `Joyn-Distribution-Tenant: JOYN_AT`, `Joyn-Country: AT`
+  (`joyn.py:180`, `joyn.py:414`).
+- **Own retry loop** instead of the shared `request_with_retries()`: retries `429`/`5xx` and
+  request errors with exponential backoff + jitter, honouring `Retry-After` only when all-digit
+  (`joyn.py:429`).
+- **Response guards** require `data.page.__typename == "SeriesPage"`; GraphQL `errors[]` becomes
+  `JoynGraphQLError` and any other structural surprise becomes `JoynMalformedResponseError`
+  (`joyn.py:205`).
+- **In-season pagination**: seasons are fetched in pages of 20 via `EpisodeCalendarSeason`, keyed
+  by the season id, until `numberOfEpisodes` is reached; empty or over-fetched pages raise
+  (`joyn.py:48`, `joyn.py:213`, `joyn.py:570`).
+- **Release mapping**: `startsAt` (epoch or ISO) → `streaming` `release_at`; `airdate` is added as
+  a separate `tv_broadcast` release only when it differs from `startsAt`, and is the fallback
+  `streaming` date when `startsAt` is missing; `endsAt` → `available_until`; `path` (prefixed with
+  `https://www.joyn.at`) → `url` (`joyn.py:483`, `joyn.py:500`).
+- **Conditional preview**: a `PREVIEW` marking only sets `preview` while `startsAt < airdate` (or a
+  date is missing), so a regular release after an early drop is not marked a second time
+  (`joyn.py:479`).
+- **Own EPG source**: `EpisodeCalendarJoynEpg` reads `liveStreams`/`epgEvents` day-by-day over a
+  28-day look-ahead, skips blocks longer than 4h, and builds ids of the form
+  `epg:<stream>:<program>:<epoch>` (`joyn.py:87`, `joyn.py:376`). EPG results are cached per
+  `(endpoint, api_key, date)` across concurrent series imports (`joyn.py:150`).
+- **EPG merge inputs**: `merge_epg(..., slots=derive_broadcast_slots(running_season, Europe/Vienna),
+  timezone=Europe/Vienna, tolerance=2h, next_episode_external_id="epg:next:<season>:<n>")`. Only
+  events matching the series title or an existing catalogue episode are considered, and events
+  within the 15-minute broadcast tolerance of a catalogue release are dropped (`joyn.py:293`,
+  `joyn.py:325`). EPG failures are logged and swallowed (`joyn.py:279`).
+- **Undated catalogue episodes** emit the shared `first_seen_release()` placeholder directly
+  (`joyn.py:518`); `description` is never populated.
 
-- GraphQL endpoint: `https://api.joyn.de/graphql`.
-- The web application sends a GraphQL document by `POST` with `operationName`, `variables`, and
-  `query`. The provider uses this full-document form.
-- Requests include `Joyn-Platform: web`, `Joyn-Distribution-Tenant: JOYN_AT`, `Joyn-Country: AT`,
-  a client-version header, and `x-api-key`.
-- The public web API key is client configuration (`API_GW_API_KEY` in the web bundle), not a user
-  credential. Set it at runtime as `JOYN_API_KEY`; never commit it.
-- The series query uses `page(path: ...)` and returns a `SeriesPage` containing `series.id`,
-  `title`, `description`, and `seasons`.
-- Season results contain `id`, `number`, `numberOfEpisodes`, and `episodes`. Episode fields used
-  here are `id`, `number`, `title`, `startsAt`, `airdate`, `endsAt`, `path`, and `markings`.
-- The web client requests episodes in pages of 20 with an offset. `JoynProvider` follows every
-  page until `numberOfEpisodes` is reached and fails if a page is missing or inconsistent.
-- Current responses expose `startsAt` and `airdate` as Unix timestamps. `startsAt` is used as the
-  streaming release time because it represents when the episode becomes available on Joyn;
-  `airdate` remains the fallback when `startsAt` is missing. Both are converted to timezone-aware
-  UTC datetimes (preserving the instant). ISO-8601 values with an offset are also accepted.
-- Joyn marks advance releases with `markings: ["PREVIEW"]`; this is exposed as the generic
-  `preview` release flag and displayed as `Vorab` in the calendar.
-
-The website currently uses persisted GET operations named `SeriesDetailNewPageStatic` and
-`Season`. Their hashes and the web bundle's client version are deployment details that can change.
-The provider sends the equivalent full POST documents because the web client itself falls back to
-that form when a persisted query is unavailable.
-
-## Assumptions and limitations
-
-Mapping Joyn's `startsAt` to a `streaming` release is a domain interpretation based on the public
-website behavior. `airdate` is the linear broadcast date, not a guaranteed general free-streaming
-date. `endsAt`, when present, is mapped to `available_until`; missing both `startsAt` and
-`airdate` produces no release.
-Episode URLs are derived from the returned relative `path`, and no separate release identifier is
-currently exposed, so release `external_id` remains unset. These behaviors are isolated here and
-may need adjustment if Joyn changes its schema.
-
-Joyn's catalog API is private/undocumented. GraphQL fields, headers, pagination limits, the public
-key, and operation behavior may change without notice. Authentication, playback, DRM, and import
-scheduling are intentionally outside this provider.
-
-Example:
-
-```python
-from episode_calendar.importer.providers.joyn import JoynProvider
-
-series = await JoynProvider(api_key="<JOYN_API_KEY>").get_series("so-denkt-oesterreich")
-```
+The endpoint and headers were verified against the live Austria site on 2026-09-06. The API is
+private and undocumented and may change without notice.

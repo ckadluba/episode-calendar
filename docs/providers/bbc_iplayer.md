@@ -1,28 +1,36 @@
-# BBC iPlayer provider
+# BBC iPlayer (`bbc_iplayer`)
 
-`BBCIPlayerProvider` reads public programme metadata from the BBC iPlayer Business Layer API.
-It accepts BBC programme PIDs, for example `m002csng` for *The Celebrity Traitors* and
-`b006m8dq` for *Strictly Come Dancing*.
+`BBCIPlayerProvider` reads public programme metadata from the BBC iPlayer Business Layer (IBL) API.
+The configured `id` is a BBC programme PID (e.g. `m002csng`). See the
+[shared provider behavior](README.md) for the baseline.
 
-The BBC entries in `config/series.json` are objects with `id` and an optional `comment` field.
-The comment is documentation for humans; the importer uses only the PID in `id`. This is the
-valid-JSON equivalent of an inline comment and avoids maintaining a separate mapping file.
+## Specialties and deviations
 
-The provider uses `/programmes/{pid}` for series metadata, the paginated
-`/programmes/{pid}/episodes` endpoint for the catalogue, and the configured BBC channel schedule
-endpoints for planned future episodes. Planned broadcasts use their scheduled start as the
-`streaming` release, even while the iPlayer episode is still unavailable. Already available
-episodes use the first original version's iPlayer availability start and end. If no version
-availability is present, the provider falls back to the episode's `release_date_time`.
-
-Schedule channels and look-ahead days can be configured with `BBC_IPLAYER_SCHEDULE_CHANNELS` and
-`BBC_IPLAYER_SCHEDULE_DAYS`; the defaults are BBC One London and 14 days.
-
-BBC PIDs do not always expose a separate season entity. The adapter extracts `Series N` or
-`Cyfres N` from the episode subtitle and puts unnumbered episodes into a `Specials` season.
-Episodes without either an availability start or a release date are omitted because they cannot
-be represented in the release calendar.
-
-The API is public web metadata rather than a versioned partner contract. BBC may change its
-fields or availability behaviour, and the resulting iPlayer links can require a UK account or
-TV licence and may not play from Austria. No BBC credentials are required by the importer.
+- **Public IBL API, no credentials.** Programme `/programmes/{pid}`, the paginated catalogue
+  `/programmes/{pid}/episodes` (`per_page=100`), and the channel schedule
+  `/channels/{channel}/schedule/{YYYY-MM-DD}` (`bbc_iplayer.py:98`, `bbc_iplayer.py:108`,
+  `bbc_iplayer.py:156`).
+- **Own pagination/retry** instead of the shared helpers: a page whose number does not match the
+  request, or an empty page before the total, raises (`bbc_iplayer.py:120`, `bbc_iplayer.py:186`).
+- **Seasons only via subtitle.** The season number is parsed from the episode subtitle with
+  `(?:series|cyfres)\s+(\d+)`; a subtitle without it becomes the `Specials` season. Season ids are
+  synthesized as `"{pid}:season:{n|specials}"` and specials sort last (`bbc_iplayer.py:335`,
+  `bbc_iplayer.py:239`).
+- **Episode numbers** also come from the subtitle (`Series N: [Episode ]M`); a bare `Episode N`
+  without a `Series N:` prefix yields no number (`bbc_iplayer.py:340`).
+- **Release mapping, in priority order** (`bbc_iplayer.py:299`): a schedule-injected planned start;
+  otherwise the `original` version's availability start/end; otherwise the episode's
+  `release_date_time`. No release is produced if none of these exist.
+- **Planned future episodes are emitted as `streaming` releases** (not `tv_broadcast`) from the
+  channel schedule with `date_from_api` left `true`; already-known catalogue episodes are not
+  duplicated (`bbc_iplayer.py:167`, `bbc_iplayer.py:281`).
+- **Schedule window** starts today (no look-back) and runs `BBC_IPLAYER_SCHEDULE_DAYS` (default 14)
+  over `BBC_IPLAYER_SCHEDULE_CHANNELS` (default `bbc_one_london`); per-day payloads are cached and
+  `404`s tolerated (`bbc_iplayer.py:149`, `bbc_iplayer.py:160`).
+- **Placeholder path**: an episode with a number but no release gets `first_seen_release()`
+  (`date_from_api=false`, `placeholder=true`); an episode with neither a release nor a number is
+  dropped (`bbc_iplayer.py:288`, `bbc_iplayer.py:264`).
+- **URL** is always synthesized as `https://www.bbc.co.uk/iplayer/episode/{id}`
+  (`bbc_iplayer.py:276`).
+- Never sets `preview`, `rerun`, or a derived (non-placeholder) `date_from_api=false` date. It only
+  calls the shared `filter_obsolete_seasons()` and does not use `merge_epg()` (`bbc_iplayer.py:142`).

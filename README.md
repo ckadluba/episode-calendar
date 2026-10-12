@@ -43,7 +43,8 @@ Provider adapters implement the generic abstraction in `importer/providers/base.
 provider (Joyn Austria, RTL+, BBC iPlayer, Channel 4, ARD Mediathek, STV Player, Amazon Prime DE,
 and Amazon Prime UK) is isolated in its own module. The importer fetches complete series trees,
 normalizes them, and persists them. API requests read PostgreSQL and never call providers
-directly.
+directly. The shared adapter behavior and each provider's specialties are documented under
+[`docs/providers/`](docs/providers/README.md).
 
 ## Development
 

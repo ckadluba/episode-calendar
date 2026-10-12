@@ -1,15 +1,34 @@
-# Amazon Prime DE
+# Amazon Prime DE (`amazon_prime_de`)
 
-The provider reads the JSON detail data used by the public German Prime Video web
-application:
+`AmazonPrimeDEProvider` reads the JSON detail data used by the public German Prime Video web app at
+`GET {base_url}/gp/video/api/getDetailPage`. The configured `id` is the Prime Video title ID (an
+ASIN or `amzn1.dv.gti...`). See the [shared provider behavior](README.md) for the baseline.
 
-`GET https://www.primevideo.com/-/de/gp/video/api/getDetailPage`
+## Specialties and deviations
 
-The configured series identifier is the Prime Video title ID (`ASIN` or
-`amzn1.dv.gti...`). The endpoint is not a documented consumer API and may change
-without notice. Amazon's documented Prime Video APIs are partner APIs and require
-appropriate partner access.
-
-The response must contain episode objects with a title ID, season and episode
-numbers, and a release or availability date. Date-only values are interpreted as
-midnight in the German timezone; timestamps with an offset are converted to UTC.
+- **Single request, no credentials.** One `getDetailPage` call with `titleID`, `isElcano=1`, and
+  `sections=Atf`/`Btf`, plus special `Accept-Language: de-DE,...` and `X-Requested-With` headers
+  (`amazon_prime_de.py:116`).
+- **Schema-agnostic recursive walk** rather than a fixed payload model: `_collect_episodes` scans
+  arbitrary nested mappings/lists, and the series title is the first of
+  `seriesTitle`/`showTitle`/`parentTitle`, else `title`/`name`/`titleName` (`amazon_prime_de.py:221`,
+  `amazon_prime_de.py:156`).
+- **Identifier validation** only rejects empty ids and ids containing `/` or `?`
+  (`amazon_prime_de.py:105`).
+- **Numbering** is read from `seasonNumber`/`seasonIndex`/`season` and
+  `episodeNumber`/`episodeIndex`/`episodeSequence` (ints > 0); an initial season hint comes from the
+  first positive `seasonNumber` found anywhere. Episodes missing a number or id are dropped, and
+  duplicates keep the first occurrence (`amazon_prime_de.py:235`, `amazon_prime_de.py:165`,
+  `amazon_prime_de.py:256`).
+- **Season ids** are `"{title_id}:season:{n|specials}"`; `None` seasons become `Specials`, sorted
+  last (`amazon_prime_de.py:210`).
+- **Release mapping**: the first present of `releaseDateTime`, `releaseDate`,
+  `availabilityStartDate`, `originalReleaseDate`, `startDate`. Date-only or naive values are
+  stamped `Europe/Berlin` then converted to UTC (with a German month-name fallback); numeric epochs
+  are read as milliseconds when > 1e10, else seconds (`amazon_prime_de.py:276`,
+  `amazon_prime_de.py:291`).
+- **Always one `streaming` release per episode**, `available_until` never set; an undated episode
+  gets `first_seen_release()`; url is `https://www.primevideo.com/-/{marketplace}/detail/{id}`
+  (`amazon_prime_de.py:184`, `amazon_prime_de.py:179`).
+- Uses the shared `request_with_retries()` and applies only `filter_obsolete_seasons()`
+  (`amazon_prime_de.py:114`, `amazon_prime_de.py:147`).

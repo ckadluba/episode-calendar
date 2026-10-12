@@ -5,7 +5,9 @@ episode, and release records. It uses Python, FastAPI, async SQLAlchemy 2.x, Pos
 Alembic, httpx, pytest, uv, and Docker Compose.
 
 - Keep provider HTTP/payload details inside `src/episode_calendar/importer/providers`; adapters
-  return the normalized models defined in `importer/providers/base.py`.
+  return the normalized models defined in `importer/providers/base.py`. The shared adapter behavior
+  is documented in `docs/providers/README.md` and each adapter's specialties/deviations in
+  `docs/providers/<provider>.md`; keep those pages in sync when an adapter changes.
 - Joyn Austria's verified-vs-assumed API contract is documented in `docs/providers/joyn.md`; keep
   its headers, GraphQL details, and API key handling inside the Joyn adapter.
 - The initial provider lists live in `config/series.json` (override with `SERIES_CONFIG_PATH`).
