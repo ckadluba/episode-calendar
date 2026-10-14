@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -1336,7 +1336,7 @@ def test_normalize_sets_episode_duration_from_mapping() -> None:
     assert episode.duration_minutes == 52
 
 
-async def test_episode_durations_read_jsonld_from_public_episode_page() -> None:
+async def test_episode_page_metadata_reads_duration_and_upload_date() -> None:
     pages = [
         {
             "entity": {"id": "4267", "metadata": {"title": "Temptation Island VIP"}},
@@ -1377,7 +1377,8 @@ async def test_episode_durations_read_jsonld_from_public_episode_page() -> None:
             200,
             text=(
                 '<script type="application/ld+json">'
-                '{"@type": "TVEpisode","duration": "PT51M56S"}'
+                '{"@type": "TVEpisode","duration": "PT51M56S",'
+                ' "uploadDate": "2025-09-29T00:00:00+02:00"}'
                 "</script>"
             ),
         )
@@ -1385,7 +1386,7 @@ async def test_episode_durations_read_jsonld_from_public_episode_page() -> None:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     provider = RTLPlusProvider.__new__(RTLPlusProvider)
     try:
-        durations = await provider._episode_durations(
+        durations, upload_dates = await provider._episode_page_metadata(
             client, pages, "https://plus.rtl.de/temptation-island-vip-p_4267"
         )
     finally:
@@ -1393,3 +1394,384 @@ async def test_episode_durations_read_jsonld_from_public_episode_page() -> None:
 
     assert requested == ["https://plus.rtl.de/temptation-island-vip-p_4267/video/folge-1-c_2150934"]
     assert durations == {"clip-1": 52}
+    assert upload_dates == {"clip-1": datetime(2025, 9, 29, tzinfo=ZoneInfo("Europe/Vienna"))}
+
+
+async def test_episode_page_metadata_skips_unavailable_and_unrelated_pages() -> None:
+    pages = [
+        {
+            "entity": {"id": "4267", "metadata": {"title": "Temptation Island VIP"}},
+            "blocks": [
+                {
+                    "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                    "content": {
+                        "title": {"short": "Staffel 7"},
+                        "items": [
+                            {
+                                "itemContent": {
+                                    "id": f"clip-{number}",
+                                    "title": f"Folge {number}",
+                                    "highlight": f"Staffel 7 • Folge {number} • Folge {number}",
+                                    "action": {
+                                        "analytics": {"tealium": {"clip_type": "vi"}},
+                                        "target": {
+                                            "type": "layout",
+                                            "value_layout": {
+                                                "id": f"clip_{number}",
+                                                "seo": f"folge-{number}",
+                                            },
+                                        },
+                                    },
+                                }
+                            }
+                            for number in (1, 2, 3)
+                        ],
+                    },
+                }
+            ],
+        }
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("folge-2-c_2"):
+            return httpx.Response(503, text="temporarily unavailable")
+        if "/video/folge-3-" in url:
+            return httpx.Response(200, text="<html><body>no structured data</body></html>")
+        return httpx.Response(
+            200,
+            text=(
+                '<script type="application/ld+json">'
+                '{"@type": "TVEpisode","duration": "PT52M",'
+                ' "uploadDate": "2025-10-08T00:01:00+02:00"}'
+                "</script>"
+            ),
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    try:
+        durations, upload_dates = await provider._episode_page_metadata(
+            client, pages, "https://plus.rtl.de/der-promihof-p_68990"
+        )
+    finally:
+        await client.aclose()
+
+    assert durations == {"clip-1": 52}
+    assert upload_dates == {"clip-1": datetime(2025, 10, 8, 0, 1, tzinfo=VIENNA)}
+
+
+_PROMIHOF_S1_EPISODES: dict[int, tuple[str, str]] = {
+    1: ("PT50M", "2025-10-08T00:01:00+02:00"),
+    2: ("PT48M", "2025-10-08T00:01:00+02:00"),
+    3: ("PT48M", "2025-10-15T00:01:00+02:00"),
+    4: ("PT47M", "2025-10-15T00:01:00+02:00"),
+    5: ("PT47M", "2025-10-22T00:01:00+02:00"),
+    6: ("PT49M", "2025-10-22T00:01:00+02:00"),
+    7: ("PT45M", "2025-10-29T00:01:00+01:00"),
+    8: ("PT49M", "2025-10-29T00:01:00+01:00"),
+    9: ("PT47M", "2025-11-05T00:01:00+01:00"),
+    10: ("PT49M", "2025-11-05T00:01:00+01:00"),
+    11: ("PT46M", "2025-11-26T20:14:00+01:00"),
+    12: ("PT47M", "2025-11-26T21:16:00+01:00"),
+}
+
+
+def _promihof_layout_page() -> dict:
+    items = [
+        {
+            "itemContent": {
+                "id": f"promihof-{number}",
+                "title": f"Folge {number}",
+                "highlight": f"Staffel 1 • Folge {number} • Folge {number}",
+                "action": {
+                    "analytics": {"tealium": {"clip_type": "vi"}},
+                    "target": {
+                        "type": "layout",
+                        "value_layout": {"id": f"clip_{1000 + number}", "seo": f"folge-{number}"},
+                    },
+                },
+            }
+        }
+        for number in _PROMIHOF_S1_EPISODES
+    ]
+    return {
+        "entity": {
+            "type": "program",
+            "id": "68990",
+            "metadata": {"code": "der-promihof", "title": "Der Promihof"},
+        },
+        "seo": {"metadata": {"title": "Der Promihof 2099"}},
+        "blocks": [
+            {
+                "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                "content": {
+                    "title": {"short": "Neue Staffel ab 22. Oktober"},
+                    "items": [
+                        {
+                            "itemContent": {
+                                "id": "bonus-1",
+                                "highlight": (
+                                    "Bonus-Inhalte 2026 • Folge 1 • "
+                                    "Diese Promis ziehen auf den Hof!"
+                                ),
+                            }
+                        },
+                        {
+                            "itemContent": {
+                                "id": "bonus-3",
+                                "highlight": (
+                                    "Bonus-Inhalte 2026 • Folge 3 • Die ersten Minuten vorab"
+                                ),
+                            }
+                        },
+                    ],
+                },
+            },
+            {
+                "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                "content": {"title": None, "items": items},
+            },
+        ],
+    }
+
+
+async def test_fetch_reads_episode_upload_dates_for_completed_season_from_api() -> None:
+    # End-to-end over the mocked RTL+ API: the layout page only announces the next
+    # season ("Neue Staffel ab 22. Oktober") and lists Staffel 1 without any dates,
+    # while each season-1 episode page still publishes its runtime and original
+    # streaming date. The finished season must keep those real 2025 dates instead of
+    # being dated with the upcoming cadence, and S2 E1 must be synthesized.
+    layout_page = _promihof_layout_page()
+    requested: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        requested.append(request.url.path)
+        if "/video/" in url:
+            number = int(url.rsplit("/", 1)[-1].split("-")[1])
+            duration, upload = _PROMIHOF_S1_EPISODES[number]
+            return httpx.Response(
+                200,
+                text=(
+                    '<script type="application/ld+json">'
+                    f'{{"@type": "TVEpisode","duration": "{duration}",'
+                    f' "uploadDate": "{upload}"}}'
+                    "</script>"
+                ),
+            )
+        return httpx.Response(200, json=layout_page)
+
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    provider._endpoint_template = "https://api.test/layout/{program_id}"
+    provider._max_retries = 0
+    provider._backoff = 0.0
+    provider._bedrock_token = "token"
+    provider._authorization = "auth"
+    provider._oidc_client_secret = None
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        series = await provider._fetch(client, "68990", "https://plus.rtl.de/der-promihof-p_68990")
+    finally:
+        await client.aclose()
+
+    assert set(requested) == {
+        "/layout/68990",
+        *(
+            f"/der-promihof-p_68990/video/folge-{number}-c_{1000 + number}"
+            for number in _PROMIHOF_S1_EPISODES
+        ),
+    }
+
+    assert [season.number for season in series.seasons] == [1, 2]
+    season_one = next(season for season in series.seasons if season.number == 1)
+    assert [episode.number for episode in season_one.episodes] == list(range(1, 13))
+    for episode in season_one.episodes:
+        expected_duration = int(_PROMIHOF_S1_EPISODES[episode.number][0][2:-1])
+        expected_upload = datetime.fromisoformat(_PROMIHOF_S1_EPISODES[episode.number][1])
+        assert episode.duration_minutes == expected_duration
+        assert len(episode.releases) == 1
+        assert episode.releases[0].release_at == expected_upload
+        assert episode.releases[0].date_from_api is False
+        assert episode.releases[0].placeholder is False
+
+    season_two = next(season for season in series.seasons if season.number == 2)
+    assert [episode.number for episode in season_two.episodes] == [1]
+    premiere = season_two.episodes[0]
+    assert premiere.external_id == "68990:season:2:episode:1"
+    assert premiere.releases[0].release_at == datetime(2098, 10, 22, tzinfo=VIENNA)
+    assert premiere.releases[0].date_from_api is True
+
+
+def test_normalize_prefers_catalogue_schedule_over_episode_upload_date() -> None:
+    # A dated catalogue schedule always wins over the episode-page uploadDate fallback,
+    # so a live season is never re-dated from the public page.
+    payload = {
+        "entity": {"id": "68990", "metadata": {"title": "Der Promihof"}},
+        "seo": {
+            "metadata": {
+                "title": "Der Promihof 2099",
+                "text": "**Folge 1** | Der Promihof | 22.10., 20:15 Uhr",
+            }
+        },
+        "blocks": [
+            {
+                "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                "content": {
+                    "title": {"short": "Staffel 1"},
+                    "items": [
+                        {
+                            "itemContent": {
+                                "id": f"promihof-{number}",
+                                "title": f"Folge {number}",
+                                "highlight": f"Staffel 1 • Folge {number} • Folge {number}",
+                            }
+                        }
+                        for number in (1, 2)
+                    ],
+                },
+            },
+        ],
+    }
+
+    result = RTLPlusProvider._normalize(
+        RTLPlusProvider.__new__(RTLPlusProvider),
+        "68990",
+        [payload],
+        upload_dates={
+            "promihof-1": datetime(2025, 10, 8, tzinfo=VIENNA),
+            "promihof-2": datetime(2025, 10, 8, tzinfo=VIENNA),
+        },
+    )
+
+    episodes = {episode.number: episode for episode in result.seasons[0].episodes}
+    assert episodes[1].releases[0].release_at == datetime(2099, 10, 22, 20, 15, tzinfo=VIENNA)
+    assert episodes[1].releases[0].date_from_api is True
+    assert episodes[2].releases[0].release_at == datetime(2025, 10, 8, tzinfo=VIENNA)
+    assert episodes[2].releases[0].date_from_api is False
+
+
+def _new_season_block(*, title: str, highlights: list[str]):
+    return {
+        "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+        "content": {
+            "title": {"short": title},
+            "items": [
+                {"itemContent": {"id": f"clip-{index}", "title": "Demo", "highlight": highlight}}
+                for index, highlight in enumerate(highlights)
+            ],
+        },
+    }
+
+
+def test_announces_unnumbered_new_season_only_without_item_season_labels() -> None:
+    assert RTLPlusProvider._announces_unnumbered_new_season(
+        _new_season_block(
+            title="Neue Staffel ab 22. Oktober",
+            highlights=[
+                "Bonus-Inhalte 2026 • Folge 1 • Diese Promis ziehen auf den Hof!",
+                "Bonus-Inhalte 2026 • Folge 3 • Die ersten Minuten vorab",
+            ],
+        )
+    )
+    assert not RTLPlusProvider._announces_unnumbered_new_season(
+        _new_season_block(title="Neue Staffel", highlights=["Staffel 6 • Folge 1"])
+    )
+    assert not RTLPlusProvider._announces_unnumbered_new_season(
+        _new_season_block(title="Staffel 7 ab 12. Oktober", highlights=["Folge 1"])
+    )
+    assert not RTLPlusProvider._announces_unnumbered_new_season(
+        {
+            "analytics": {"tealium": {"from": "feature.list"}},
+            "content": {"title": {"short": "Neue Staffel"}, "items": [{}]},
+        }
+    )
+
+
+def test_normalize_derives_higher_season_from_unnumbered_new_season_block() -> None:
+    # RTL+ introduces the upcoming season in a block titled only "Neue Staffel ab
+    # 22. Oktober" whose items carry no "Staffel N" label. The number is derived from the
+    # previous season (1 → 2). The finished season keeps its real dates, read from each
+    # episode page's uploadDate, instead of being dated with the upcoming cadence.
+    payload = {
+        "entity": {"id": "68990", "metadata": {"title": "Der Promihof"}},
+        "seo": {"metadata": {"title": "Der Promihof 2099"}},
+        "blocks": [
+            _new_season_block(
+                title="Neue Staffel ab 22. Oktober",
+                highlights=[
+                    "Bonus-Inhalte 2026 • Folge 1 • Diese Promis ziehen auf den Hof!",
+                    "Bonus-Inhalte 2026 • Folge 3 • Die ersten Minuten vorab",
+                ],
+            ),
+            {
+                "analytics": {"tealium": {"from": "feature.videos_by_season_by_program"}},
+                "content": {
+                    "title": None,
+                    "items": [
+                        {
+                            "itemContent": {
+                                "id": f"clip-{episode_number}",
+                                "title": f"Folge {episode_number}",
+                                "highlight": (
+                                    f"Staffel 1 • Folge {episode_number} • Folge {episode_number}"
+                                ),
+                            }
+                        }
+                        for episode_number in range(1, 13)
+                    ],
+                },
+            },
+        ],
+    }
+    upload_dates = {
+        f"clip-{episode_number}": datetime(2025, 10, 8, tzinfo=VIENNA)
+        + timedelta(weeks=(episode_number - 1) // 2)
+        for episode_number in range(1, 13)
+    }
+
+    result = RTLPlusProvider._normalize(
+        RTLPlusProvider.__new__(RTLPlusProvider),
+        "68990",
+        [payload],
+        series_url="https://plus.rtl.de/der-promihof-p_68990",
+        upload_dates=upload_dates,
+    )
+
+    assert [season.number for season in result.seasons] == [1, 2]
+    season_one = result.seasons[0]
+    assert all(
+        release.release_at == datetime(2025, 10, 8, tzinfo=VIENNA)
+        if episode.number <= 2
+        else release.release_at > datetime(2025, 10, 8, tzinfo=VIENNA)
+        for episode in season_one.episodes
+        for release in episode.releases
+    )
+    assert all(
+        not release.placeholder for episode in season_one.episodes for release in episode.releases
+    )
+    season_two = result.seasons[1]
+    episode = season_two.episodes[0]
+    assert episode.number == 1
+    assert episode.external_id == "68990:season:2:episode:1"
+    # Title year 2099 → start 22. Oktober rolled back one year to stay future-dated.
+    assert episode.releases[0].release_at == datetime(2098, 10, 22, tzinfo=VIENNA)
+    assert episode.releases[0].date_from_api is True
+    assert episode.releases[0].placeholder is False
+
+
+def test_normalize_keeps_explicit_season_in_neue_staffel_block() -> None:
+    payload = {
+        "entity": {"id": "11271", "metadata": {"title": "Demo"}},
+        "seo": {"metadata": {"title": "Demo"}},
+        "blocks": [
+            _new_season_block(title="Neue Staffel", highlights=["Staffel 6 • Folge 1 • Folge 1"]),
+        ],
+    }
+
+    result = RTLPlusProvider._normalize(
+        RTLPlusProvider.__new__(RTLPlusProvider), "11271", [payload]
+    )
+
+    assert [season.number for season in result.seasons] == [6]

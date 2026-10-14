@@ -68,6 +68,10 @@ _WEEKDAY_RE = re.compile(
     re.IGNORECASE,
 )
 _ANCHOR_RE = re.compile(r"Auftakt von Staffel\s+(\d+)", re.IGNORECASE)
+_NEW_SEASON_RE = re.compile(
+    r"\b(?:neue|neuen|neuer|nächste|nächsten|kommende|kommenden|new)\s+Staffel\b",
+    re.IGNORECASE,
+)
 _JSONLD_RE = re.compile(
     r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
     re.IGNORECASE | re.DOTALL,
@@ -602,13 +606,14 @@ class RTLPlusProvider:
                 raise RTLPlusMalformedResponseError("invalid RTL+ pagination")
             page = next_page
         season_anchors = await self._season_anchors(client, pages, series_url)
-        durations = await self._episode_durations(client, pages, series_url)
+        durations, upload_dates = await self._episode_page_metadata(client, pages, series_url)
         return self._normalize(
             program_id,
             pages,
             series_url=series_url,
             season_anchors=season_anchors,
             durations=durations,
+            upload_dates=upload_dates,
         )
 
     async def _season_anchors(
@@ -640,36 +645,46 @@ class RTLPlusProvider:
                 anchors[season_number] = anchor
         return anchors
 
-    async def _episode_durations(
+    async def _episode_page_metadata(
         self,
         client: httpx.AsyncClient,
         pages: list[dict[str, Any]],
         series_url: str | None,
-    ) -> dict[str, int]:
-        """Read each episode's runtime from its public page's JSON-LD.
+    ) -> tuple[dict[str, int], dict[str, datetime]]:
+        """Read each episode's runtime and upload date from its public page's JSON-LD.
 
-        RTL+'s layout exposes no duration field, but the public episode page carries the
-        runtime as a schema.org ``duration`` (for example ``PT51M56S``). Every episode is
-        fetched once, concurrently; a missing or failed lookup is logged and skipped.
+        RTL+'s layout exposes neither field, but the public episode page carries the
+        runtime as a schema.org ``duration`` (for example ``PT51M56S``) and the streaming
+        release as an ``uploadDate``. The upload date is the only date RTL+ still exposes
+        for a completed season, whose catalogue block lists its episodes without dates, so
+        it is returned as a fallback date. Every episode is fetched once, concurrently; a
+        missing or failed lookup is logged and skipped.
         """
 
         urls = self._episode_page_urls(pages, series_url)
         if not urls:
-            return {}
+            return {}, {}
         semaphore = asyncio.Semaphore(8)
 
-        async def resolve(identifier: str, url: str) -> tuple[str, int | None]:
+        async def resolve(identifier: str, url: str) -> tuple[str, int | None, datetime | None]:
             async with semaphore:
                 try:
-                    return identifier, await self._fetch_duration_minutes(client, url)
-                except Exception as exc:  # A missing runtime must not fail the import.
-                    logger.warning("RTL+ episode duration unavailable for %s: %s", url, exc)
-                    return identifier, None
+                    documents = await self._fetch_jsonld_documents(client, url)
+                except Exception as exc:  # A missing page must not fail the import.
+                    logger.warning("RTL+ episode page unavailable for %s: %s", url, exc)
+                    return identifier, None, None
+            return identifier, *RTLPlusProvider._document_duration_and_upload(documents)
 
         results = await asyncio.gather(
             *(resolve(identifier, url) for identifier, url in urls.items())
         )
-        return {identifier: minutes for identifier, minutes in results if minutes is not None}
+        durations = {
+            identifier: minutes for identifier, minutes, _ in results if minutes is not None
+        }
+        upload_dates = {
+            identifier: upload for identifier, _, upload in results if upload is not None
+        }
+        return durations, upload_dates
 
     @staticmethod
     def _episode_page_urls(pages: list[dict[str, Any]], series_url: str | None) -> dict[str, str]:
@@ -763,15 +778,27 @@ class RTLPlusProvider:
                 continue
         return None
 
-    async def _fetch_duration_minutes(self, client: httpx.AsyncClient, url: str) -> int | None:
-        for data in await self._fetch_jsonld_documents(client, url):
-            value = RTLPlusProvider._find_jsonld_string(data, "duration")
-            if value is None:
-                continue
-            minutes = duration_minutes_from_iso8601(value)
-            if minutes is not None:
-                return minutes
-        return None
+    @staticmethod
+    def _document_duration_and_upload(
+        documents: list[Any],
+    ) -> tuple[int | None, datetime | None]:
+        """Extract an episode page's runtime (minutes) and streaming upload date."""
+
+        duration: int | None = None
+        upload: datetime | None = None
+        for data in documents:
+            if duration is None:
+                value = RTLPlusProvider._find_jsonld_string(data, "duration")
+                if value is not None:
+                    duration = duration_minutes_from_iso8601(value)
+            if upload is None:
+                value = RTLPlusProvider._find_jsonld_string(data, "uploadDate")
+                if value is not None:
+                    try:
+                        upload = datetime.fromisoformat(value).astimezone(ZoneInfo("Europe/Vienna"))
+                    except ValueError:
+                        upload = None
+        return duration, upload
 
     @staticmethod
     def _find_jsonld_string(data: Any, key: str) -> str | None:
@@ -838,6 +865,43 @@ class RTLPlusProvider:
             raise RTLPlusMalformedResponseError("RTL+ response lacks blocks")
         return payload
 
+    @staticmethod
+    def _announces_unnumbered_new_season(block: Any) -> bool:
+        """Whether a season block announces a new season without naming its number.
+
+        RTL+ sometimes introduces the upcoming season in a block titled only
+        "Neue Staffel ..." whose items carry no ``Staffel N`` label (for example
+        "Bonus-Inhalte 2026 • Folge 1"). The number then has to be derived from the
+        highest known season; when the block still labels its items with a season
+        number, or names one in its title, that explicit number stays authoritative.
+        """
+
+        if (
+            not isinstance(block, dict)
+            or block.get("analytics", {}).get("tealium", {}).get("from")
+            != "feature.videos_by_season_by_program"
+        ):
+            return False
+        content = block.get("content")
+        if not isinstance(content, dict):
+            return False
+        content_title = content.get("title")
+        block_title = content_title.get("short") if isinstance(content_title, dict) else None
+        if (
+            not isinstance(block_title, str)
+            or _SEASON_RE.search(block_title)
+            or not _NEW_SEASON_RE.search(block_title)
+        ):
+            return False
+        items = content.get("items")
+        if not isinstance(items, list) or not items:
+            return False
+        for item in items:
+            raw = item.get("itemContent") if isinstance(item, dict) else None
+            if isinstance(raw, dict) and _SEASON_RE.search(str(raw.get("highlight") or "")):
+                return False
+        return True
+
     def _normalize(
         self,
         program_id: str,
@@ -845,7 +909,8 @@ class RTLPlusProvider:
         *,
         series_url: str | None = None,
         season_anchors: dict[int, datetime] | None = None,
-        durations: Mapping[str, int] | None = None,
+        durations: dict[str, int] | None = None,
+        upload_dates: dict[str, datetime] | None = None,
     ) -> NormalizedSeries:
         first = pages[0]
         entity = first.get("entity")
@@ -930,6 +995,24 @@ class RTLPlusProvider:
                     season_match = _SEASON_RE.search(str(raw.get("highlight") or ""))
                     if season_match:
                         season_numbers.add(int(season_match.group(1)))
+        # An unnumbered "Neue Staffel ..." block names no season; derive it from the
+        # highest known season. Only do so when the block carries a datable premiere,
+        # so the announced season actually shows up instead of the previous one.
+        announced_new_season_number: int | None = None
+        if any(
+            RTLPlusProvider._announces_unnumbered_new_season(block)
+            for payload in pages
+            for block in payload.get("blocks", [])
+        ):
+            highest_season_number = max(season_numbers, default=None)
+            premiere = releases.get(1)
+            if (
+                highest_season_number is not None
+                and premiere is not None
+                and premiere.date() >= datetime.now(ZoneInfo("Europe/Vienna")).date()
+            ):
+                announced_new_season_number = highest_season_number + 1
+                season_numbers.add(announced_new_season_number)
         current_season_number = max(season_numbers, default=None)
         seo_text = "\n".join(
             str(value)
@@ -1011,6 +1094,14 @@ class RTLPlusProvider:
                         # not flagged as API-sourced.
                         release_at = season_anchors[season_number] + timedelta(weeks=episode_number)
                         release_date_from_api = False
+                    if release_at is None and upload_dates:
+                        # A completed season no longer carries dates in the catalogue block,
+                        # but its episode page still publishes the original streaming date
+                        # (``uploadDate``). Use it instead of a placeholder so the season
+                        # keeps its real dates and is not dropped as a dateless season.
+                        release_at = upload_dates.get(str(raw["id"]))
+                        if release_at is not None:
+                            release_date_from_api = False
                     release_tuple = (
                         (first_seen_release(datetime.now(UTC), url=series_url),)
                         if release_at is None
@@ -1066,6 +1157,24 @@ class RTLPlusProvider:
                         ),
                     )
                 )
+        if announced_new_season_number is not None and announced_new_season_number not in seasons:
+            # The upcoming season is announced (with a start date) before RTL+ lists its
+            # episodes. Announce its premiere so the calendar shows S{n+1} E1 instead of
+            # dating the finished previous season with the new cadence.
+            seasons[announced_new_season_number] = [
+                NormalizedEpisode(
+                    external_id=f"{program_id}:season:{announced_new_season_number}:episode:1",
+                    number=1,
+                    title="Folge 1",
+                    releases=(
+                        NormalizedEpisodeRelease(
+                            release_type=ReleaseType.STREAMING,
+                            release_at=releases[1],
+                            url=series_url,
+                        ),
+                    ),
+                )
+            ]
         normalized_seasons = tuple(
             NormalizedSeason(
                 external_id=f"{program_id}:season:{number}",
