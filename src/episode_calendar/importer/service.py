@@ -20,6 +20,7 @@ from episode_calendar.importer.providers.base import (
     NormalizedSeries,
     ProviderAdapter,
 )
+from episode_calendar.importer.providers.http import is_resource_gone
 from episode_calendar.shared.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.shared.db.session import get_session_factory
 from episode_calendar.shared.domain import TV_BROADCAST_MATCH_TOLERANCE, ReleaseType
@@ -733,7 +734,11 @@ async def _import_identifier(
     adapter_factory: type[ProviderAdapter],
     identifier: str,
 ) -> bool:
-    """Import one series in an isolated session so sibling imports can continue."""
+    """Import one series in an isolated session so sibling imports can continue.
+
+    Returns ``False`` only for a real failure; a series the provider removed (HTTP 410) is
+    reported as a warning and counts as handled so it cannot fail the provider batch.
+    """
 
     try:
         adapter = adapter_factory()
@@ -744,11 +749,9 @@ async def _import_identifier(
                 )
             except Exception as exc:  # one series must not hide the other imports
                 await session.rollback()
-                logger.error("Import failed for %s/%s: %s", provider_name, identifier, exc)
-                return False
+                return _report_series_failure(provider_name, identifier, exc)
     except Exception as exc:  # setup failures should be reported like provider failures
-        logger.error("Import failed for %s/%s: %s", provider_name, identifier, exc)
-        return False
+        return _report_series_failure(provider_name, identifier, exc)
 
     logger.info(
         "Imported %s/%s: %s seasons, %s episodes (%s new), %s releases",
@@ -760,3 +763,23 @@ async def _import_identifier(
         result.releases,
     )
     return True
+
+
+def _report_series_failure(provider_name: str, identifier: str, exc: Exception) -> bool:
+    """Log a failed series and report whether it counts against the provider batch.
+
+    An HTTP 410 Gone is not a transient failure: the provider removed the series permanently,
+    so it is only warned about and skipped — the configuration should drop the entry — instead
+    of failing the whole provider import.
+    """
+
+    if is_resource_gone(exc):
+        logger.warning(
+            "Skipped %s/%s: the provider removed the series (HTTP 410): %s",
+            provider_name,
+            identifier,
+            exc,
+        )
+        return True
+    logger.error("Import failed for %s/%s: %s", provider_name, identifier, exc)
+    return False

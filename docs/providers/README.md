@@ -17,6 +17,11 @@ its specialties and deviations from it.
   below; providers without a runtime leave it `None`, and it never affects rerun/date policy.
 - **Idempotent import.** Adapters only return data; `importer/service.py` upserts it. No adapter
   writes to the database, and no adapter is called from an API request.
+- **Failure handling.** A failing series is isolated and logged, so sibling series of the same
+  provider still import; the provider batch fails only when a series fails for a real reason. An
+  HTTP `410 Gone` means the provider removed the series permanently (`is_resource_gone()` in
+  `providers/http.py`): the importer logs a warning and skips it instead of failing the batch, and
+  the entry should be dropped from `config/series.json`.
 - **Catalogue is authoritative.** The provider catalogue is the base of every series tree. Linear
   EPG data is supplementary: it fills missing dates and announces episodes of a running season, but
   never overrides a real catalogue date (`providers/epg.py`).
@@ -40,7 +45,8 @@ its specialties and deviations from it.
   `duration_minutes_from_iso8601()` (e.g. `PT1H4M59.136S`), and `duration_minutes_from_text()`
   (e.g. `1 hr 16 mins`, `1 Std. 26 Min.`).
 - `http.py` — `request_with_retries()` (retries `429`/`5xx` and request errors, honours
-  `Retry-After`).
+  `Retry-After`) and `is_resource_gone()`, which reads an HTTP `410 Gone` out of a (possibly
+  wrapped) provider error.
 - `epg.py` — `apply_catalog_policy()` (`filter_obsolete_seasons()` + `ensure_catalog_dates()`),
   `derive_broadcast_slots()`, and `merge_epg()`.
 

@@ -3,6 +3,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -2153,6 +2154,78 @@ async def test_configured_imports_run_in_parallel_and_isolate_failures(monkeypat
     messages = [record.getMessage() for record in caplog.records]
     assert "Imported Test Provider/Working: 1 seasons, 2 episodes (1 new), 2 releases" in messages
     assert "Import failed for Test Provider/broken: provider unavailable" in messages
+
+
+@pytest.mark.asyncio
+async def test_configured_import_reports_a_removed_series_as_a_warning(monkeypatch, caplog) -> None:
+    class Session:
+        provider = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def rollback(self) -> None:
+            pass
+
+        async def scalar(self, statement):
+            return self.provider
+
+        def add(self, provider) -> None:
+            self.provider = provider
+
+        async def commit(self) -> None:
+            pass
+
+    class SessionFactory:
+        def __call__(self):
+            return Session()
+
+    def gone_error() -> RuntimeError:
+        request = httpx.Request("GET", "https://player.stv.tv/summary/big-brother")
+        response = httpx.Response(410, request=request)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError("STV HTTP 410") from exc
+        raise AssertionError("410 must raise")
+
+    async def fake_import_series(session, adapter, external_id, *, provider_name):
+        if external_id == "big-brother/10a4928":
+            raise gone_error()
+        return ImportResult(
+            series=SimpleNamespace(title="Working"),
+            seasons=1,
+            episodes=2,
+            new_episodes=1,
+            releases=2,
+        )
+
+    monkeypatch.setattr(
+        "episode_calendar.importer.service.configured_platform",
+        lambda provider: SimpleNamespace(
+            series=(("working", True, True), ("big-brother/10a4928", True, True)),
+            name="STV Player",
+            run_import=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "episode_calendar.importer.service.get_session_factory", lambda: SessionFactory()
+    )
+    monkeypatch.setattr("episode_calendar.importer.service.import_series", fake_import_series)
+    caplog.set_level(logging.INFO, logger="episode_calendar.importer.service")
+
+    await import_configured("stv", lambda: SimpleNamespace(slug="stv"), "STV Player")
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert (
+        "Skipped STV Player/big-brother/10a4928: the provider removed the series "
+        "(HTTP 410): STV HTTP 410" in messages
+    )
+    assert "Imported STV Player/Working: 1 seasons, 2 episodes (1 new), 2 releases" in messages
+    assert [record for record in caplog.records if record.levelno >= logging.ERROR] == []
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,8 @@
 
 `STVProvider` scrapes the STV Player programme page for episode links and reads each episode from
 the STV Player JSON API. The configured `id` is a composite `<programme slug>/<legacy id>`
-(e.g. `big-brother/10a4928`). See the [shared provider behavior](README.md) for the baseline.
+(e.g. `im-a-celebrity-get-me-out-of-here/L2649`). See the [shared provider behavior](README.md) for
+the baseline.
 
 ## Specialties and deviations
 
@@ -30,6 +31,9 @@ the STV Player JSON API. The configured `id` is a composite `<programme slug>/<l
   `first_seen_release()` placeholder; url is `https://player.stv.tv/episode/{short_id}/{slug}`
   (`stv.py:180`, `stv.py:201`).
 - Emits only `streaming` releases; never sets `tv_broadcast`, `preview`, or `rerun` (`stv.py:196`).
+- **Retired programmes answer `410 Gone`.** STV permanently removes the summary page of a dropped
+  programme (e.g. the retired `big-brother/10a4928`): the shared importer policy warns and skips the
+  series instead of failing the provider import (see [shared provider behavior](README.md)).
 - **Uses the shared `request_with_retries()`**, issues all per-episode requests concurrently with
   `asyncio.gather` (no pagination), and applies only `filter_obsolete_seasons()` (`stv.py:110`,
   `stv.py:98`, `stv.py:104`).
