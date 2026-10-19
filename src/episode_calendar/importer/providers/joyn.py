@@ -95,11 +95,11 @@ query EpisodeCalendarSeason($id: ID!, $first: Int!, $offset: Int!) {
 """
 
 EPG_QUERY = """
-query EpisodeCalendarJoynEpg($from: Timestamp!, $to: Timestamp!) {
+query EpisodeCalendarJoynEpg($from: Timestamp!, $to: Timestamp!, $first: Int!, $offset: Int!) {
     liveStreams(first: 5000, offset: 0) {
         id
         title
-        epgEvents(from: $from, to: $to) {
+        epgEvents(from: $from, to: $to, first: $first, offset: $offset) {
             startDate
             endDate
             program {
@@ -113,9 +113,17 @@ query EpisodeCalendarJoynEpg($from: Timestamp!, $to: Timestamp!) {
 """
 
 EPG_LOOKAHEAD = timedelta(days=28)
+# Without an explicit page the endpoint stops at the first 20 events per stream and
+# silently drops the rest of the window, so each day slice is read in pages of this
+# size until no stream reports a full page. The busiest stream publishes about 106
+# events per day, so a slice normally arrives in a single request.
+EPG_PAGE_SIZE = 200
 MAX_EPG_EVENT_DURATION = timedelta(hours=4)
 # Airing times within this window around a known broadcast slot are treated as that slot.
 EPG_SLOT_TOLERANCE = timedelta(hours=2)
+# A PLUS/PREMIUM badge on a drop older than this is an uncleaned catalog leftover,
+# mirroring the importer's central two-week preview window.
+PLUS_BADGE_MAX_AGE = timedelta(days=14)
 EPG_TIMEZONE = ZoneInfo("Europe/Vienna")
 logger = logging.getLogger(__name__)
 
@@ -364,44 +372,59 @@ class JoynProvider:
         end = now + EPG_LOOKAHEAD
         while day < end:
             next_day = min(day + timedelta(days=1), end)
-            payload = await self._request(
-                client,
-                "EpisodeCalendarJoynEpg",
-                EPG_QUERY,
-                {"from": int(day.timestamp()), "to": int(next_day.timestamp())},
-            )
-            streams = self._list(payload.get("liveStreams"), "data.liveStreams")
-            for raw_stream in streams:
-                stream = self._mapping(raw_stream, "live stream")
-                stream_id = self._required_string(stream.get("id"), "liveStream.id")
-                stream_title = self._required_string(stream.get("title"), "liveStream.title")
-                raw_events = self._list(stream.get("epgEvents"), "liveStream.epgEvents")
-                for raw_event in raw_events:
-                    event = self._mapping(raw_event, "epg event")
-                    program = self._mapping(event.get("program"), "epg event.program")
-                    title = self._required_string(program.get("title"), "epg program.title")
-                    start = self._timestamp(event.get("startDate"), "epg event.startDate")
-                    if start is None:
-                        raise JoynMalformedResponseError("epg event.startDate was missing")
-                    event_end = self._timestamp(event.get("endDate"), "epg event.endDate")
-                    if event_end is not None and event_end - start > MAX_EPG_EVENT_DURATION:
-                        # Long entries are usually continuous live/program blocks, not episodes.
-                        continue
-                    program_id = self._required_string(program.get("id"), "epg program.id")
-                    program_type = self._required_string(
-                        program.get("__typename"), "epg program.__typename"
-                    )
-                    external_id = f"epg:{stream_id}:{program_id}:{int(start.timestamp())}"
-                    events[external_id] = _EpgEvent(
-                        stream_id=stream_id,
-                        stream_title=stream_title,
-                        external_id=external_id,
-                        title=title,
-                        start=start,
-                        end=event_end,
-                        program_type=program_type,
-                        program_id=program_id,
-                    )
+            offset = 0
+            while True:
+                payload = await self._request(
+                    client,
+                    "EpisodeCalendarJoynEpg",
+                    EPG_QUERY,
+                    {
+                        "from": int(day.timestamp()),
+                        "to": int(next_day.timestamp()),
+                        "first": EPG_PAGE_SIZE,
+                        "offset": offset,
+                    },
+                )
+                seen_before = len(events)
+                streams = self._list(payload.get("liveStreams"), "data.liveStreams")
+                has_more = False
+                for raw_stream in streams:
+                    stream = self._mapping(raw_stream, "live stream")
+                    stream_id = self._required_string(stream.get("id"), "liveStream.id")
+                    stream_title = self._required_string(stream.get("title"), "liveStream.title")
+                    raw_events = self._list(stream.get("epgEvents"), "liveStream.epgEvents")
+                    # A full page means that stream still has events inside the window.
+                    has_more = has_more or len(raw_events) >= EPG_PAGE_SIZE
+                    for raw_event in raw_events:
+                        event = self._mapping(raw_event, "epg event")
+                        program = self._mapping(event.get("program"), "epg event.program")
+                        title = self._required_string(program.get("title"), "epg program.title")
+                        start = self._timestamp(event.get("startDate"), "epg event.startDate")
+                        if start is None:
+                            raise JoynMalformedResponseError("epg event.startDate was missing")
+                        event_end = self._timestamp(event.get("endDate"), "epg event.endDate")
+                        if event_end is not None and event_end - start > MAX_EPG_EVENT_DURATION:
+                            # Long entries are usually continuous live/program blocks, not episodes.
+                            continue
+                        program_id = self._required_string(program.get("id"), "epg program.id")
+                        program_type = self._required_string(
+                            program.get("__typename"), "epg program.__typename"
+                        )
+                        external_id = f"epg:{stream_id}:{program_id}:{int(start.timestamp())}"
+                        events[external_id] = _EpgEvent(
+                            stream_id=stream_id,
+                            stream_title=stream_title,
+                            external_id=external_id,
+                            title=title,
+                            start=start,
+                            end=event_end,
+                            program_type=program_type,
+                            program_id=program_id,
+                        )
+                if not has_more or len(events) == seen_before:
+                    # No full page, or the endpoint ignored the offset (page repeated).
+                    break
+                offset += EPG_PAGE_SIZE
             day = next_day
         return tuple(sorted(events.values(), key=lambda event: event.start))
 
@@ -488,6 +511,7 @@ class JoynProvider:
         # actual early release (for example 29 September) without turning the
         # regular release (6 October) into a second preview.
         preview = preview_marked and (starts_at is None or airdate is None or starts_at < airdate)
+        preview = preview or self._subscriber_preview(markings, starts_at, airdate)
         path = episode.get("path")
         url = self._episode_url(path)
         video = episode.get("video")
@@ -547,6 +571,30 @@ class JoynProvider:
             )
         except ValidationError as exc:
             raise JoynMalformedResponseError("episode did not match the normalized model") from exc
+
+    def _subscriber_preview(
+        self,
+        markings: Any,
+        starts_at: datetime | None,
+        airdate: datetime | None,
+    ) -> bool:
+        """Whether a PLUS/PREMIUM badge marks a still subscriber-only episode.
+
+        Joyn clears the badge once the episode is regularly available (aired
+        episodes carry no marking), so a badge means the drop is a prerelease.
+        Such drops store ``startsAt == airdate`` when the episode has no earlier
+        linear slot (4 Elements), so equality counts here — unlike the ``PREVIEW``
+        marking above, where equality marks a stale entry. Streams that start
+        after their airdate (the daily subscriber cadence of older seasons) stay
+        regular, and a badge Joyn never cleared on an old entry must not turn
+        that entry into a preview, so the drop has to be current.
+        """
+        if not isinstance(markings, list) or not ("PLUS" in markings or "PREMIUM" in markings):
+            return False
+        if starts_at is not None and airdate is not None and starts_at > airdate:
+            return False
+        drop = starts_at if starts_at is not None else airdate
+        return drop is None or drop >= self._clock() - PLUS_BADGE_MAX_AGE
 
     @staticmethod
     def _series_path(identifier: str) -> str:

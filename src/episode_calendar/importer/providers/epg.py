@@ -270,7 +270,10 @@ def merge_epg(
     * An airing whose season/episode cannot be read uses the slot logic: an airing
       matching a recurring slot of the running season extends that season with the
       next episode number (filling an already announced undated next episode if one
-      exists); every other airing is a rerun of the running season's latest episode.
+      exists). Every other airing premieres the earliest episode the catalogue still
+      lists as subscriber-only, since an airing cannot repeat an episode that has no
+      regular date yet; once those are used up it is a rerun of the running season's
+      latest episode.
     """
 
     now = now or datetime.now(UTC)
@@ -326,6 +329,26 @@ def merge_epg(
             rerun=rerun,
             date_from_api=True,
         )
+
+    def earliest_subscriber_only(season: NormalizedSeason | None) -> NormalizedEpisode | None:
+        """First numbered episode whose catalogue dates are all previews.
+
+        Such an episode is not regularly available yet, so an unattributable airing
+        of the running season belongs to it rather than to the latest episode.
+        """
+
+        if season is None:
+            return None
+        numbered = sorted(
+            (item for item in season.episodes if item.number is not None),
+            key=lambda item: item.number or 0,
+        )
+        for episode in numbered:
+            releases = (*episode.releases, *extra_releases.get(episode.external_id, ()))
+            dated = [release for release in releases if not release.placeholder]
+            if dated and all(release.preview for release in dated):
+                return episode
+        return None
 
     for broadcast in broadcasts:
         target: tuple[NormalizedSeason, NormalizedEpisode] | None = None
@@ -403,6 +426,14 @@ def merge_epg(
                     )
                 )
             continue
+
+        if current_season is not None:
+            premiere = earliest_subscriber_only(current_season)
+            if premiere is not None:
+                # The catalogue still lists the episode as subscriber-only, so the
+                # unattributable airing is its regular premiere, not a rerun.
+                extra_releases[premiere.external_id].append(airing(broadcast))
+                continue
 
         if latest is None:
             if logger is not None:
