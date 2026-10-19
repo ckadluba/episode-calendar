@@ -21,10 +21,16 @@ its specialties and deviations from it.
   EPG data is supplementary: it fills missing dates and announces episodes of a running season, but
   never overrides a real catalogue date (`providers/epg.py`).
 - **Cross-cutting policy (owned by the importer, not the adapters).** `importer/service.py` and
-  `providers/epg.py` implement rerun detection, first-seen placeholder preservation, preview gating
-  via the platform `hasPrereleases` flag, obsolete-season cleanup, promotion of an EPG broadcast to
-  the matching catalogue release at the same instant, and backfilling a catalogue URL onto a
-  broadcast release.
+  `providers/epg.py` implement rerun detection, preview detection for a catalogue drop that
+  precedes the episode's own broadcast (`detect_previews`: one day to two weeks of lead, only on
+  platforms whose `hasPrereleases` is `true`; the first airing after such a drop is the episode's
+  premiere, so a provider rerun flag on it is cleared), first-seen placeholder preservation,
+  preview gating via the platform `hasPrereleases` flag, obsolete-season cleanup, promotion of an
+  EPG broadcast to the matching catalogue release at the same instant, and backfilling a catalogue
+  URL onto a broadcast release. An EPG airing that cannot be attributed to an episode is never a
+  rerun of an episode the catalogue still lists as subscriber-only: such airings premiere the
+  running season's preview-only episodes in airing and episode order, and only the surplus airings
+  stay reruns of the latest episode (`merge_epg()`).
 
 ## Shared helpers
 
@@ -43,7 +49,9 @@ its specialties and deviations from it.
 Configured series live in `config/series.json` (override with `SERIES_CONFIG_PATH`). The
 platform-level `hasPrereleases` flag (default `true`) declares whether the platform publishes early
 streaming prereleases; on providers whose platform sets it to `false`, imported releases are never
-marked as previews.
+marked as previews. On platforms that do publish them, an on-demand release that precedes the
+episode's own linear broadcast by one day to two weeks is marked as a preview by the importer even
+when the provider's catalogue carries no preview marking.
 
 ## Providers
 

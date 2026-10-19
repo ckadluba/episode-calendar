@@ -318,6 +318,342 @@ async def test_catalog_preview_and_tv_release_are_not_reruns(
     assert [release.rerun for release in releases] == [False, False]
 
 
+async def test_streaming_before_own_broadcast_is_flagged_as_preview(
+    db_session: AsyncSession,
+) -> None:
+    class EarlyDropProvider:
+        slug = "joyn"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="joyn-season",
+                        number=1,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="joyn-episode",
+                                number=4,
+                                title="Folge 4",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 10, 16, 22, 1, tzinfo=UTC),
+                                    ),
+                                    NormalizedEpisodeRelease(
+                                        external_id="epg:tv:1",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 25, 13, 10, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(db_session, EarlyDropProvider(), "ignored")
+
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    assert [release.preview for release in releases] == [True, False]
+    # The catalogue drop is a preview, so its broadcast is the regular airing, not a rerun.
+    assert [release.rerun for release in releases] == [False, False]
+
+
+async def test_first_airing_after_preview_drop_is_the_premiere(
+    db_session: AsyncSession,
+) -> None:
+    class AttachedRerunProvider:
+        slug = "joyn"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="joyn-season",
+                        number=1,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="joyn-episode",
+                                number=4,
+                                title="Folge 4",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 10, 16, 22, 1, tzinfo=UTC),
+                                    ),
+                                    # Off-slot EPG events the provider attached as reruns.
+                                    NormalizedEpisodeRelease(
+                                        external_id="epg:tv:1",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 25, 13, 10, tzinfo=UTC),
+                                        rerun=True,
+                                    ),
+                                    NormalizedEpisodeRelease(
+                                        external_id="epg:tv:2",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 25, 14, 10, tzinfo=UTC),
+                                        rerun=True,
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(db_session, AttachedRerunProvider(), "ignored")
+
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    assert [release.preview for release in releases] == [True, False, False]
+    # An airing cannot repeat an episode that has never aired: the first broadcast
+    # after the preview drop is the premiere; the later airing stays a rerun.
+    assert [release.rerun for release in releases] == [False, False, True]
+
+
+async def test_known_premiere_keeps_provider_rerun_flags(
+    db_session: AsyncSession,
+) -> None:
+    class KnownPremiereProvider:
+        slug = "joyn"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="joyn-season",
+                        number=5,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="joyn-episode",
+                                number=3,
+                                title="Folge 3",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 10, 16, 18, 15, tzinfo=UTC),
+                                        preview=True,
+                                    ),
+                                    # An off-slot special airing before the known premiere.
+                                    NormalizedEpisodeRelease(
+                                        external_id="epg:tv:1",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 19, 20, 25, tzinfo=UTC),
+                                        rerun=True,
+                                    ),
+                                    # The episode's regular premiere from the catalogue.
+                                    NormalizedEpisodeRelease(
+                                        external_id="airdate",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 23, 18, 15, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(db_session, KnownPremiereProvider(), "ignored")
+
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    # The tree already knows the regular airing, so the provider's rerun classification
+    # of the special airing is left untouched.
+    assert [release.preview for release in releases] == [True, False, False]
+    assert [release.rerun for release in releases] == [False, True, False]
+
+
+async def test_same_day_broadcast_lead_is_not_a_preview(
+    db_session: AsyncSession,
+) -> None:
+    class SameDayDropProvider:
+        slug = "joyn"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="joyn-season",
+                        number=3,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="joyn-episode",
+                                number=2,
+                                title="Folge 2",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 10, 10, 17, 30, tzinfo=UTC),
+                                    ),
+                                    NormalizedEpisodeRelease(
+                                        external_id="epg:tv:1",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 10, 18, 15, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(db_session, SameDayDropProvider(), "ignored")
+
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    # A drop minutes before the broadcast is the regular release cadence, not a preview.
+    assert [release.preview for release in releases] == [False, False]
+    assert [release.rerun for release in releases] == [False, True]
+
+
+async def test_broadcast_weeks_after_drop_is_not_a_preview(
+    db_session: AsyncSession,
+) -> None:
+    class RegularModelProvider:
+        slug = "joyn"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="joyn-season",
+                        number=1,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="joyn-episode",
+                                number=1,
+                                title="Pilot",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 9, 20, 22, 1, tzinfo=UTC),
+                                    ),
+                                    NormalizedEpisodeRelease(
+                                        external_id="epg:tv:1",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 18, 18, 15, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(db_session, RegularModelProvider(), "ignored")
+
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    # Streaming four weeks ahead of TV is the platform's regular model, not a preview.
+    assert [release.preview for release in releases] == [False, False]
+
+
+async def test_broadcast_before_drop_is_not_a_preview(
+    db_session: AsyncSession,
+) -> None:
+    class AiringFirstProvider:
+        slug = "joyn"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="joyn-season",
+                        number=2026,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="joyn-episode",
+                                number=14,
+                                title="Tag 14",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 18, 18, 15, tzinfo=UTC),
+                                    ),
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 10, 18, 20, 20, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(db_session, AiringFirstProvider(), "ignored")
+
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    # A drop after the broadcast (a daily reality show streaming in the evening) is a
+    # regular release.
+    assert [release.preview for release in releases] == [False, False]
+
+
+async def test_preview_detection_requires_platform_prereleases(
+    db_session: AsyncSession,
+) -> None:
+    class ArdEarlyDropProvider:
+        slug = "ardmediathek"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="ard-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="ard-season",
+                        number=1,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="ard-episode",
+                                number=1,
+                                title="Pilot",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 10, 16, 22, 1, tzinfo=UTC),
+                                    ),
+                                    NormalizedEpisodeRelease(
+                                        external_id="epg:tv:1",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 25, 13, 10, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(db_session, ArdEarlyDropProvider(), "ignored")
+
+    releases = list(await db_session.scalars(select(EpisodeRelease)))
+    # The platform never publishes prereleases, so the early drop stays regular.
+    assert [release.preview for release in releases] == [False, False]
+
+
 async def test_previews_are_not_persisted_without_prereleases(
     db_session: AsyncSession,
 ) -> None:
@@ -456,7 +792,10 @@ async def test_only_tv_release_persists_normalized_rerun_flag(
     releases = list(
         await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
     )
-    assert [release.rerun for release in releases] == [False, True]
+    # On-demand releases are never reruns. The drop is a preview, so the broadcast
+    # that follows it is the episode's premiere and the provider rerun flag is
+    # cleared by the central preview policy.
+    assert [release.rerun for release in releases] == [False, False]
 
 
 async def test_later_broadcast_of_same_episode_is_marked_as_rerun(

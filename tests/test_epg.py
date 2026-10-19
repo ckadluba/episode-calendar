@@ -339,6 +339,74 @@ def test_merge_epg_fills_announced_undated_next_episode() -> None:
     ]
 
 
+def test_merge_epg_premieres_subscriber_only_episodes_in_order() -> None:
+    """An unattributable airing cannot repeat an episode without a regular date."""
+
+    now = datetime(2026, 10, 19, tzinfo=UTC)
+    preview = NormalizedEpisodeRelease(
+        release_type=ReleaseType.STREAMING,
+        release_at=datetime(2026, 10, 17, tzinfo=VIENNA),
+        preview=True,
+    )
+    series = NormalizedSeries(
+        external_id="s",
+        title="S",
+        seasons=(
+            NormalizedSeason(
+                external_id="s1",
+                number=1,
+                episodes=(
+                    NormalizedEpisode(external_id="e3", number=3, title="e3", releases=(preview,)),
+                    NormalizedEpisode(external_id="e4", number=4, title="e4", releases=(preview,)),
+                ),
+            ),
+        ),
+    )
+
+    result = merge_epg(
+        series,
+        (
+            EpgBroadcast(
+                external_id="b1",
+                title="S",
+                start=datetime(2026, 10, 25, 17, 10, tzinfo=VIENNA),
+            ),
+            EpgBroadcast(
+                external_id="b2",
+                title="S",
+                start=datetime(2026, 10, 25, 18, 10, tzinfo=VIENNA),
+            ),
+            EpgBroadcast(
+                external_id="b3",
+                title="S",
+                start=datetime(2026, 10, 25, 22, 10, tzinfo=VIENNA),
+            ),
+        ),
+        now=now,
+        timezone=VIENNA,
+        slots=(),
+        tolerance=timedelta(hours=2),
+        next_episode_external_id=lambda season_id, number: f"next:{season_id}:{number}",
+    )
+
+    episodes = {episode.number: episode for episode in result.seasons[0].episodes}
+    airings = {
+        number: [
+            release
+            for release in episode.releases
+            if release.release_type is ReleaseType.TV_BROADCAST
+        ]
+        for number, episode in episodes.items()
+    }
+    assert [(release.release_at, release.rerun) for release in airings[3]] == [
+        (datetime(2026, 10, 25, 17, 10, tzinfo=VIENNA), False)
+    ]
+    assert [(release.release_at, release.rerun) for release in airings[4]] == [
+        (datetime(2026, 10, 25, 18, 10, tzinfo=VIENNA), False),
+        (datetime(2026, 10, 25, 22, 10, tzinfo=VIENNA), True),
+    ]
+
+
 def test_filter_obsolete_seasons_drops_undated_seasons_below_the_highest() -> None:
     series = NormalizedSeries(
         external_id="s",

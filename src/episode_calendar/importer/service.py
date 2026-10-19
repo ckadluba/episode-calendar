@@ -7,14 +7,16 @@ import logging
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from episode_calendar.importer.providers.base import (
+    NormalizedEpisode,
     NormalizedEpisodeRelease,
+    NormalizedSeason,
     NormalizedSeries,
     ProviderAdapter,
 )
@@ -111,6 +113,94 @@ def detect_reruns(
     return RerunDetection(rerun_release_keys=frozenset(rerun_release_keys))
 
 
+# A catalogue drop that precedes the episode's own broadcast by at least a day is an
+# early on-demand release; a same-day drop that only leads the broadcast by minutes is
+# the regular release cadence, never a preview. The upper bound keeps a platform whose
+# regular model is streaming long before TV from being reclassified wholesale.
+PREVIEW_MIN_LEAD = timedelta(days=1)
+PREVIEW_MAX_LEAD = timedelta(days=14)
+
+
+def detect_previews(normalized: NormalizedSeries) -> NormalizedSeries:
+    """Flag catalogue drops that precede the episode's own linear broadcast.
+
+    Some platforms (Joyn, RTL+) publish an episode on demand before its linear airing
+    without leaving a preview marking in the catalogue. The broadcast merged into the
+    episode anchors its regular date: a streaming release between ``PREVIEW_MIN_LEAD``
+    and ``PREVIEW_MAX_LEAD`` ahead of the episode's earliest broadcast is an early
+    release, a preview. Providers that carry their own marking already set ``preview``;
+    this provider-independent policy only fills that flag in. Callers gate on the
+    platform's prerelease flag and run this before rerun detection, so a fresh preview
+    never turns its own broadcast into a rerun.
+
+    The same reasoning clears a provider rerun flag: an airing cannot repeat an episode
+    that has never aired, so when the tree knows no regular airing of the episode, the
+    earliest broadcast after a preview drop is its regular premiere even when the
+    provider attached it as an off-slot rerun (for example a numberless EPG event).
+    A broadcast the provider already left unflagged is the known premiere and nothing
+    is cleared; later airings keep their rerun flag.
+    """
+
+    seasons: list[NormalizedSeason] = []
+    changed = False
+    for season in normalized.seasons:
+        episodes: list[NormalizedEpisode] = []
+        for episode in season.episodes:
+            broadcasts = [
+                release.release_at
+                for release in episode.releases
+                if release.release_type is ReleaseType.TV_BROADCAST and not release.placeholder
+            ]
+            if not broadcasts:
+                episodes.append(episode)
+                continue
+            first_broadcast = min(broadcasts)
+            releases = tuple(
+                release.model_copy(update={"preview": True})
+                if (
+                    release.release_type is ReleaseType.STREAMING
+                    and not release.preview
+                    and not release.placeholder
+                    and PREVIEW_MIN_LEAD <= first_broadcast - release.release_at <= PREVIEW_MAX_LEAD
+                )
+                else release
+                for release in episode.releases
+            )
+            preview_drops = [
+                release.release_at
+                for release in releases
+                if release.release_type is ReleaseType.STREAMING and release.preview
+            ]
+            has_regular_airing = any(
+                release.release_type is ReleaseType.TV_BROADCAST and not release.rerun
+                for release in releases
+            )
+            if preview_drops and not has_regular_airing:
+                premiere = min(
+                    (broadcast for broadcast in broadcasts if broadcast > min(preview_drops)),
+                    default=None,
+                )
+                if premiere is not None:
+                    releases = tuple(
+                        release.model_copy(update={"rerun": False})
+                        if (
+                            release.release_type is ReleaseType.TV_BROADCAST
+                            and release.rerun
+                            and release.release_at == premiere
+                        )
+                        else release
+                        for release in releases
+                    )
+            if releases != episode.releases:
+                changed = True
+                episode = episode.model_copy(update={"releases": releases})
+            episodes.append(episode)
+        seasons.append(season.model_copy(update={"episodes": tuple(episodes)}))
+    if not changed:
+        return normalized
+    return normalized.model_copy(update={"seasons": tuple(seasons)})
+
+
 def _effective_releases(
     releases: tuple[NormalizedEpisodeRelease, ...],
 ) -> tuple[NormalizedEpisodeRelease, ...]:
@@ -166,6 +256,8 @@ async def import_series(
     # RTL+ or Joyn streaming before the linear airing). For every other platform the
     # preview flag is forced off so no stale prerelease detection can leak into the data.
     allow_previews = platform_has_prereleases(adapter.slug)
+    if allow_previews:
+        normalized = detect_previews(normalized)
     provider = await session.scalar(select(Provider).where(Provider.slug == adapter.slug))
     if provider is None:
         provider = Provider(slug=adapter.slug, name=provider_name or adapter.slug.title())
