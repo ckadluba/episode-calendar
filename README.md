@@ -237,6 +237,10 @@ Filter selections and the most recently loaded series/episode data are kept in t
 storage, so returning to the app renders immediately while fresh data is fetched in the background.
 No account or installation is required.
 
+Every episode in the calendar has a `gesehen` checkbox that tracks which episodes you already
+watched. Marked episodes are dimmed so the remaining ones stand out, and the markers are stored in
+the browser's local storage as well. Unchecking a marker restores the normal episode appearance.
+
 ### Tests and checks
 
 Tests use an isolated SQLite database and never contact streaming providers:
