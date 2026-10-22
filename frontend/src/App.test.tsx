@@ -363,6 +363,21 @@ describe("seen episodes", () => {
     await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
     expect(screen.getByRole("checkbox", { name: /Gesehen/ })).not.toBeChecked();
   });
+
+  it("keeps the seen marker class off the checkbox label", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("checkbox", { name: /Gesehen/ }));
+
+    const tile = screen.getByText(/Pilot/).closest(".episode") as HTMLElement;
+    const label = within(tile).getByRole("checkbox", { name: /Gesehen/ }).closest("label") as HTMLElement;
+    // The tile carries the marker state; the label must not share that class,
+    // otherwise the tile inherits the label styles and changes its layout.
+    expect(tile).toHaveClass("episode-seen");
+    expect(label).not.toHaveClass("episode-seen");
+    expect(label).toHaveClass("episode-seen-toggle");
+  });
 });
 
 describe("episode start labels", () => {

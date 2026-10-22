@@ -175,7 +175,7 @@ function EpisodeTile({ episode, release, seriesTitle, color, seen, onToggleSeen,
   return <article className={className} style={colorStyle}>
     <div className="episode-content">{release.url ? <a className="episode-link" href={release.url} target="_blank" rel="noreferrer">{content}</a> : content}</div>
     <div className="episode-footer">
-      <label className="episode-seen">
+      <label className="episode-seen-toggle">
         <input
           type="checkbox"
           checked={seen}

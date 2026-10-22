@@ -11,10 +11,10 @@ button, select { font: inherit; }
 .episode-badges { display: flex; flex-wrap: wrap; gap: 5px; }
 .episode-content { min-width: 0; }
 .episode-footer { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 8px; margin-top: 4px; }
-.episode-seen { display: inline-flex; align-items: center; gap: 5px; color: #aebacd; font-size: .65rem; cursor: pointer; }
-.episode-seen input { width: 14px; height: 14px; accent-color: #f0c674; cursor: pointer; }
-.episode-seen:hover { color: #d9e3f0; }
-.episode-seen:has(input:checked):not(:hover) { color: #72819a; }
+.episode-seen-toggle { display: inline-flex; align-items: center; gap: 5px; color: #aebacd; font-size: .65rem; cursor: pointer; }
+.episode-seen-toggle input { width: 14px; height: 14px; accent-color: #f0c674; cursor: pointer; }
+.episode-seen-toggle:hover { color: #d9e3f0; }
+.episode-seen-toggle:has(input:checked):not(:hover) { color: #72819a; }
 .episode-seen .episode-content { opacity: .55; }
 .episode-seen { border-left-color: color-mix(in srgb, var(--series-color, #2b3a54) 30%, #2b3a54); }
 .episode-seen.episode-new { background: rgba(224, 129, 122, .05); border-color: rgba(224, 129, 122, .3); border-left-color: color-mix(in srgb, var(--new-accent) 30%, #2b3a54); box-shadow: none; }
