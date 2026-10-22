@@ -14,6 +14,7 @@ const API_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.repla
 const TIMEZONE = "Europe/Vienna";
 const CACHE_PREFIX = "episode-calendar-cache-v2";
 const PREVIEW_PREFERENCES_KEY = "episode-calendar-preview-preferences";
+const SEEN_EPISODES_KEY = "episode-calendar-seen-episodes";
 
 type CachedValue<T> = { timestamp: number; data: T };
 
@@ -47,6 +48,11 @@ function writeCache<T>(key: string, data: T) {
   } catch {
     // Caching is best effort (for example, private browsing may disable storage).
   }
+}
+
+function readSeenEpisodeIds(): string[] {
+  const stored = readLocal<unknown>(SEEN_EPISODES_KEY, []);
+  return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : [];
 }
 
 type CalendarWeek = "last" | "current" | "next" | "after-next";
@@ -152,6 +158,37 @@ export function sortCalendarItems(items: CalendarItem[], seriesById: ReadonlyMap
   });
 }
 
+function EpisodeTile({ episode, release, seriesTitle, color, seen, onToggleSeen, onHideSeries }: {
+  episode: Episode;
+  release: Release;
+  seriesTitle: string;
+  color: string;
+  seen: boolean;
+  onToggleSeen: (episodeId: string) => void;
+  onHideSeries: () => void;
+}) {
+  const startLabel = episodeStartLabel(episode);
+  const colorStyle = { "--series-color": color } as CSSProperties;
+  // A watched episode is dimmed so the calendar keeps the unwatched episodes in focus.
+  const className = `episode${startLabel ? " episode-new" : ""}${seen ? " episode-seen" : ""}`;
+  const content = <><div className="episode-header"><div className="episode-time">{timeLabel.format(new Date(release.release_at))}</div><span className={`badge ${episode.platform_id}`}>{episode.platform}</span></div><div><h3><span className="series-dot" style={{ backgroundColor: color }} aria-hidden="true" />{seriesTitle}</h3><p>{episode.season_number ? `S${episode.season_number} · ` : ""}{episode.number ? `E${episode.number} · ` : ""}{episode.title}{episode.duration_minutes ? ` · ${episode.duration_minutes} Min` : ""}</p><div className="episode-badges">{startLabel && <span className="new-badge">{startLabel}</span>}{release.preview && <span className="preview-badge">Vorab</span>}</div></div></>;
+  return <article className={className} style={colorStyle}>
+    <div className="episode-content">{release.url ? <a className="episode-link" href={release.url} target="_blank" rel="noreferrer">{content}</a> : content}</div>
+    <div className="episode-footer">
+      <label className="episode-seen">
+        <input
+          type="checkbox"
+          checked={seen}
+          aria-label={`Gesehen: ${seriesTitle} ${episode.title}`}
+          onChange={() => onToggleSeen(episode.id)}
+        />
+        <span>Gesehen</span>
+      </label>
+      <button className="episode-hide" type="button" onClick={onHideSeries}>Serie ausblenden</button>
+    </div>
+  </article>;
+}
+
 function SeriesFilterPage({ series, selectedIds, previewPreferences, previewEnabledPlatforms, onSave, onDiscard }: {
   series: Series[];
   selectedIds: string[];
@@ -242,6 +279,7 @@ export function App() {
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [selectedSeriesIds, setSelectedSeriesIds] = useState<string[]>([]);
   const [previewPreferences, setPreviewPreferences] = useState<PreviewPreferences>({});
+  const [seenEpisodeIds, setSeenEpisodeIds] = useState<string[]>(readSeenEpisodeIds);
   const [seriesSelectionInitialized, setSeriesSelectionInitialized] = useState(false);
   const [knownSeriesIds, setKnownSeriesIds] = useState<string[]>([]);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -257,6 +295,7 @@ export function App() {
     () => new Set(platforms.filter((platform) => platform.has_prereleases).map((platform) => platform.id)),
     [platforms],
   );
+  const seenEpisodes = useMemo(() => new Set(seenEpisodeIds), [seenEpisodeIds]);
 
   useEffect(() => {
     if (!hideCandidate) return;
@@ -312,6 +351,9 @@ export function App() {
       localStorage.setItem(PREVIEW_PREFERENCES_KEY, JSON.stringify(previewPreferences));
     }
   }, [previewPreferences]);
+  useEffect(() => {
+    localStorage.setItem(SEEN_EPISODES_KEY, JSON.stringify(seenEpisodeIds));
+  }, [seenEpisodeIds]);
   useEffect(() => {
     const seriesKey = `${CACHE_PREFIX}:${API_URL}:series`;
     const platformsKey = `${CACHE_PREFIX}:${API_URL}:platforms`;
@@ -377,6 +419,9 @@ export function App() {
   });
   const seriesMap = new Map(series.map((item) => [item.id, item]));
   const hideSeries = (seriesId: string) => setSelectedSeriesIds((current) => current.filter((id) => id !== seriesId));
+  const toggleSeen = (episodeId: string) => setSeenEpisodeIds((current) => current.includes(episodeId)
+    ? current.filter((id) => id !== episodeId)
+    : [...current, episodeId]);
   if (filterOpen) return <SeriesFilterPage
     series={series}
     selectedIds={selectedSeriesIds}
@@ -392,7 +437,25 @@ export function App() {
     <section className="filters" aria-label="Filter"><button className="filter-button" type="button" disabled={!seriesSelectionInitialized} onClick={() => setFilterOpen(true)}>Filter</button><span>{selectedSeriesIds.length} von {series.length} Serien ausgewählt</span></section>
     {loading && <p className="status">Kalender wird geladen …</p>}
     {error && <p className="status error">{error}<br /><small>Prüfe, ob die API unter {API_URL} läuft.</small></p>}
-    {!loading && !error && <section className="calendar">{days.map((day) => { const items = sortCalendarItems(byDay.get(dateKey(day)) ?? [], seriesMap); return <article className={dateKey(day) === todayKey ? "day day-today" : "day"} key={dateKey(day)}><h2>{dayLabel.format(day)}</h2>{items.length === 0 ? <p className="empty">Keine Episoden</p> : items.map(({ episode, release }) => { const show = seriesMap.get(episode.series_id); const color = seriesColor(episode.series_id); const colorStyle = { "--series-color": color } as CSSProperties; const startLabel = episodeStartLabel(episode); const className = `episode${startLabel ? " episode-new" : ""}`; const content = <><div className="episode-header"><div className="episode-time">{timeLabel.format(new Date(release.release_at))}</div><span className={`badge ${episode.platform_id}`}>{episode.platform}</span></div><div><h3><span className="series-dot" style={{ backgroundColor: color }} aria-hidden="true" />{show?.title ?? "Unbekannte Serie"}</h3><p>{episode.season_number ? `S${episode.season_number} · ` : ""}{episode.number ? `E${episode.number} · ` : ""}{episode.title}{episode.duration_minutes ? ` · ${episode.duration_minutes} Min` : ""}</p><div className="episode-badges">{startLabel && <span className="new-badge">{startLabel}</span>}{release.preview && <span className="preview-badge">Vorab</span>}</div></div></>; return <article className={className} style={colorStyle} key={`${episode.id}-${release.release_at}`}>{release.url ? <a className="episode-link" href={release.url} target="_blank" rel="noreferrer">{content}</a> : content}<button className="episode-hide" type="button" onClick={() => setHideCandidate({ seriesId: episode.series_id, title: show?.title ?? episode.platform })}>Serie ausblenden</button></article>; })}</article>; })}</section>}
+    {!loading && !error && <section className="calendar">{days.map((day) => {
+      const items = sortCalendarItems(byDay.get(dateKey(day)) ?? [], seriesMap);
+      return <article className={dateKey(day) === todayKey ? "day day-today" : "day"} key={dateKey(day)}>
+        <h2>{dayLabel.format(day)}</h2>
+        {items.length === 0 ? <p className="empty">Keine Episoden</p> : items.map(({ episode, release }) => {
+          const show = seriesMap.get(episode.series_id);
+          return <EpisodeTile
+            key={`${episode.id}-${release.release_at}`}
+            episode={episode}
+            release={release}
+            seriesTitle={show?.title ?? "Unbekannte Serie"}
+            color={seriesColor(episode.series_id)}
+            seen={seenEpisodes.has(episode.id)}
+            onToggleSeen={toggleSeen}
+            onHideSeries={() => setHideCandidate({ seriesId: episode.series_id, title: show?.title ?? episode.platform })}
+          />;
+        })}
+      </article>;
+    })}</section>}
     {!loading && !error && filtered.length === 0 && <p className="status">Für diese Filter wurden keine Episoden gefunden.</p>}
     <footer className="app-footer">Episode Calendar is open source under the <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noreferrer">Apache 2.0 license</a>. Created by <a href="https://github.com/ckadluba" target="_blank" rel="noreferrer">Christian Kadluba</a>. <a href="https://github.com/ckadluba/episode-calendar" target="_blank" rel="noreferrer">View the source on GitHub</a>.</footer>
     {hideCandidate && <div className="confirm-backdrop" onClick={() => setHideCandidate(null)}>

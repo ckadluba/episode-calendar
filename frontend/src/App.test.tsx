@@ -307,6 +307,64 @@ describe("App preferences", () => {
   });
 });
 
+describe("seen episodes", () => {
+  afterEach(() => cleanup());
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+    mockApiWithEpisode();
+  });
+
+  it("marks an episode as seen and stores it in the browser", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
+    const checkbox = screen.getByRole("checkbox", { name: /Gesehen/ });
+    expect(checkbox).not.toBeChecked();
+
+    fireEvent.click(checkbox);
+
+    expect(checkbox).toBeChecked();
+    expect(screen.getByText(/Pilot/).closest(".episode")).toHaveClass("episode-seen");
+    expect(JSON.parse(localStorage.getItem("episode-calendar-seen-episodes") ?? "null")).toEqual(["episode-1"]);
+  });
+
+  it("restores the seen state after a reload", async () => {
+    localStorage.setItem("episode-calendar-seen-episodes", JSON.stringify(["episode-1"]));
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
+    expect(screen.getByRole("checkbox", { name: /Gesehen/ })).toBeChecked();
+    expect(screen.getByText(/Pilot/).closest(".episode")).toHaveClass("episode-seen");
+  });
+
+  it("shows the episode normally again when the marker is removed", async () => {
+    localStorage.setItem("episode-calendar-seen-episodes", JSON.stringify(["episode-1"]));
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
+    const checkbox = screen.getByRole("checkbox", { name: /Gesehen/ });
+
+    fireEvent.click(checkbox);
+
+    expect(checkbox).not.toBeChecked();
+    expect(screen.getByText(/Pilot/).closest(".episode")).not.toHaveClass("episode-seen");
+    expect(JSON.parse(localStorage.getItem("episode-calendar-seen-episodes") ?? "null")).toEqual([]);
+  });
+
+  it("ignores malformed stored markers", async () => {
+    localStorage.setItem("episode-calendar-seen-episodes", JSON.stringify({ "episode-1": true }));
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
+    expect(screen.getByRole("checkbox", { name: /Gesehen/ })).not.toBeChecked();
+  });
+});
+
 describe("episode start labels", () => {
   it("labels first episodes as new series or new seasons", () => {
     expect(episodeStartLabel({ season_number: 1, number: 1 })).toBe("Neue Serie");
