@@ -179,10 +179,10 @@ function EpisodeTile({ episode, release, seriesTitle, color, seen, onToggleSeen,
         <input
           type="checkbox"
           checked={seen}
-          aria-label={`Gesehen: ${seriesTitle} ${episode.title}`}
+          aria-label={`gesehen: ${seriesTitle} ${episode.title}`}
           onChange={() => onToggleSeen(episode.id)}
         />
-        <span>Gesehen</span>
+        <span>gesehen</span>
       </label>
       <button className="episode-hide" type="button" onClick={onHideSeries}>Serie ausblenden</button>
     </div>

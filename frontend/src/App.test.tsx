@@ -320,7 +320,7 @@ describe("seen episodes", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
-    const checkbox = screen.getByRole("checkbox", { name: /Gesehen/ });
+    const checkbox = screen.getByRole("checkbox", { name: /gesehen/i });
     expect(checkbox).not.toBeChecked();
 
     fireEvent.click(checkbox);
@@ -336,7 +336,7 @@ describe("seen episodes", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
-    expect(screen.getByRole("checkbox", { name: /Gesehen/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /gesehen/i })).toBeChecked();
     expect(screen.getByText(/Pilot/).closest(".episode")).toHaveClass("episode-seen");
   });
 
@@ -346,7 +346,7 @@ describe("seen episodes", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
-    const checkbox = screen.getByRole("checkbox", { name: /Gesehen/ });
+    const checkbox = screen.getByRole("checkbox", { name: /gesehen/i });
 
     fireEvent.click(checkbox);
 
@@ -361,17 +361,17 @@ describe("seen episodes", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
-    expect(screen.getByRole("checkbox", { name: /Gesehen/ })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /gesehen/i })).not.toBeChecked();
   });
 
   it("keeps the seen marker class off the checkbox label", async () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByText(/Pilot/)).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("checkbox", { name: /Gesehen/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /gesehen/i }));
 
     const tile = screen.getByText(/Pilot/).closest(".episode") as HTMLElement;
-    const label = within(tile).getByRole("checkbox", { name: /Gesehen/ }).closest("label") as HTMLElement;
+    const label = within(tile).getByRole("checkbox", { name: /gesehen/i }).closest("label") as HTMLElement;
     // The tile carries the marker state; the label must not share that class,
     // otherwise the tile inherits the label styles and changes its layout.
     expect(tile).toHaveClass("episode-seen");
