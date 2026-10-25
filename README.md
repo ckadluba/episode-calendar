@@ -241,6 +241,11 @@ Every episode in the calendar has a `gesehen` checkbox that tracks which episode
 watched. Marked episodes are dimmed so the remaining ones stand out, and the markers are stored in
 the browser's local storage as well. Unchecking a marker restores the normal episode appearance.
 
+The calendar renders one tile per episode. When a platform publishes several episodes at the same
+instant – a full-season drop, a double episode, or an RTL+ prerelease of the whole season – each of
+them appears as its own tile on that day: the release date belongs to the episode, and every tile
+keeps its own `gesehen` marker, link, and `Vorab` badge.
+
 ### Tests and checks
 
 Tests use an isolated SQLite database and never contact streaming providers:
