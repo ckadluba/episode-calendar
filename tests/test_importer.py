@@ -418,6 +418,8 @@ async def test_streaming_before_already_aired_broadcast_is_not_a_preview(
     # The broadcast already aired, so the earlier drop is a regular early release and
     # must not be flagged as a preview anymore.
     assert [release.preview for release in releases] == [False, False]
+    # Losing the preview flag must not turn the episode's own premiere into a rerun.
+    assert [release.rerun for release in releases] == [False, False]
 
 
 async def test_first_airing_after_preview_drop_is_the_premiere(

@@ -55,6 +55,25 @@ class RerunDetection:
 ExistingRelease = tuple[ReleaseType, datetime, str | None, bool, bool]
 
 
+# A catalogue drop that precedes the episode's own broadcast by at least a day is an
+# early on-demand release; a same-day drop that only leads the broadcast by minutes is
+# the regular release cadence, never a preview. The upper bound keeps a platform whose
+# regular model is streaming long before TV from being reclassified wholesale.
+PREVIEW_MIN_LEAD = timedelta(days=1)
+PREVIEW_MAX_LEAD = timedelta(days=14)
+
+
+def _leads_broadcast(drop: datetime, broadcast: datetime) -> bool:
+    """Whether an on-demand drop is the early release of that broadcast.
+
+    Such a drop announces the airing instead of making the episode available long before
+    it, so the broadcast is that episode's premiere and not a repeat. Both the preview
+    marking and the rerun classification rely on this window.
+    """
+
+    return PREVIEW_MIN_LEAD <= broadcast - drop <= PREVIEW_MAX_LEAD
+
+
 def detect_reruns(
     normalized: NormalizedSeries,
     *,
@@ -68,9 +87,11 @@ def detect_reruns(
     Catalogue structure (season or episode numbering, or a re-listed old season) never
     classifies anything as a rerun. A catalogue correction (the provider republishes the
     episode's own release with a new date, keeping its identifier) is an update, not a
-    repeat; only a genuinely additional airing is classified here. Releases that are
-    themselves already reruns are ignored, so a repeat never turns an episode's regular
-    airing into another rerun.
+    repeat; only a genuinely additional airing is classified here. An on-demand drop that
+    leads the broadcast within the preview window announces that premiere instead of
+    making the episode available earlier, so the broadcast stays the regular airing.
+    Releases that are themselves already reruns are ignored, so a repeat never turns an
+    episode's regular airing into another rerun.
     """
 
     rerun_release_keys: set[tuple[str, str, str | None]] = set()
@@ -94,7 +115,9 @@ def detect_reruns(
                     if other is not release and not other.preview and not other.rerun
                 )
                 earlier_catalog = any(
-                    release_type is not ReleaseType.TV_BROADCAST and release_at < release.release_at
+                    release_type is not ReleaseType.TV_BROADCAST
+                    and release_at < release.release_at
+                    and not _leads_broadcast(release_at, release.release_at)
                     for release_type, release_at, _ in earlier_releases
                 )
                 earlier_other_airing = any(
@@ -112,14 +135,6 @@ def detect_reruns(
                         )
                     )
     return RerunDetection(rerun_release_keys=frozenset(rerun_release_keys))
-
-
-# A catalogue drop that precedes the episode's own broadcast by at least a day is an
-# early on-demand release; a same-day drop that only leads the broadcast by minutes is
-# the regular release cadence, never a preview. The upper bound keeps a platform whose
-# regular model is streaming long before TV from being reclassified wholesale.
-PREVIEW_MIN_LEAD = timedelta(days=1)
-PREVIEW_MAX_LEAD = timedelta(days=14)
 
 
 def detect_previews(
@@ -142,10 +157,12 @@ def detect_previews(
 
     The same reasoning clears a provider rerun flag: an airing cannot repeat an episode
     that has never aired, so when the tree knows no regular airing of the episode, the
-    earliest broadcast after a preview drop is its regular premiere even when the
-    provider attached it as an off-slot rerun (for example a numberless EPG event).
-    A broadcast the provider already left unflagged is the known premiere and nothing
-    is cleared; later airings keep their rerun flag.
+    earliest broadcast after an early drop is its regular premiere even when the provider
+    attached it as an off-slot rerun (for example a numberless EPG event). That clearing
+    stays independent of the preview window and therefore also applies once the premiere
+    has aired; otherwise an already-aired premiere would stay flagged as a rerun. A
+    broadcast the provider already left unflagged is the known premiere and nothing is
+    cleared; later airings keep their rerun flag.
     """
 
     seasons: list[NormalizedSeason] = []
@@ -168,20 +185,26 @@ def detect_previews(
                     release.release_type is ReleaseType.STREAMING
                     and not release.preview
                     and not release.placeholder
-                    and PREVIEW_MIN_LEAD <= first_broadcast - release.release_at <= PREVIEW_MAX_LEAD
+                    and _leads_broadcast(release.release_at, first_broadcast)
                     and (now is None or first_broadcast > now)
                 )
                 else release
                 for release in episode.releases
             )
+            # The rerun policy stays independent of the preview window: a drop that leads
+            # its episode's premiere marks that first airing as the premiere even after the
+            # premiere has aired. Gating this on ``now`` would leave already-aired premieres
+            # flagged as reruns of an episode that never had a regular airing.
             preview_drops = [
                 release.release_at
-                for release in releases
-                if release.release_type is ReleaseType.STREAMING and release.preview
+                for release in episode.releases
+                if release.release_type is ReleaseType.STREAMING
+                and not release.placeholder
+                and (release.preview or _leads_broadcast(release.release_at, first_broadcast))
             ]
             has_regular_airing = any(
                 release.release_type is ReleaseType.TV_BROADCAST and not release.rerun
-                for release in releases
+                for release in episode.releases
             )
             if preview_drops and not has_regular_airing:
                 premiere = min(
