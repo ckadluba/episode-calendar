@@ -235,7 +235,11 @@ class RTLPlusProvider:
                 premieres[number] = event.start
         for event in matching:
             seasons, _target = self._mark_previews(
-                seasons, event, self._epg_episode_number(event), premieres=premieres
+                seasons,
+                event,
+                self._epg_episode_number(event),
+                premieres=premieres,
+                now=self._clock().astimezone(UTC),
             )
         broadcasts = [
             EpgBroadcast(
@@ -266,6 +270,7 @@ class RTLPlusProvider:
         episode_number: int | None,
         *,
         premieres: Mapping[int, datetime] = {},
+        now: datetime | None = None,
     ) -> tuple[list[NormalizedSeason], NormalizedEpisode | None]:
         """Flag catalog releases earlier than the episode's linear premiere.
 
@@ -278,10 +283,22 @@ class RTLPlusProvider:
         cadence, never a preview. Episodes without a premiere fall back to the airing at
         hand, which preserves the known same-day preview pattern when the EPG labels a
         different episode number.
+
+        A preview announces an episode that has not aired yet. ``now`` is the import
+        reference time; once the linear premiere is no longer in the future, a drop in
+        front of it is the regular release cadence that already happened, so the episode
+        must not stay flagged as a preview.
         """
+
+        def upcoming(premiere: datetime) -> bool:
+            # Without a reference time callers that pin the premieres themselves stay on
+            # the preview side of the policy; imports always pass the current time.
+            return now is None or premiere > now
 
         for candidate in tuple(episode for season in seasons for episode in season.episodes):
             premiere = premieres.get(candidate.number) or event.start
+            if not upcoming(premiere):
+                continue
             updated_releases = tuple(
                 existing.model_copy(update={"preview": True})
                 if (
@@ -304,6 +321,8 @@ class RTLPlusProvider:
                 )
 
         premiere = premieres.get(episode_number) or event.start
+        if not upcoming(premiere):
+            return seasons, None
         target = self._catalog_episode_for_epg(seasons, episode_number, premiere)
         if target is not None:
             reference = premieres.get(target.number) or premiere

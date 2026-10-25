@@ -56,7 +56,9 @@
   episode's earliest linear premiere, and the catalogue episode matched to a premiere airing within
   the 14-day look-ahead (`rtlplus.py:286`). The importer's central preview policy `detect_previews`
   additionally flags a broadcast-anchored drop of one day to two weeks as a preview, so a guide
-  premiere the inline marking missed still yields a preview.
+  premiere the inline marking missed still yields a preview. A preview announces an episode that has
+  not aired yet, so once the linear premiere is in the past the drops in front of it are treated as
+  the regular releases they already were (`rtlplus.py:266`).
 - **Own EPG source and slots.** The `guidetv` guide is fetched from `now - lookback` (default 21
   days) to `now + 14 days`, paginated, deduped, blocks longer than 4h dropped, and cached per
   process (`rtlplus.py:371`). `merge_epg` receives slots derived from the EPG's own premieres

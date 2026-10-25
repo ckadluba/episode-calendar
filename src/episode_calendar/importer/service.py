@@ -7,7 +7,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import delete, select
@@ -122,7 +122,9 @@ PREVIEW_MIN_LEAD = timedelta(days=1)
 PREVIEW_MAX_LEAD = timedelta(days=14)
 
 
-def detect_previews(normalized: NormalizedSeries) -> NormalizedSeries:
+def detect_previews(
+    normalized: NormalizedSeries, *, now: datetime | None = None
+) -> NormalizedSeries:
     """Flag catalogue drops that precede the episode's own linear broadcast.
 
     Some platforms (Joyn, RTL+) publish an episode on demand before its linear airing
@@ -133,6 +135,10 @@ def detect_previews(normalized: NormalizedSeries) -> NormalizedSeries:
     this provider-independent policy only fills that flag in. Callers gate on the
     platform's prerelease flag and run this before rerun detection, so a fresh preview
     never turns its own broadcast into a rerun.
+
+    A preview announces an episode that has not aired yet, so a broadcast that is no
+    longer in the future never flags its earlier drop: the release has already happened
+    and is a regular (early) release, not an upcoming preview.
 
     The same reasoning clears a provider rerun flag: an airing cannot repeat an episode
     that has never aired, so when the tree knows no regular airing of the episode, the
@@ -163,6 +169,7 @@ def detect_previews(normalized: NormalizedSeries) -> NormalizedSeries:
                     and not release.preview
                     and not release.placeholder
                     and PREVIEW_MIN_LEAD <= first_broadcast - release.release_at <= PREVIEW_MAX_LEAD
+                    and (now is None or first_broadcast > now)
                 )
                 else release
                 for release in episode.releases
@@ -258,7 +265,7 @@ async def import_series(
     # preview flag is forced off so no stale prerelease detection can leak into the data.
     allow_previews = platform_has_prereleases(adapter.slug)
     if allow_previews:
-        normalized = detect_previews(normalized)
+        normalized = detect_previews(normalized, now=reference_time or datetime.now(UTC))
     provider = await session.scalar(select(Provider).where(Provider.slug == adapter.slug))
     if provider is None:
         provider = Provider(slug=adapter.slug, name=provider_name or adapter.slug.title())

@@ -567,6 +567,97 @@ async def test_epg_does_not_mark_already_aired_catalog_release_as_preview() -> N
     assert streaming.preview is False
 
 
+async def test_epg_does_not_mark_aired_season_start_as_preview() -> None:
+    # A new season that started last week published its first episodes on demand before
+    # the linear premiere; once that premiere has aired, the drops are the regular
+    # releases and must not stay flagged as previews.
+    endpoint = "https://rtlplus-test.example/guidetv-season-start"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "rtlde_rtl": [
+                    {
+                        "code": "folge-1-2026",
+                        "title": "#CoupleChallenge",
+                        "subtitle": "Folge 1 • Folge 1",
+                        "diffusion_start_date": "2026-10-22 20:15:00",
+                        "diffusion_end_date": "2026-10-22 21:25:00",
+                    },
+                    {
+                        "code": "folge-2-2026",
+                        "title": "#CoupleChallenge",
+                        "subtitle": "Folge 2 • Folge 2",
+                        "diffusion_start_date": "2026-10-23 20:15:00",
+                        "diffusion_end_date": "2026-10-23 21:25:00",
+                    },
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = RTLPlusProvider.__new__(RTLPlusProvider)
+    provider._epg_endpoint = endpoint
+    provider._epg_channels = ("rtlde_rtl",)
+    provider._epg_lookback_days = 21
+    provider._clock = lambda: datetime(2026, 10, 25, tzinfo=UTC)
+    RTLPlusProvider._epg_tasks.clear()
+    normalized = NormalizedSeries(
+        external_id="11271",
+        title="#CoupleChallenge",
+        seasons=(
+            NormalizedSeason(
+                external_id="11271:season:6",
+                number=6,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="11271:season:6:episode:1",
+                        number=1,
+                        title="Folge 1",
+                        releases=(
+                            {
+                                "release_type": ReleaseType.STREAMING,
+                                "release_at": datetime(
+                                    2026, 10, 22, 0, 0, tzinfo=ZoneInfo("Europe/Vienna")
+                                ),
+                            },
+                        ),
+                    ),
+                    NormalizedEpisode(
+                        external_id="11271:season:6:episode:2",
+                        number=2,
+                        title="Folge 2",
+                        releases=(
+                            {
+                                "release_type": ReleaseType.STREAMING,
+                                "release_at": datetime(
+                                    2026, 10, 23, 0, 0, tzinfo=ZoneInfo("Europe/Vienna")
+                                ),
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    try:
+        result = await provider._add_epg(client, normalized)
+    finally:
+        await client.aclose()
+
+    episodes = list(result.seasons[0].episodes)
+    assert [episode.number for episode in episodes] == [1, 2]
+    for episode in episodes:
+        streaming = next(
+            release for release in episode.releases if release.release_type is ReleaseType.STREAMING
+        )
+        assert streaming.preview is False
+        assert not any(
+            release.release_type is ReleaseType.TV_BROADCAST for release in episode.releases
+        )
+
+
 async def test_epg_folds_numberless_future_airing_into_running_season() -> None:
     endpoint = "https://rtlplus-test.example/guidetv-numberless"
 
