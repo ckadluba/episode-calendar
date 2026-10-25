@@ -355,13 +355,70 @@ async def test_streaming_before_own_broadcast_is_flagged_as_preview(
                 ),
             )
 
-    await import_series(db_session, EarlyDropProvider(), "ignored")
+    await import_series(
+        db_session,
+        EarlyDropProvider(),
+        "ignored",
+        reference_time=datetime(2026, 10, 6, tzinfo=UTC),
+    )
 
     releases = list(
         await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
     )
     assert [release.preview for release in releases] == [True, False]
     # The catalogue drop is a preview, so its broadcast is the regular airing, not a rerun.
+    assert [release.rerun for release in releases] == [False, False]
+
+
+async def test_streaming_before_already_aired_broadcast_is_not_a_preview(
+    db_session: AsyncSession,
+) -> None:
+    class EarlyDropAiredProvider:
+        slug = "joyn"
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="joyn-season",
+                        number=1,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="joyn-episode",
+                                number=4,
+                                title="Folge 4",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 10, 16, 22, 1, tzinfo=UTC),
+                                    ),
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 20, 18, 15, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(
+        db_session,
+        EarlyDropAiredProvider(),
+        "ignored",
+        reference_time=datetime(2026, 10, 22, tzinfo=UTC),
+    )
+
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    # The broadcast already aired, so the earlier drop is a regular early release and
+    # must not be flagged as a preview anymore.
+    assert [release.preview for release in releases] == [False, False]
+    # Losing the preview flag must not turn the episode's own premiere into a rerun.
     assert [release.rerun for release in releases] == [False, False]
 
 
@@ -409,7 +466,12 @@ async def test_first_airing_after_preview_drop_is_the_premiere(
                 ),
             )
 
-    await import_series(db_session, AttachedRerunProvider(), "ignored")
+    await import_series(
+        db_session,
+        AttachedRerunProvider(),
+        "ignored",
+        reference_time=datetime(2026, 10, 6, tzinfo=UTC),
+    )
 
     releases = list(
         await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
