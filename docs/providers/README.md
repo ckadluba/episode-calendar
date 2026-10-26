@@ -28,8 +28,10 @@ its specialties and deviations from it.
 - **Cross-cutting policy (owned by the importer, not the adapters).** `importer/service.py` and
   `providers/epg.py` implement rerun detection, preview detection for a catalogue drop that
   precedes the episode's own broadcast (`detect_previews`: one day to two weeks of lead, only on
-  platforms whose `hasPrereleases` is `true`; a preview only announces an episode that has not
-  aired yet, so once the broadcast is past its earlier drop is the regular release and the flag
+  platforms whose `hasPrereleases` is `true`; adapters whose provider marks previews
+  authoritatively opt out of this inference with `infers_catalog_previews = False`, as Joyn does
+  because its `PREVIEW` marking only means "Vor TV"; a preview only announces an episode that has
+  not aired yet, so once the broadcast is past its earlier drop is the regular release and the flag
   clears; the first airing after such a drop is the episode's premiere, so a provider rerun flag on
   it is cleared, and an on-demand drop inside that lead window never turns the episode's own
   broadcast into a rerun), first-seen placeholder preservation,
@@ -60,9 +62,11 @@ platform-level `hasPrereleases` flag (default `true`) declares whether the platf
 streaming prereleases; on providers whose platform sets it to `false`, imported releases are never
 marked as previews. On platforms that do publish them, an on-demand release that precedes the
 episode's own linear broadcast by one day to two weeks is marked as a preview by the importer even
-when the provider's catalogue carries no preview marking. The preview marks an announcement of an
-episode that has not aired yet, so it is only set while that broadcast is still in the future; after
-the premiere the earlier drop is the regular release and the flag is not set again.
+when the provider's catalogue carries no preview marking, unless the adapter sets
+`infers_catalog_previews = False` because its own marking is authoritative (Joyn's `PREVIEW` means
+"Vor TV", not "Vorab"). The preview marks an announcement of an episode that has not aired yet, so
+it is only set while that broadcast is still in the future; after the premiere the earlier drop is
+the regular release and the flag is not set again.
 
 ## Providers
 

@@ -370,6 +370,59 @@ async def test_streaming_before_own_broadcast_is_flagged_as_preview(
     assert [release.rerun for release in releases] == [False, False]
 
 
+async def test_joyn_free_early_drop_is_not_inferred_as_preview(
+    db_session: AsyncSession,
+) -> None:
+    class JoynProviderWithoutInference:
+        slug = "joyn"
+        infers_catalog_previews = False
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="joyn-season",
+                        number=5,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="joyn-episode",
+                                number=1,
+                                title="Vor TV, free for every account",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 10, 16, 22, 1, tzinfo=UTC),
+                                    ),
+                                    NormalizedEpisodeRelease(
+                                        external_id="epg:tv:1",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 10, 25, 13, 10, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    await import_series(
+        db_session,
+        JoynProviderWithoutInference(),
+        "ignored",
+        reference_time=datetime(2026, 10, 6, tzinfo=UTC),
+    )
+
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    # The broadcast is in the future and only nine days after the drop, but Joyn's
+    # "Vor TV" is not a prerelease, so the early drop stays regular.
+    assert [release.preview for release in releases] == [False, False]
+    assert [release.rerun for release in releases] == [False, False]
+
+
 async def test_streaming_before_already_aired_broadcast_is_not_a_preview(
     db_session: AsyncSession,
 ) -> None:

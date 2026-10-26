@@ -122,7 +122,8 @@ MAX_EPG_EVENT_DURATION = timedelta(hours=4)
 # Airing times within this window around a known broadcast slot are treated as that slot.
 EPG_SLOT_TOLERANCE = timedelta(hours=2)
 # A PLUS/PREMIUM badge on a drop older than this is an uncleaned catalog leftover,
-# mirroring the importer's central two-week preview window.
+# unless the episode's linear airing is still ahead. Mirrors the importer's central
+# two-week preview window.
 PLUS_BADGE_MAX_AGE = timedelta(days=14)
 EPG_TIMEZONE = ZoneInfo("Europe/Vienna")
 logger = logging.getLogger(__name__)
@@ -165,6 +166,10 @@ class JoynProvider:
     and headers as its persisted-query client. The API key is public web-client configuration,
     supplied at runtime rather than stored in this repository.
     """
+
+    # Joyn marks subscriber-only episodes with PLUS/PREMIUM, so the importer must not
+    # infer a preview from a free "Vor TV" catalogue drop ahead of its linear airing.
+    infers_catalog_previews = False
 
     _epg_tasks: ClassVar[dict[tuple[str, str, date], asyncio.Task[tuple[_EpgEvent, ...]]]] = {}
 
@@ -504,14 +509,10 @@ class JoynProvider:
         airdate = self._timestamp(episode.get("airdate"), "episode.airdate")
         available_until = self._timestamp(episode.get("endsAt"), "episode.endsAt")
         markings = episode.get("markings")
-        preview_marked = isinstance(markings, list) and "PREVIEW" in markings
-        # Joyn keeps the PREVIEW marking on some catalog entries after the
-        # regular release has happened. Treat it as a preview only while the
-        # catalog start is still before the linear airdate. This preserves the
-        # actual early release (for example 29 September) without turning the
-        # regular release (6 October) into a second preview.
-        preview = preview_marked and (starts_at is None or airdate is None or starts_at < airdate)
-        preview = preview or self._subscriber_preview(markings, starts_at, airdate)
+        # Joyn's PREVIEW marking means "Vor TV": the episode is available to every
+        # account before its linear airing. That is not a prerelease, so only a
+        # PLUS/PREMIUM (Joyn+) badge marks a preview on this platform.
+        preview = self._subscriber_preview(markings, starts_at, airdate)
         path = episode.get("path")
         url = self._episode_url(path)
         video = episode.get("video")
@@ -580,21 +581,29 @@ class JoynProvider:
     ) -> bool:
         """Whether a PLUS/PREMIUM badge marks a still subscriber-only episode.
 
+        Only the Joyn+ badge is a prerelease on this platform: the ``PREVIEW``
+        marking means "Vor TV" and marks an episode every logged-in account can
+        already watch, so it is deliberately ignored here.
         Joyn clears the badge once the episode is regularly available (aired
         episodes carry no marking), so a badge means the drop is a prerelease.
         Such drops store ``startsAt == airdate`` when the episode has no earlier
-        linear slot (4 Elements), so equality counts here — unlike the ``PREVIEW``
-        marking above, where equality marks a stale entry. Streams that start
+        linear slot (4 Elements), so equality counts here. Streams that start
         after their airdate (the daily subscriber cadence of older seasons) stay
-        regular, and a badge Joyn never cleared on an old entry must not turn
-        that entry into a preview, so the drop has to be current.
+        regular. A badge counts while its linear airing is still ahead, even when
+        the drop is older than the two-week window (a season that premieres on TV
+        a month later stays a prerelease). A badge Joyn never cleared on an
+        already-aired old entry must not turn that entry into a preview, so
+        otherwise the drop has to be recent.
         """
         if not isinstance(markings, list) or not ("PLUS" in markings or "PREMIUM" in markings):
             return False
         if starts_at is not None and airdate is not None and starts_at > airdate:
             return False
+        now = self._clock()
+        if airdate is not None and airdate > now:
+            return True
         drop = starts_at if starts_at is not None else airdate
-        return drop is None or drop >= self._clock() - PLUS_BADGE_MAX_AGE
+        return drop is None or drop >= now - PLUS_BADGE_MAX_AGE
 
     @staticmethod
     def _series_path(identifier: str) -> str:

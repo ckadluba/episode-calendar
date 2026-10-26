@@ -138,18 +138,23 @@ def detect_reruns(
 
 
 def detect_previews(
-    normalized: NormalizedSeries, *, now: datetime | None = None
+    normalized: NormalizedSeries,
+    *,
+    now: datetime | None = None,
+    infer_catalog_previews: bool = True,
 ) -> NormalizedSeries:
     """Flag catalogue drops that precede the episode's own linear broadcast.
 
-    Some platforms (Joyn, RTL+) publish an episode on demand before its linear airing
+    Some platforms (RTL+) publish an episode on demand before its linear airing
     without leaving a preview marking in the catalogue. The broadcast merged into the
     episode anchors its regular date: a streaming release between ``PREVIEW_MIN_LEAD``
     and ``PREVIEW_MAX_LEAD`` ahead of the episode's earliest broadcast is an early
     release, a preview. Providers that carry their own marking already set ``preview``;
-    this provider-independent policy only fills that flag in. Callers gate on the
-    platform's prerelease flag and run this before rerun detection, so a fresh preview
-    never turns its own broadcast into a rerun.
+    this provider-independent policy only fills that flag in. Providers whose marking is
+    authoritative can pass ``infer_catalog_previews=False``: Joyn's ``PREVIEW`` marking
+    is "Vor TV" and only a Joyn+ badge is a prerelease, so a free early drop must not
+    become a preview. Callers gate on the platform's prerelease flag and run this before
+    rerun detection, so a fresh preview never turns its own broadcast into a rerun.
 
     A preview announces an episode that has not aired yet, so a broadcast that is no
     longer in the future never flags its earlier drop: the release has already happened
@@ -182,7 +187,8 @@ def detect_previews(
             releases = tuple(
                 release.model_copy(update={"preview": True})
                 if (
-                    release.release_type is ReleaseType.STREAMING
+                    infer_catalog_previews
+                    and release.release_type is ReleaseType.STREAMING
                     and not release.preview
                     and not release.placeholder
                     and _leads_broadcast(release.release_at, first_broadcast)
@@ -288,7 +294,13 @@ async def import_series(
     # preview flag is forced off so no stale prerelease detection can leak into the data.
     allow_previews = platform_has_prereleases(adapter.slug)
     if allow_previews:
-        normalized = detect_previews(normalized, now=reference_time or datetime.now(UTC))
+        normalized = detect_previews(
+            normalized,
+            now=reference_time or datetime.now(UTC),
+            # Providers with an authoritative prerelease marking opt out of inferring a
+            # preview from the catalogue drop's lead (Joyn: "Vor TV" is not "Vorab").
+            infer_catalog_previews=getattr(adapter, "infers_catalog_previews", True),
+        )
     provider = await session.scalar(select(Provider).where(Provider.slug == adapter.slug))
     if provider is None:
         provider = Provider(slug=adapter.slug, name=provider_name or adapter.slug.title())
