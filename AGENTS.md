@@ -31,8 +31,22 @@ Alembic, httpx, pytest, uv, and Docker Compose.
   `Episode`; one episode can have multiple `EpisodeRelease` records.
 - Require timezone-aware release timestamps and normalize them to UTC for persistence.
 - Add an Alembic migration for schema changes. Do not edit an already deployed migration.
+- Never treat Joyn `PREVIEW`-marked content as a prerelease; only Joyn+ (`PLUS`/`PREMIUM`) content
+  counts as "Vorab". `PREVIEW` means "Vor TV" for free users and is a regular early release.
 - Do not add real provider integrations, a scheduler, authentication, queues, caching, or UI
   infrastructure without a task requiring them.
+
+## Git workflow
+
+Start every new change on a fresh work branch created from the currently pulled `main`:
+
+```sh
+git switch main
+git pull
+git switch -c <work-branch>
+```
+
+Never develop directly on `main`. Do not commit or push without an explicit request.
 
 After every code or test change, run `uv run --no-sync ruff check .` and
 `uv run --no-sync ruff format --check .`; also run `uv run pytest` before committing.
