@@ -845,7 +845,7 @@ async def test_catalog_airdate_prevents_duplicate_epg_episode() -> None:
     assert catalog_episode.number == 1
 
 
-async def test_marks_joyn_preview_episodes() -> None:
+async def test_preview_marking_alone_is_not_a_prerelease() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -858,7 +858,7 @@ async def test_marks_joyn_preview_episodes() -> None:
                             episode(
                                 "e_1",
                                 1,
-                                "Preview",
+                                "Free Vor TV release",
                                 starts_at="2026-09-29T22:00:00+02:00",
                                 airdate="2026-10-06T22:35:00+02:00",
                                 markings=["PREVIEW"],
@@ -875,7 +875,53 @@ async def test_marks_joyn_preview_episodes() -> None:
     finally:
         await client.aclose()
 
-    assert result.seasons[0].episodes[0].releases[0].preview is True
+    # Joyn's PREVIEW marking is "Vor TV", available to every account, not a prerelease.
+    assert result.seasons[0].episodes[0].releases[0].preview is False
+
+
+async def test_marks_only_joyn_plus_episodes_as_preview() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=series_response(
+                [
+                    season(
+                        "c_1",
+                        5,
+                        [
+                            episode(
+                                "e_1",
+                                1,
+                                "Free Vor TV release",
+                                starts_at="2026-10-26T00:01:00+02:00",
+                                airdate="2026-11-25T22:30:00+01:00",
+                                markings=["PREVIEW"],
+                            ),
+                            episode(
+                                "e_2",
+                                2,
+                                "Joyn+ release",
+                                starts_at="2026-10-26T00:01:00+02:00",
+                                airdate="2026-11-25T23:35:00+01:00",
+                                markings=["PLUS", "PREMIUM", "PREVIEW"],
+                            ),
+                        ],
+                    )
+                ]
+            ),
+        )
+
+    client = joyn_client(handler)
+    try:
+        result = await JoynProvider(
+            api_key="test-key",
+            client=client,
+            clock=lambda: datetime(2026, 10, 26, tzinfo=UTC),
+        ).get_series("demo")
+    finally:
+        await client.aclose()
+
+    assert [item.releases[0].preview for item in result.seasons[0].episodes] == [False, True]
 
 
 async def test_does_not_keep_preview_marking_after_regular_airdate() -> None:
@@ -983,6 +1029,43 @@ async def test_keeps_subscriber_stream_after_airdate_regular() -> None:
         await client.aclose()
 
     assert result.seasons[0].episodes[0].releases[0].preview is False
+
+
+async def test_keeps_subscriber_badge_while_linear_airing_is_ahead() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=series_response(
+                [
+                    season(
+                        "c_1",
+                        5,
+                        [
+                            episode(
+                                "e_1",
+                                3,
+                                "Joyn+ season premiering on TV a month later",
+                                starts_at="2026-09-01T00:01:00+02:00",
+                                airdate="2026-11-24T23:35:00+01:00",
+                                markings=["PLUS", "PREMIUM", "PREVIEW"],
+                            )
+                        ],
+                    )
+                ]
+            ),
+        )
+
+    client = joyn_client(handler)
+    try:
+        result = await JoynProvider(
+            api_key="test-key",
+            client=client,
+            clock=lambda: datetime(2026, 10, 19, tzinfo=UTC),
+        ).get_series("demo")
+    finally:
+        await client.aclose()
+
+    assert result.seasons[0].episodes[0].releases[0].preview is True
 
 
 async def test_ignores_stale_subscriber_badge() -> None:
