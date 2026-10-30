@@ -776,7 +776,7 @@ class RTLPlusProvider:
         return None
 
     async def _fetch_jsonld_documents(self, client: httpx.AsyncClient, url: str) -> list[Any]:
-        response = await client.get(url, headers={"Accept": "text/html"})
+        response = await client.get(url, headers={"Accept": "text/html"}, follow_redirects=True)
         response.raise_for_status()
         documents: list[Any] = []
         for match in _JSONLD_RE.finditer(response.text):
@@ -1097,14 +1097,16 @@ class RTLPlusProvider:
                         else:
                             release_at = releases.get(episode_number)
                         if release_at is None and diffusion_release is not None:
-                            # Once a season has finished, RTL+ drops the schedule table and
-                            # the weekday block and only the page-level diffusion date
-                            # remains. It originally identifies the last published episode,
-                            # but applying it to every episode of that season that has no
-                            # date is better than stamping the discovery time: it keeps a
-                            # completed season out of today's calendar even though the date
-                            # is wrong for most episodes.
+                            # RTL+ drops the schedule table and the weekday block once the
+                            # announced episodes are published, and only the page-level
+                            # diffusion date remains. It identifies the newest streaming
+                            # batch, not this episode, so applying it to every undated
+                            # episode of the season is an estimate. Mark it as derived:
+                            # the importer keeps a date that is already known instead of
+                            # re-dating aired episodes whenever a new batch moves the
+                            # diffusion date forward.
                             release_at = diffusion_release
+                            release_date_from_api = False
                     elif season_anchors and season_number in season_anchors:
                         # A completed season exposes no broadcast dates through RTL+'s JSON
                         # catalogue. Its "Auftakt" preview publishes the premiere week:

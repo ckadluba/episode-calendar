@@ -176,7 +176,7 @@ def test_merge_epg_extends_running_season_and_flags_reruns() -> None:
     assert reruns[0].release_at == datetime(2026, 10, 14, 22, 15, tzinfo=UTC)
 
 
-def test_merge_epg_fills_undated_catalog_episode_and_drops_dated_one() -> None:
+def test_merge_epg_keeps_airing_for_dated_episode_unless_within_tolerance() -> None:
     now = datetime(2026, 10, 10, tzinfo=UTC)
     series = NormalizedSeries(
         external_id="s",
@@ -236,7 +236,7 @@ def test_merge_epg_fills_undated_catalog_episode_and_drops_dated_one() -> None:
         ReleaseType.TV_BROADCAST,
     ]
     assert announced.releases[-1].date_from_api is True
-    assert [release.external_id for release in dated.releases] == ["e2-stream"]
+    assert [release.external_id for release in dated.releases] == ["e2-stream", "b2"]
 
 
 def test_merge_epg_creates_numbered_episode_not_in_catalog() -> None:

@@ -238,42 +238,6 @@ def detect_previews(
     return normalized.model_copy(update={"seasons": tuple(seasons)})
 
 
-def _effective_releases(
-    releases: tuple[NormalizedEpisodeRelease, ...],
-) -> tuple[NormalizedEpisodeRelease, ...]:
-    """Let a known broadcast date replace a first-seen catalogue placeholder.
-
-    A catalogue episode that has no provider date is stored at its discovery time with
-    ``date_from_api`` cleared. When the linear programme later supplies the real airing
-    date it replaces that placeholder instead of appearing as a second release.
-    """
-
-    catalog = [release for release in releases if release.release_type is ReleaseType.STREAMING]
-    broadcasts = sorted(
-        (release for release in releases if release.release_type is ReleaseType.TV_BROADCAST),
-        key=lambda release: release.release_at,
-    )
-    placeholder = next((release for release in catalog if release.placeholder), None)
-    if placeholder is None or not broadcasts:
-        return releases
-    broadcast = broadcasts.pop(0)
-    catalog = [
-        release.model_copy(
-            update={
-                "release_at": broadcast.release_at,
-                "available_until": release.available_until or broadcast.available_until,
-                "url": release.url or broadcast.url,
-                "date_from_api": True,
-                "placeholder": False,
-            }
-        )
-        if release is placeholder
-        else release
-        for release in catalog
-    ]
-    return (*catalog, *broadcasts)
-
-
 async def import_series(
     session: AsyncSession,
     adapter: ProviderAdapter,
@@ -368,11 +332,14 @@ async def import_series(
         existing_releases[episode_id].append(
             (release_type, release_at, external_id, preview, rerun)
         )
-    # First-seen placeholder dates (a catalogue episode without a provider date) must
-    # survive a reimport. Capture them before the releases are replaced below so the same
-    # discovery timestamp is reused instead of being reset to the current time.
-    first_seen_release_dates: dict[tuple[UUID, ReleaseType], datetime] = {}
-    first_seen_rows = await session.execute(
+    # Capture the dates already stored so a reimport keeps them instead of re-dating
+    # episodes. A date derived from the provider's payload (for example RTL+'s
+    # page-level diffusion date) is an estimate and must never overwrite a date that
+    # is already known; an API date always wins. Discovery-time fallbacks are kept
+    # as-is so an undated episode stays on the day it was first seen. Multiple
+    # airings of one episode are left to the provider.
+    stored_release_dates: dict[tuple[UUID, ReleaseType], list[datetime]] = defaultdict(list)
+    stored_rows = await session.execute(
         select(
             EpisodeRelease.episode_id,
             EpisodeRelease.release_type,
@@ -382,12 +349,11 @@ async def import_series(
         .join(Season, Season.id == Episode.season_id)
         .where(
             EpisodeRelease.provider_id == provider.id,
-            EpisodeRelease.date_from_api.is_(False),
             Season.series_id == series.id,
         )
     )
-    for episode_id, release_type, release_at in first_seen_rows:
-        first_seen_release_dates[(episode_id, release_type)] = release_at
+    for episode_id, release_type, release_at in stored_rows:
+        stored_release_dates[(episode_id, release_type)].append(release_at)
 
     imported_seasons = normalized.seasons
 
@@ -563,7 +529,7 @@ async def import_series(
                 if reconciled:
                     episode.external_id = normalized_episode.external_id
             episode_count += 1
-            effective_releases = _effective_releases(normalized_episode.releases)
+            effective_releases = normalized_episode.releases
             catalog_url = next(
                 (
                     str(release.url)
@@ -585,12 +551,16 @@ async def import_series(
                     normalized_release.rerun or release_key in reruns.rerun_release_keys
                 ) and normalized_release.release_type is ReleaseType.TV_BROADCAST
                 release_at = normalized_release.release_at
-                if normalized_release.placeholder:
-                    stored_first_seen = first_seen_release_dates.get(
-                        (episode.id, normalized_release.release_type)
-                    )
-                    if stored_first_seen is not None:
-                        release_at = stored_first_seen
+                stored_dates = stored_release_dates.get(
+                    (episode.id, normalized_release.release_type), []
+                )
+                # A derived date (or a discovery-time fallback) is a guess and must
+                # never re-date a release whose date is already stored. An API date
+                # always wins (handled below). A placeholder keeps any stored date
+                # so an undated episode stays on the day it was first seen.
+                if not normalized_release.date_from_api and stored_dates:
+                    if normalized_release.placeholder or len(stored_dates) == 1:
+                        release_at = min(stored_dates)
                 release_url = str(normalized_release.url) if normalized_release.url else catalog_url
                 if (
                     release_url is None
@@ -650,8 +620,8 @@ async def import_series(
                     release.episode_id = episode.id
                     release.external_id = normalized_release.external_id
                     release.release_type = normalized_release.release_type
-                    # A first-seen placeholder never overwrites an already known date;
-                    # an API date always wins and also clears the placeholder marker.
+                    # An API date always wins; a derived date keeps the stored date
+                    # (handled before, via stored_release_dates).
                     if normalized_release.date_from_api:
                         release.release_at = normalized_release.release_at
                     release.available_until = normalized_release.available_until

@@ -95,7 +95,8 @@ async def test_fetches_numbered_episodes_and_ignores_bonus_content() -> None:
     assert episode.external_id == "episode-2"
     assert episode.title == "The Second One"
     assert episode.duration_minutes == 51
-    # The scheduled broadcast belongs to a catalogue episode, so it is not duplicated.
+    # The broadcast is at the same instant as the catalogue release, so it is
+    # dropped instead of duplicating it.
     assert [release.release_type for release in episode.releases] == [ReleaseType.STREAMING]
 
 
@@ -210,8 +211,12 @@ async def test_deduplicates_programme_entries_returned_for_several_days() -> Non
 
     episode = result.seasons[0].episodes[0]
     assert episode.title == "The First One"
-    # The scheduled broadcast belongs to a catalogue episode, so it is not duplicated.
-    assert [release.release_type for release in episode.releases] == [ReleaseType.STREAMING]
+    # The broadcast is a week after the catalogue release, so it survives as its own
+    # TV release.
+    assert [release.release_type for release in episode.releases] == [
+        ReleaseType.STREAMING,
+        ReleaseType.TV_BROADCAST,
+    ]
 
 
 def test_folds_untitled_scheduled_broadcast_into_running_season() -> None:
@@ -256,9 +261,13 @@ def test_folds_untitled_scheduled_broadcast_into_running_season() -> None:
     [season] = result.seasons
     episode = season.episodes[0]
     assert episode.external_id == "episode-5"
-    # The broadcast titled after a catalogue episode is dropped; only the untitled one
-    # without a catalogue home is folded into the running season.
-    assert [release.release_type for release in episode.releases] == [ReleaseType.STREAMING]
+    # The broadcast is far from the catalogue date, so it survives as its own TV
+    # release; only the untitled one without a catalogue home is folded into the
+    # running season.
+    assert [release.release_type for release in episode.releases] == [
+        ReleaseType.STREAMING,
+        ReleaseType.TV_BROADCAST,
+    ]
     next_numbered = [episode for episode in season.episodes if episode.number == 6]
     assert len(next_numbered) == 1
     assert next_numbered[0].title == "Fassungslos"
@@ -296,14 +305,15 @@ def test_assigns_broadcast_to_target_episode_instead_of_shared_title() -> None:
         series, scheduled, None, {"schedule-1": "s2e1"}, now=datetime(2026, 10, 8, 12, tzinfo=UTC)
     )
 
-    # The broadcast belongs to s2e1, which the catalogue already dates, so it is dropped
-    # instead of being attached to both equally titled episodes.
+    # The broadcast belongs to s2e1; it is far from the catalogue date, so it survives
+    # as its own TV release on that episode instead of being attached to both.
     [first_season, second_season] = result.seasons
     assert [release.release_type for release in first_season.episodes[0].releases] == [
         ReleaseType.STREAMING
     ]
     assert [release.release_type for release in second_season.episodes[0].releases] == [
-        ReleaseType.STREAMING
+        ReleaseType.STREAMING,
+        ReleaseType.TV_BROADCAST,
     ]
     assert not any(season.number is None for season in result.seasons)
 

@@ -34,7 +34,9 @@ its specialties and deviations from it.
   not aired yet, so once the broadcast is past its earlier drop is the regular release and the flag
   clears; the first airing after such a drop is the episode's premiere, so a provider rerun flag on
   it is cleared, and an on-demand drop inside that lead window never turns the episode's own
-  broadcast into a rerun), first-seen placeholder preservation,
+  broadcast into a rerun), first-seen placeholder handling (an in-memory marker for a
+  catalogue episode without a provider date), the rule that a derived date never re-dates a
+  release whose date is already stored,
   preview gating via the platform `hasPrereleases` flag, obsolete-season cleanup, promotion of an
   EPG broadcast to the matching catalogue release at the same instant, and backfilling a catalogue
   URL onto a broadcast release. An EPG airing that cannot be attributed to an episode is never a

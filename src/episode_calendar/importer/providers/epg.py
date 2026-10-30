@@ -260,10 +260,12 @@ def merge_epg(
     * An explicit catalogue link (``linked_episode_external_id``) or a readable
       episode number resolved against the given or running season locates a
       catalogue episode:
-        - an episode the catalogue already dates is left alone and the airing is
-          dropped (the catalogue wins, the airing is only its own broadcast);
+        - an episode the catalogue already dates keeps its date: the airing is
+          dropped only when it falls within ``tolerance`` of a catalogue streaming
+          release (same event); otherwise it is kept as its own ``tv_broadcast``
+          release;
         - an undated catalogue episode gets the airing as a ``dateFromApi=true``
-          broadcast release so the importer replaces the placeholder.
+          broadcast release.
       A numbered airing without a matching catalogue episode becomes a new episode
       (same number) carrying the airing.
 
@@ -396,9 +398,18 @@ def merge_epg(
 
         if target is not None:
             _, episode = target
-            if not _undated(episode):
-                # The catalogue already dates the episode; its own broadcast does not
-                # add information and must not create a second date.
+            # A TV airing is dropped only when it matches a catalogue streaming
+            # release within the tolerance: then it is the same event, not a
+            # second date. A catalogue date alone never discards the broadcast.
+            catalogue_streaming = [
+                release
+                for release in (*episode.releases, *extra_releases.get(episode.external_id, ()))
+                if release.release_type is ReleaseType.STREAMING and not release.placeholder
+            ]
+            if any(
+                abs(release.release_at - broadcast.start) <= tolerance
+                for release in catalogue_streaming
+            ):
                 continue
             extra_releases[episode.external_id].append(airing(broadcast))
             continue
