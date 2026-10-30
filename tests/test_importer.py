@@ -1658,7 +1658,7 @@ async def test_first_seen_release_keeps_earliest_date_on_reimport(
     assert release.date_from_api is False
 
 
-async def test_broadcast_date_replaces_first_seen_placeholder(
+async def test_broadcast_does_not_replace_first_seen_release(
     db_session: AsyncSession,
 ) -> None:
     first_seen_at = datetime(2026, 9, 6, 18, 30, tzinfo=UTC)
@@ -1709,11 +1709,14 @@ async def test_broadcast_date_replaces_first_seen_placeholder(
     await import_series(db_session, provider, "ignored")
     await import_series(db_session, provider, "ignored")
 
-    releases = list(await db_session.scalars(select(EpisodeRelease)))
-    assert len(releases) == 1
-    assert releases[0].release_type is ReleaseType.STREAMING
-    assert releases[0].release_at == broadcast_at
-    assert releases[0].date_from_api is True
+    releases = sorted(await db_session.scalars(select(EpisodeRelease)), key=lambda r: r.release_at)
+    assert len(releases) == 2
+    streaming = next(r for r in releases if r.release_type is ReleaseType.STREAMING)
+    broadcast = next(r for r in releases if r.release_type is ReleaseType.TV_BROADCAST)
+    assert streaming.release_at == first_seen_at
+    assert streaming.date_from_api is False
+    assert broadcast.release_at == broadcast_at
+    assert broadcast.date_from_api is True
 
 
 async def test_three_week_comparison_with_and_without_rerun_filter(
@@ -2050,7 +2053,7 @@ async def test_import_skips_undated_episodes_in_obsolete_season(
     assert (await db_session.scalar(select(func.count()).select_from(EpisodeRelease))) == 1
 
 
-async def test_import_keeps_derived_dates_and_replaces_stored_placeholder(
+async def test_import_keeps_stored_date_when_provider_derives_new_one(
     db_session: AsyncSession,
 ) -> None:
     # A date that was derived (for example an RTL+ preview anchor) clears ``date_from_api``
@@ -2134,8 +2137,69 @@ async def test_import_keeps_derived_dates_and_replaces_stored_placeholder(
         )
     )
     assert len(releases) == 1
-    assert releases[0].release_at == datetime(2025, 10, 27, tzinfo=UTC)
+    assert releases[0].release_at == datetime(2026, 10, 10, tzinfo=UTC)
     assert releases[0].date_from_api is False
+
+
+async def test_reimport_keeps_stored_date_when_provider_only_derives_dates(
+    db_session: AsyncSession,
+) -> None:
+    # RTL+'s page-level diffusion date advances with every new streaming batch and dates
+    # every undated episode of the running season with it. Such a date is derived, so a
+    # reimport must keep the date an episode already has and only date genuinely new
+    # episodes with the current batch.
+    class MovingDerivedDateProvider:
+        slug = "rtlplus"
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            release_at, numbers = (
+                (datetime(2026, 10, 22, 21, 27, tzinfo=UTC), (1, 2))
+                if self.calls == 1
+                else (datetime(2026, 10, 29, 21, 27, tzinfo=UTC), (1, 2, 3, 4))
+            )
+            return NormalizedSeries(
+                external_id="rtl-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="rtl-season-2",
+                        number=2,
+                        episodes=tuple(
+                            NormalizedEpisode(
+                                external_id=f"rtl-episode-2-{number}",
+                                number=number,
+                                title=f"Folge {number}",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=release_at,
+                                        date_from_api=False,
+                                    ),
+                                ),
+                            )
+                            for number in numbers
+                        ),
+                    ),
+                ),
+            )
+
+    provider = MovingDerivedDateProvider()
+    await import_series(db_session, provider, "ignored")
+    await import_series(db_session, provider, "ignored")
+
+    rows = await db_session.execute(
+        select(Episode.number, EpisodeRelease.release_at).join(
+            EpisodeRelease, EpisodeRelease.episode_id == Episode.id
+        )
+    )
+    assert {number: release_at for number, release_at in rows} == {
+        1: datetime(2026, 10, 22, 21, 27, tzinfo=UTC),
+        2: datetime(2026, 10, 22, 21, 27, tzinfo=UTC),
+        3: datetime(2026, 10, 29, 21, 27, tzinfo=UTC),
+        4: datetime(2026, 10, 29, 21, 27, tzinfo=UTC),
+    }
 
 
 def test_configured_series_reads_provider_lists(tmp_path, monkeypatch) -> None:

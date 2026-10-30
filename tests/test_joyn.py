@@ -704,14 +704,14 @@ async def test_epg_linked_catalog_episode_keeps_its_catalog_date() -> None:
     assert len(result.seasons) == 1
     episodes = result.seasons[0].episodes
     assert [item.number for item in episodes] == [1]
-    # The catalogue already dates the episode, so its own broadcast must not add a
-    # second date: the airing is dropped and the catalogue release stays authoritative.
+    # The catalogue already dates the episode, but the airing is a week later, so it
+    # survives as its own TV release; the catalogue release stays authoritative.
     broadcasts = [
         release
         for release in episodes[0].releases
         if release.release_type is ReleaseType.TV_BROADCAST
     ]
-    assert broadcasts == []
+    assert len(broadcasts) == 1
     assert episodes[0].releases[0].release_at == datetime(
         2026, 10, 2, 20, 15, tzinfo=ZoneInfo("Europe/Vienna")
     )

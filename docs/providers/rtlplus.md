@@ -48,6 +48,12 @@
   When the catalogue, the diffusion episode, and a premiere anchor all yield no date, that
   `uploadDate` is used (`date_from_api=false`, not a placeholder) so the season keeps its real dates
   instead of being dated with the upcoming season's cadence (`rtlplus.py:1097`).
+- **Page-level diffusion fallback is a derived date.** When the catalogue schedule and the weekday
+  block both yield no date, the page-level `diffusionDate` dates every undated episode of the running
+  season. It identifies the *newest streaming batch*, not the individual episode, so it is emitted
+  with `date_from_api=false`. The importer uses a derived date only to fill a gap and never to
+  re-date an episode that already has a stored date, so a weekly show keeps the date of its first
+  batch instead of moving forward with every new one (`rtlplus.py:1099`).
 - **Streaming-only adapter**: it emits only `streaming` releases; every `tv_broadcast` release comes
   from the EPG merge (`rtlplus.py:1110`). Its SEO markdown `_schedule()` parser understands three
   layouts (bold `Folge N` lines, a date table, and an `ab/startet` line expanded to 52 weekly

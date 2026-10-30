@@ -415,10 +415,10 @@ async def test_epg_marks_catalog_release_days_before_broadcast_as_preview() -> N
         await client.aclose()
 
     releases = result.seasons[0].episodes[0].releases
-    # The broadcast resolves to a catalogue-dated episode and is dropped; only the
-    # preview flag on the catalogue release survives.
-    assert len(releases) == 1
-    assert releases[0].preview is True
+    # The broadcast is far from the catalogue date, so it survives as its own TV
+    # release; the catalogue release keeps its preview flag.
+    assert any(r.release_type is ReleaseType.STREAMING and r.preview for r in releases)
+    assert any(r.release_type is ReleaseType.TV_BROADCAST for r in releases)
 
 
 async def test_epg_drops_numbered_broadcast_already_dated_in_catalog() -> None:
@@ -491,12 +491,10 @@ async def test_epg_drops_numbered_broadcast_already_dated_in_catalog() -> None:
         await client.aclose()
 
     episodes = {episode.number: episode for episode in result.seasons[0].episodes}
-    # Both catalogue releases are previews (same-day/days-ahead), and the numbered
-    # airing resolves to the already-dated catalogue episode 7, so it is dropped.
+    # Both catalogue releases are previews (same-day/days-ahead). The numbered airing
+    # is far from the catalogue date, so it survives as its own TV release.
     assert episodes[7].releases[0].preview is True
-    assert not any(
-        release.release_type is ReleaseType.TV_BROADCAST for release in episodes[7].releases
-    )
+    assert any(release.release_type is ReleaseType.TV_BROADCAST for release in episodes[7].releases)
     assert episodes[8].releases[0].preview is True
 
 
@@ -653,9 +651,8 @@ async def test_epg_does_not_mark_aired_season_start_as_preview() -> None:
             release for release in episode.releases if release.release_type is ReleaseType.STREAMING
         )
         assert streaming.preview is False
-        assert not any(
-            release.release_type is ReleaseType.TV_BROADCAST for release in episode.releases
-        )
+        # The airing is far from the catalogue drop, so it survives as its own TV release.
+        assert any(release.release_type is ReleaseType.TV_BROADCAST for release in episode.releases)
 
 
 async def test_epg_folds_numberless_future_airing_into_running_season() -> None:
@@ -796,12 +793,17 @@ async def test_epg_drops_reruns_of_catalog_dated_episode() -> None:
 
     episode = result.seasons[0].episodes[0]
     # Premiere and repeat both carry the readable number 1, which resolves to the
-    # catalogue-dated episode; the catalogue date wins and both airings are dropped.
+    # catalogue-dated episode; the catalogue date is kept and the airings survive
+    # as their own TV releases (they are not within tolerance of it).
     broadcasts = [
         release for release in episode.releases if release.release_type is ReleaseType.TV_BROADCAST
     ]
-    assert broadcasts == []
-    assert [release.release_type for release in episode.releases] == [ReleaseType.STREAMING]
+    assert len(broadcasts) == 2
+    assert [
+        release.release_type
+        for release in episode.releases
+        if release.release_type is ReleaseType.STREAMING
+    ] == [ReleaseType.STREAMING]
 
 
 def test_epg_event_uses_id_when_code_is_missing() -> None:
@@ -980,7 +982,9 @@ def test_normalize_assigns_diffusion_date_to_all_undated_catalog_episodes() -> N
     expected = datetime(2026, 10, 6, tzinfo=ZoneInfo("Europe/Vienna"))
     for number in (1, 2, 3):
         assert episodes[number].releases[0].release_at == expected
-        assert episodes[number].releases[0].date_from_api is True
+        # The diffusion date identifies the newest streaming batch, not this episode,
+        # so the date is derived and must not overwrite a date that is already known.
+        assert episodes[number].releases[0].date_from_api is False
 
 
 def test_normalize_anchors_weekly_schedule_to_latest_feed_episode() -> None:
