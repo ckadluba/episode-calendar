@@ -10,11 +10,15 @@ from episode_calendar.importer.providers.base import (
 )
 from episode_calendar.importer.providers.epg import (
     EpgBroadcast,
+    annual_window_distance,
     derive_broadcast_slots,
     derive_slots_from_moments,
     filter_obsolete_seasons,
     fits_slot,
     merge_epg,
+    new_season_premiere,
+    next_season_number,
+    season_premieres,
 )
 from episode_calendar.shared.domain import ReleaseType
 
@@ -472,3 +476,244 @@ def test_filter_obsolete_seasons_keeps_undated_season_without_higher_season() ->
     result = filter_obsolete_seasons(series)
 
     assert [season.number for season in result.seasons] == [1]
+
+
+def annual_season(number: int, premiere: datetime) -> NormalizedSeason:
+    return NormalizedSeason(
+        external_id=f"s{number}",
+        number=number,
+        episodes=tuple(
+            NormalizedEpisode(
+                external_id=f"s{number}e{index}",
+                number=index,
+                title=f"S{number}E{index}",
+                releases=(
+                    NormalizedEpisodeRelease(
+                        release_type=ReleaseType.STREAMING,
+                        release_at=premiere + timedelta(weeks=index - 1),
+                    ),
+                ),
+            )
+            for index in range(1, 3)
+        ),
+    )
+
+
+def annual_series() -> NormalizedSeries:
+    """A series whose seasons always premiere in mid-November."""
+
+    return NormalizedSeries(
+        external_id="s",
+        title="S",
+        seasons=(
+            annual_season(1, datetime(2023, 11, 10, 0, 1, tzinfo=VIENNA)),
+            annual_season(2, datetime(2024, 11, 15, 0, 1, tzinfo=VIENNA)),
+            annual_season(3, datetime(2025, 11, 12, 0, 1, tzinfo=VIENNA)),
+        ),
+    )
+
+
+def merge_annual(
+    series: NormalizedSeries, broadcasts: tuple[EpgBroadcast, ...], *, now: datetime
+) -> NormalizedSeries:
+    return merge_epg(
+        series,
+        broadcasts,
+        now=now,
+        timezone=VIENNA,
+        tolerance=timedelta(hours=2),
+        next_episode_external_id=lambda season_id, number: f"next:{season_id}:{number}",
+    )
+
+
+def test_annual_window_matches_a_premiere_across_the_new_year() -> None:
+    premieres = [
+        datetime(2023, 12, 28, 20, 15, tzinfo=VIENNA),
+        datetime(2024, 12, 30, 20, 15, tzinfo=VIENNA),
+    ]
+
+    assert annual_window_distance(
+        premieres, datetime(2026, 1, 4, 20, 15, tzinfo=VIENNA), timezone=VIENNA
+    ) == timedelta(days=5)
+
+
+def test_season_premieres_uses_the_earliest_release_per_season() -> None:
+    premieres = season_premieres(annual_series())
+
+    assert premieres == (
+        datetime(2023, 11, 10, 0, 1, tzinfo=VIENNA),
+        datetime(2024, 11, 15, 0, 1, tzinfo=VIENNA),
+        datetime(2025, 11, 12, 0, 1, tzinfo=VIENNA),
+    )
+
+
+def test_next_season_number_ignores_a_listed_undated_season() -> None:
+    series = annual_series()
+    listed = NormalizedSeason(
+        external_id="s4",
+        number=4,
+        episodes=(
+            NormalizedEpisode(
+                external_id="s4e1",
+                number=1,
+                title="S4E1",
+                releases=(first_seen_release(datetime(2026, 10, 1, tzinfo=UTC)),),
+            ),
+        ),
+    )
+
+    assert next_season_number(series) == 4
+    assert (
+        next_season_number(series.model_copy(update={"seasons": (*series.seasons, listed)})) is None
+    )
+
+
+def test_new_season_needs_more_than_one_earlier_premiere() -> None:
+    series = NormalizedSeries(
+        external_id="s",
+        title="S",
+        seasons=(annual_season(1, datetime(2025, 11, 12, 0, 1, tzinfo=VIENNA)),),
+    )
+
+    assert (
+        new_season_premiere(series, datetime(2026, 11, 6, 20, 15, tzinfo=VIENNA), timezone=VIENNA)
+        is None
+    )
+
+
+def test_merge_epg_starts_next_season_inside_the_annual_window() -> None:
+    result = merge_annual(
+        annual_series(),
+        (
+            EpgBroadcast(
+                external_id="b1", title="S", start=datetime(2026, 11, 6, 20, 15, tzinfo=VIENNA)
+            ),
+            EpgBroadcast(
+                external_id="b2", title="S", start=datetime(2026, 11, 6, 21, 15, tzinfo=VIENNA)
+            ),
+        ),
+        now=datetime(2026, 10, 20, tzinfo=UTC),
+    )
+
+    assert [season.number for season in result.seasons] == [1, 2, 3, 4]
+    premiere = result.seasons[-1]
+    assert [episode.number for episode in premiere.episodes] == [1, 2]
+    airings = [release for episode in premiere.episodes for release in episode.releases]
+    assert [release.release_at for release in airings] == [
+        datetime(2026, 11, 6, 20, 15, tzinfo=VIENNA),
+        datetime(2026, 11, 6, 21, 15, tzinfo=VIENNA),
+    ]
+    assert all(release.release_type is ReleaseType.TV_BROADCAST for release in airings)
+    assert all(release.rerun is False for release in airings)
+    previous = result.seasons[2].episodes[-1]
+    assert not any(release.rerun for release in previous.releases)
+
+
+def test_merge_epg_keeps_airing_outside_the_annual_window_as_rerun() -> None:
+    result = merge_annual(
+        annual_series(),
+        (
+            EpgBroadcast(
+                external_id="b1", title="S", start=datetime(2026, 6, 5, 20, 15, tzinfo=VIENNA)
+            ),
+        ),
+        now=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+
+    assert [season.number for season in result.seasons] == [1, 2, 3]
+    reruns = [
+        release
+        for episode in result.seasons[-1].episodes
+        for release in episode.releases
+        if release.rerun
+    ]
+    assert len(reruns) == 1
+    assert reruns[0].release_at == datetime(2026, 6, 5, 20, 15, tzinfo=VIENNA)
+
+
+def test_merge_epg_tolerates_a_few_weeks_of_drift_in_the_annual_window() -> None:
+    inside = merge_annual(
+        annual_series(),
+        (
+            EpgBroadcast(
+                external_id="b1", title="S", start=datetime(2026, 10, 16, 20, 15, tzinfo=VIENNA)
+            ),
+        ),
+        now=datetime(2026, 10, 1, tzinfo=UTC),
+    )
+    outside = merge_annual(
+        annual_series(),
+        (
+            EpgBroadcast(
+                external_id="b1", title="S", start=datetime(2026, 10, 10, 20, 15, tzinfo=VIENNA)
+            ),
+        ),
+        now=datetime(2026, 10, 1, tzinfo=UTC),
+    )
+
+    assert [season.number for season in inside.seasons] == [1, 2, 3, 4]
+    assert [season.number for season in outside.seasons] == [1, 2, 3]
+
+
+def test_merge_epg_keeps_airing_of_the_running_season() -> None:
+    """A fresh release keeps the airing in the season even if it lands in the window."""
+
+    result = merge_annual(
+        annual_series(),
+        (
+            EpgBroadcast(
+                external_id="b1", title="S", start=datetime(2025, 11, 26, 20, 15, tzinfo=VIENNA)
+            ),
+        ),
+        now=datetime(2025, 11, 20, tzinfo=UTC),
+    )
+
+    assert [season.number for season in result.seasons] == [1, 2, 3]
+    reruns = [
+        release
+        for episode in result.seasons[-1].episodes
+        for release in episode.releases
+        if release.rerun
+    ]
+    assert len(reruns) == 1
+
+
+def test_merge_epg_keeps_provider_episode_number_for_a_new_season() -> None:
+    result = merge_annual(
+        annual_series(),
+        (
+            EpgBroadcast(
+                external_id="b1",
+                title="S",
+                start=datetime(2026, 11, 6, 20, 15, tzinfo=VIENNA),
+                episode_number=5,
+            ),
+        ),
+        now=datetime(2026, 10, 20, tzinfo=UTC),
+    )
+
+    premiere = result.seasons[-1]
+    assert [episode.number for episode in premiere.episodes] == [5]
+
+
+def test_merge_epg_does_not_invent_a_season_without_a_cadence() -> None:
+    series = NormalizedSeries(
+        external_id="s",
+        title="S",
+        seasons=(annual_season(1, datetime(2025, 11, 12, 0, 1, tzinfo=VIENNA)),),
+    )
+
+    result = merge_annual(
+        series,
+        (
+            EpgBroadcast(
+                external_id="b1", title="S", start=datetime(2026, 11, 6, 20, 15, tzinfo=VIENNA)
+            ),
+        ),
+        now=datetime(2026, 10, 20, tzinfo=UTC),
+    )
+
+    assert [season.number for season in result.seasons] == [1]
+    assert any(
+        release.rerun for episode in result.seasons[0].episodes for release in episode.releases
+    )

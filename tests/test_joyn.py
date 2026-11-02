@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -772,6 +772,89 @@ async def test_epg_without_running_season_attaches_rerun_to_latest_episode() -> 
     ]
     assert len(broadcasts) == 1
     assert broadcasts[0].rerun is True
+
+
+async def test_epg_starts_a_series_season_that_premieres_in_its_usual_month() -> None:
+    """A November airing is a new season when every earlier season started in November."""
+
+    def weekly(release_at: str) -> list[dict[str, Any]]:
+        first = datetime.fromisoformat(release_at)
+        return [
+            episode(
+                f"e_{release_at}_{index}",
+                index,
+                f"Episode {index}",
+                airdate=(first + timedelta(weeks=index - 1)).isoformat(),
+            )
+            for index in (1, 2)
+        ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        if body["operationName"] == "EpisodeCalendarJoynEpg":
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "liveStreams": [
+                            {
+                                "id": "sixx",
+                                "title": "sixx",
+                                "epgEvents": [
+                                    {
+                                        "startDate": start,
+                                        "endDate": None,
+                                        "program": {
+                                            "__typename": "EpgEntry",
+                                            "id": f"epg-{index}",
+                                            "title": "Demo series",
+                                        },
+                                    }
+                                    for index, start in enumerate(
+                                        ("2026-11-06T20:15:00+01:00", "2026-11-06T21:15:00+01:00"),
+                                        start=1,
+                                    )
+                                ],
+                            }
+                        ]
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json=series_response(
+                [
+                    season("c_1", 1, weekly("2023-11-10T00:01:00+01:00")),
+                    season("c_2", 2, weekly("2024-11-15T00:01:00+01:00")),
+                    season("c_3", 3, weekly("2025-11-12T00:01:00+01:00")),
+                ]
+            ),
+        )
+
+    client = joyn_client(handler)
+    JoynProvider._epg_tasks.clear()
+    try:
+        result = await JoynProvider(
+            api_key="test-key",
+            endpoint="https://joyn-season-window.example/graphql",
+            client=client,
+            clock=lambda: datetime(2026, 10, 20, tzinfo=UTC),
+        ).get_series("demo")
+    finally:
+        await client.aclose()
+
+    assert [item.number for item in result.seasons] == [1, 2, 3, 4]
+    premiere = result.seasons[-1]
+    assert [item.number for item in premiere.episodes] == [1, 2]
+    airings = [release for item in premiere.episodes for release in item.releases]
+    assert [release.release_at for release in airings] == [
+        datetime(2026, 11, 6, 19, 15, tzinfo=UTC),
+        datetime(2026, 11, 6, 20, 15, tzinfo=UTC),
+    ]
+    assert all(release.release_type is ReleaseType.TV_BROADCAST for release in airings)
+    assert all(release.rerun is False for release in airings)
+    previous = result.seasons[2].episodes[-1]
+    assert not any(release.rerun for release in previous.releases)
 
 
 async def test_catalog_airdate_prevents_duplicate_epg_episode() -> None:

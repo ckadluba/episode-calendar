@@ -41,6 +41,18 @@ DEFAULT_DAILY_SLOT_MIN_DAYS = 5
 # A season counts as running while one of its releases is no older than this.
 DEFAULT_RUNNING_WINDOW = timedelta(days=14)
 
+# An unattributable airing within this distance of the month/day on which earlier seasons
+# premiered is that series' next season, not an off-season rerun.
+DEFAULT_SEASON_WINDOW_TOLERANCE = timedelta(days=28)
+
+# A new season is only plausible once the catalogue's latest release is at least this old;
+# closer airings belong to the running season's own cadence.
+DEFAULT_NEW_SEASON_MIN_GAP = timedelta(days=90)
+
+# Earlier premieres required before the annual window is trusted (one-off seasons prove
+# no cadence).
+DEFAULT_MIN_SEASON_PREMIERES = 2
+
 
 def derive_slots_from_moments(
     moments: Iterable[datetime],
@@ -158,6 +170,119 @@ def latest_episode_of(season: NormalizedSeason | None) -> NormalizedEpisode | No
     return season.episodes[-1] if season.episodes else None
 
 
+def season_premieres(series: NormalizedSeries) -> tuple[datetime, ...]:
+    """Return the earliest real release of every numbered season, one entry per season."""
+
+    premieres: list[datetime] = []
+    for season in series.seasons:
+        if season.number is None:
+            continue
+        moments = [
+            release.release_at
+            for episode in season.episodes
+            for release in episode.releases
+            if not release.placeholder
+        ]
+        if moments:
+            premieres.append(min(moments))
+    return tuple(sorted(premieres))
+
+
+def latest_release_moment(series: NormalizedSeries) -> datetime | None:
+    """Return the newest real (non-placeholder) release of the whole series."""
+
+    return max(
+        (
+            release.release_at
+            for season in series.seasons
+            for episode in season.episodes
+            for release in episode.releases
+            if not release.placeholder
+        ),
+        default=None,
+    )
+
+
+def annual_window_distance(
+    premieres: Iterable[datetime],
+    start: datetime,
+    *,
+    timezone: ZoneInfo,
+) -> timedelta | None:
+    """Distance from ``start`` to the closest yearly recurrence of a premiere.
+
+    A premiere is projected onto the airing's year plus its neighbours, so a season that
+    starts around New Year still matches an airing on either side of the year boundary.
+    """
+
+    local_start = start.astimezone(timezone)
+    best: timedelta | None = None
+    for premiere in premieres:
+        local = premiere.astimezone(timezone)
+        for year in (local_start.year - 1, local_start.year, local_start.year + 1):
+            try:
+                projected = local.replace(year=year)
+            except ValueError:  # 29 February in a non-leap year
+                projected = local.replace(year=year, day=28)
+            distance = abs(local_start - projected)
+            if best is None or distance < best:
+                best = distance
+    return best
+
+
+def next_season_number(series: NormalizedSeries) -> int | None:
+    """Return the season number an upcoming premiere would belong to.
+
+    ``None`` when the catalogue has no numbered season, or when its highest season still
+    carries no real release: such an announced season is already listed undated and is
+    the providers' own concern rather than an EPG inference.
+    """
+
+    numbered = [season for season in series.seasons if season.number is not None]
+    if not numbered:
+        return None
+    highest = max(numbered, key=lambda season: season.number)
+    assert highest.number is not None
+    if not any(
+        not release.placeholder for episode in highest.episodes for release in episode.releases
+    ):
+        return None
+    return highest.number + 1
+
+
+def new_season_premiere(
+    series: NormalizedSeries,
+    start: datetime,
+    *,
+    timezone: ZoneInfo,
+    tolerance: timedelta = DEFAULT_SEASON_WINDOW_TOLERANCE,
+    min_gap: timedelta = DEFAULT_NEW_SEASON_MIN_GAP,
+    min_premieres: int = DEFAULT_MIN_SEASON_PREMIERES,
+) -> int | None:
+    """Season number an unattributable airing most likely premieres, else ``None``.
+
+    Linear guides repeat old episodes all year, so one airing proves nothing. The rule uses
+    the series' own annual cadence instead: once at least ``min_premieres`` earlier seasons
+    premiered around the same month and day (within ``tolerance``) and the catalogue's
+    latest release is older than ``min_gap``, the airing starts the next season instead of
+    repeating the finished one.
+    """
+
+    number = next_season_number(series)
+    if number is None:
+        return None
+    premieres = season_premieres(series)
+    if len(premieres) < min_premieres:
+        return None
+    latest = latest_release_moment(series)
+    if latest is not None and start - latest < min_gap:
+        return None
+    distance = annual_window_distance(premieres, start, timezone=timezone)
+    if distance is None or distance > tolerance:
+        return None
+    return number
+
+
 @dataclass(frozen=True)
 class EpgBroadcast:
     """One linear airing from a provider's EPG, mapped to the shared shape."""
@@ -269,13 +394,18 @@ def merge_epg(
       A numbered airing without a matching catalogue episode becomes a new episode
       (same number) carrying the airing.
 
-    * An airing whose season/episode cannot be read uses the slot logic: an airing
-      matching a recurring slot of the running season extends that season with the
-      next episode number (filling an already announced undated next episode if one
-      exists). Every other airing premieres the earliest episode the catalogue still
-      lists as subscriber-only, since an airing cannot repeat an episode that has no
-      regular date yet; once those are used up it is a rerun of the running season's
-      latest episode.
+    * An airing whose season/episode cannot be read is first checked against the
+      series' own annual cadence (see ``new_season_premiere()``): an off-season
+      airing that lands on the month/day earlier seasons premiered starts the next
+      season as a new ``NormalizedSeason``. Its further airings extend that season in
+      airing order, because the catalogue cannot attribute them yet.
+
+    * Otherwise the slot logic applies: an airing matching a recurring slot of the
+      running season extends that season with the next episode number (filling an
+      already announced undated next episode if one exists). Every other airing
+      premieres the earliest episode the catalogue still lists as subscriber-only,
+      since an airing cannot repeat an episode that has no regular date yet; once
+      those are used up it is a rerun of the running season's latest episode.
     """
 
     now = now or datetime.now(UTC)
@@ -309,6 +439,7 @@ def merge_epg(
 
     extra_releases: dict[str, list[NormalizedEpisodeRelease]] = defaultdict(list)
     created: dict[str, list[NormalizedEpisode]] = defaultdict(list)
+    pending_premiere: NormalizedSeason | None = None
 
     def announced_next(season: NormalizedSeason) -> int:
         dated = [
@@ -352,14 +483,58 @@ def merge_epg(
                 return episode
         return None
 
+    def add_premiere_airing(broadcast: EpgBroadcast) -> None:
+        """Add an airing to the season the annual-window rule has just announced.
+
+        The catalogue cannot attribute these airings yet, so they are numbered in airing
+        order; an airing that names its own episode number keeps it.
+        """
+
+        assert pending_premiere is not None
+        used = [
+            episode.number
+            for episode in created[pending_premiere.external_id]
+            if episode.number is not None
+        ]
+        number = broadcast.episode_number
+        if number is None or number in used:
+            number = max(used, default=0) + 1
+        created[pending_premiere.external_id].append(
+            NormalizedEpisode(
+                external_id=next_episode_external_id(pending_premiere.external_id, number),
+                number=number,
+                title=broadcast.title,
+                releases=(airing(broadcast),),
+            )
+        )
+
     for broadcast in broadcasts:
         target: tuple[NormalizedSeason, NormalizedEpisode] | None = None
         create_season: NormalizedSeason | None = None
+        premiere_number = (
+            new_season_premiere(series, broadcast.start, timezone=timezone)
+            if (
+                broadcast.linked_episode_external_id is None
+                and broadcast.season_number is None
+                and pending_premiere is None
+            )
+            else None
+        )
         if (
             broadcast.linked_episode_external_id is not None
             and broadcast.linked_episode_external_id in episodes_by_external_id
         ):
             target = episodes_by_external_id[broadcast.linked_episode_external_id]
+        elif premiere_number is not None:
+            pending_premiere = NormalizedSeason(
+                external_id=f"epg:season:{series.external_id}:{premiere_number}",
+                number=premiere_number,
+            )
+            add_premiere_airing(broadcast)
+            continue
+        elif pending_premiere is not None:
+            add_premiere_airing(broadcast)
+            continue
         elif broadcast.episode_number is not None:
             number_season: NormalizedSeason | None = None
             if broadcast.season_number is not None:
@@ -465,4 +640,10 @@ def merge_epg(
             episodes.append(episode)
         episodes.extend(created[season.external_id])
         seasons.append(season.model_copy(update={"episodes": tuple(episodes)}))
+    if pending_premiere is not None:
+        seasons.append(
+            pending_premiere.model_copy(
+                update={"episodes": tuple(created[pending_premiere.external_id])}
+            )
+        )
     return series.model_copy(update={"seasons": tuple(seasons)})
