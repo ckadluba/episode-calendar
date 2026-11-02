@@ -1,0 +1,54 @@
+info:
+  name: RTL+ Catalog Layout
+  type: http
+  seq: 4
+
+docs: |-
+  Step 3 of 3: RTL+ catalogue ("layout") of one program. Mirrors
+  `RTLPlusProvider` (`rtlplus_layout_url`, `blockPage`/`nbPages` paging).
+
+  Requires `rtlplus_access_token` and `rtlplus_bedrock_token`, which the two token
+  requests set. Selecting the environment alone is not enough: run the token
+  requests first, otherwise the call answers `498 Token expired/invalid`.
+
+  The program id sits in the environment variable `rtlplus_catalog_url`
+  (default 7233, adam-sucht-eva-p_7233). Responses carry `blocks` with the season
+  blocks (`analytics.tealium.from: feature.videos_by_season_by_program`) and
+  `pagination.nextPage` for the next page; `nbPages=2` is what the importer asks
+  for.
+
+  The query string lives in the URL because Bruno does not append a `params:`
+  block to the request; the params list mirrors it for the Params table, and
+  editing a row rewrites the URL.
+
+http:
+  method: GET
+  url: "{{rtlplus_catalog_url}}?blockPage=1&nbPages=2"
+  params:
+    - name: blockPage
+      value: "1"
+      type: query
+      description: "Page number, start at 1; continue while pagination.nextPage is set"
+    - name: nbPages
+      value: "2"
+      type: query
+      description: "Pages per call; the importer requests 2"
+  headers:
+    - name: Accept
+      value: application/json
+    - name: Authorization
+      value: "Bearer {{rtlplus_access_token}}"
+    - name: X-Customer-Name
+      value: rtlde
+    - name: X-Client-Release
+      value: 6.49.0
+    - name: X-Bedrock-Token
+      value: "{{rtlplus_bedrock_token}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

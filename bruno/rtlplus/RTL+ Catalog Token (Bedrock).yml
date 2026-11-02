@@ -1,0 +1,50 @@
+info:
+  name: RTL+ Catalog Token (Bedrock)
+  type: http
+  seq: 3
+
+docs: |-
+  Step 2 of 3 for the RTL+ catalogue.
+
+  Exchanges the OIDC access token (runtime variable `rtlplus_access_token`, set by
+  the previous request) for the Bedrock token that the catalogue endpoints expect
+  in `X-Bedrock-Token`. The result is stored as `rtlplus_bedrock_token`.
+
+  The importer sends an additional `X-Auth-Token-Timestamp` (epoch seconds); the
+  API accepts the call without it, so it is left out here.
+
+http:
+  method: GET
+  url: "{{rtlplus_auth_url}}"
+  headers:
+    - name: Accept
+      value: application/json
+    - name: Authorization
+      value: "Bearer {{rtlplus_access_token}}"
+    - name: X-Customer-Name
+      value: rtlde
+    - name: X-Client-Release
+      value: 6.49.0
+    - name: X-Auth-Token
+      value: "{{rtlplus_access_token}}"
+    - name: x-auth-device-name
+      value: bruno
+    - name: x-auth-device-player-size-width
+      value: "0"
+    - name: x-auth-device-player-size-height
+      value: "0"
+    - name: x-auth-device-id
+      value: m6group_web|_luid_bruno
+      description: "Device id the importer randomizes per authentication; the API accepts any value"
+  auth: inherit
+
+runtime:
+  actions:
+    - type: set-variable
+      phase: after-response
+      selector:
+        expression: res.body.token
+        method: jsonq
+      variable:
+        name: rtlplus_bedrock_token
+        scope: runtime

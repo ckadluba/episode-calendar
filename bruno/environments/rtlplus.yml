@@ -1,0 +1,16 @@
+name: rtlplus
+variables:
+  - name: rtlplus_oidc_url
+    value: https://auth.rtl.de/auth/realms/rtlplus/protocol/openid-connect/token
+    description: OIDC token endpoint (client_credentials), used by the catalog token request
+  - name: rtlplus_oidc_client_id
+    value: anonymous-user
+  - name: rtlplus_auth_url
+    value: https://front-auth.rtlde.bedrock.tech/v2/rtlde/platforms/m6group_web/token
+    description: Exchanges the OIDC access token for a Bedrock token
+  - name: rtlplus_catalog_url
+    value: https://layout.rtlde.bedrock.tech/front/v1/rtlde/m6group_web/main/token-web-31/program/7233/layout
+    description: Catalog layout of program 7233 (adam-sucht-eva-p_7233); replace the program id for other series
+  - secret: true
+    name: rtlplus_oidc_client_secret
+    description: RTLPLUS_OIDC_CLIENT_SECRET from .env
