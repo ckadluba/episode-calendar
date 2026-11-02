@@ -1,0 +1,55 @@
+info:
+  name: RTL+ Catalog Token (OIDC)
+  type: http
+  seq: 2
+
+docs: |-
+  Step 1 of 3 for the RTL+ catalogue.
+
+  Posts a `client_credentials` grant (client id `anonymous-user`) to the RTL+ OIDC
+  realm and stores the returned token as the runtime variable
+  `rtlplus_access_token`. Select the `rtlplus` environment and fill its secret
+  variable `rtlplus_oidc_client_secret` with `RTLPLUS_OIDC_CLIENT_SECRET` from
+  `.env`.
+
+  The token lives 24h; the following requests pick it up automatically when the
+  requests are run in order or as part of the folder.
+
+http:
+  method: POST
+  url: "{{rtlplus_oidc_url}}"
+  headers:
+    - name: Accept
+      value: application/json
+  body:
+    type: form-urlencoded
+    data:
+      - name: client_id
+        value: "{{rtlplus_oidc_client_id}}"
+      - name: client_secret
+        value: "{{rtlplus_oidc_client_secret}}"
+        description: "RTLPLUS_OIDC_CLIENT_SECRET from .env"
+      - name: grant_type
+        value: client_credentials
+  auth: inherit
+
+runtime:
+  scripts:
+    - type: before-request
+      code: |-
+        // An unset secret would otherwise surface as a bare "unauthorized_client" from the API.
+        const secret = bru.getEnvVar("rtlplus_oidc_client_secret");
+        if (!secret || secret.trim().length === 0) {
+          throw new Error(
+            "rtlplus_oidc_client_secret is empty. Select the 'rtlplus' environment and paste RTLPLUS_OIDC_CLIENT_SECRET from .env into it."
+          );
+        }
+  actions:
+    - type: set-variable
+      phase: after-response
+      selector:
+        expression: res.body.access_token
+        method: jsonq
+      variable:
+        name: rtlplus_access_token
+        scope: runtime
