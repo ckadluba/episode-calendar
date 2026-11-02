@@ -301,15 +301,38 @@ async def import_series(
     # under a synthetic identifier. Matching by season and episode number promotes that row
     # to the real identifier instead of creating a duplicate episode.
     existing_episode_by_number: dict[tuple[str, int], object] = {}
+    # An EPG-inferred season is stored under a synthetic identifier until the catalogue
+    # lists it. Its episodes are then promoted by season and episode number as well.
+    existing_season_by_number: dict[int, object] = {}
+    existing_episode_by_season_number: dict[tuple[int, int], object] = {}
     episode_rows = await session.execute(
-        select(Season.external_id, Episode.external_id, Episode.number, Episode.id)
+        select(
+            Season.external_id,
+            Season.number,
+            Episode.external_id,
+            Episode.number,
+            Episode.id,
+        )
         .join(Episode, Episode.season_id == Season.id)
         .where(Season.series_id == series.id)
     )
-    for season_external_id, episode_external_id, episode_number, episode_id in episode_rows:
+    for (
+        season_external_id,
+        season_number,
+        episode_external_id,
+        episode_number,
+        episode_id,
+    ) in episode_rows:
         existing_episode_ids[season_external_id][(episode_external_id, episode_number)] = episode_id
         if episode_number is not None:
             existing_episode_by_number.setdefault((season_external_id, episode_number), episode_id)
+            if season_number is not None:
+                existing_episode_by_season_number.setdefault(
+                    (season_number, episode_number), episode_id
+                )
+    for existing in existing_seasons:
+        if existing.number is not None:
+            existing_season_by_number.setdefault(existing.number, existing)
 
     existing_releases: dict[UUID, list[ExistingRelease]] = defaultdict(list)
     release_rows = await session.execute(
@@ -402,8 +425,8 @@ async def import_series(
         (season.number for season in normalized.seasons if season.number is not None),
         default=None,
     )
+    returned_season_external_ids = {season.external_id for season in normalized.seasons}
     if newest_imported_season is not None:
-        returned_season_external_ids = {season.external_id for season in normalized.seasons}
         stale_season_ids = [
             season.id
             for season in existing_seasons
@@ -474,6 +497,14 @@ async def import_series(
                 Season.external_id == normalized_season.external_id,
             )
         )
+        reconciled_season = False
+        if season is None and normalized_season.number is not None:
+            # A season inferred from the EPG lives under a synthetic identifier until the
+            # catalogue lists it. Its number identifies the same season then.
+            stored = existing_season_by_number.get(normalized_season.number)
+            if stored is not None and stored.external_id not in returned_season_external_ids:
+                season = stored
+                reconciled_season = True
         if season is None:
             season = Season(
                 series_id=series.id,
@@ -486,6 +517,8 @@ async def import_series(
         else:
             season.number = normalized_season.number
             season.title = normalized_season.title
+            if reconciled_season:
+                season.external_id = normalized_season.external_id
         season_count += 1
 
         for normalized_episode in normalized_season.episodes:
@@ -509,6 +542,16 @@ async def import_series(
                 if episode_id is not None:
                     episode = await session.get(Episode, episode_id)
                     reconciled = True
+            if episode is None and reconciled_season and normalized_episode.number is not None:
+                episode_number = normalized_episode.number
+                season_number = normalized_season.number
+                if season_number is not None:
+                    episode_id = existing_episode_by_season_number.get(
+                        (season_number, episode_number)
+                    )
+                    if episode_id is not None:
+                        episode = await session.get(Episode, episode_id)
+                        reconciled = True
             if episode is None:
                 episode = Episode(
                     season_id=season.id,
@@ -522,6 +565,7 @@ async def import_series(
                 await session.flush()
                 new_episode_count += 1
             else:
+                episode.season_id = season.id
                 episode.number = normalized_episode.number
                 episode.title = normalized_episode.title
                 episode.description = normalized_episode.description
