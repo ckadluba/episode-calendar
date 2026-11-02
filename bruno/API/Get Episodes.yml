@@ -8,11 +8,13 @@ http:
   url: "{{base_url}}/api/v1/episodes?from=2025-09-01T00:00:00Z&to=2025-12-15T23:59:59Z&platform=stv"
   params:
     - name: from
-      value: 2025-09-01T00:00:00Z
+      value: "2025-09-01T00:00:00Z"
       type: query
+      description: "ISO 8601 (quote it, otherwise YAML turns it into a timestamp)"
     - name: to
-      value: 2025-12-15T23:59:59Z
+      value: "2025-12-15T23:59:59Z"
       type: query
+      description: "ISO 8601"
     - name: platform
       value: stv
       type: query
