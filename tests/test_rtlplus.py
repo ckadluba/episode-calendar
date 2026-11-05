@@ -1870,3 +1870,26 @@ def test_normalize_keeps_explicit_season_in_neue_staffel_block() -> None:
     )
 
     assert [season.number for season in result.seasons] == [6]
+
+
+def test_episode_page_urls_handles_missing_action() -> None:
+    pages = [
+        {
+            "blocks": [
+                {
+                    "content": {
+                        "items": [
+                            {
+                                "itemContent": {
+                                    "id": "1",
+                                    "highlight": "Staffel 1 • Folge 1",
+                                    "action": None,
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+    assert RTLPlusProvider._episode_page_urls(pages, "https://plus.rtl.de/x-p_1") == {}
