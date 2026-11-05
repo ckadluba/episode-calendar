@@ -720,8 +720,16 @@ class RTLPlusProvider:
                     raw = item.get("itemContent") if isinstance(item, dict) else None
                     if not isinstance(raw, dict):
                         continue
-                    analytics = raw.get("action", {}).get("analytics", {}).get("tealium", {})
-                    if analytics.get("clip_type") not in (None, "vi"):
+                    action = raw.get("action")
+                    if not isinstance(action, dict):
+                        action = {}
+                    analytics = action.get("analytics", {})
+                    if not isinstance(analytics, dict):
+                        analytics = {}
+                    tealium = analytics.get("tealium", {})
+                    if not isinstance(tealium, dict):
+                        tealium = {}
+                    if tealium.get("clip_type") not in (None, "vi"):
                         continue
                     highlight = str(raw.get("highlight") or "")
                     identifier = raw.get("id")
@@ -1073,8 +1081,16 @@ class RTLPlusProvider:
                     raw = item.get("itemContent") if isinstance(item, dict) else None
                     if not isinstance(raw, dict):
                         raise RTLPlusMalformedResponseError("episode item malformed")
-                    analytics = raw.get("action", {}).get("analytics", {}).get("tealium", {})
-                    if analytics.get("clip_type") not in (None, "vi"):
+                    action = raw.get("action")
+                    if not isinstance(action, dict):
+                        action = {}
+                    analytics = action.get("analytics", {})
+                    if not isinstance(analytics, dict):
+                        analytics = {}
+                    tealium = analytics.get("tealium", {})
+                    if not isinstance(tealium, dict):
+                        tealium = {}
+                    if tealium.get("clip_type") not in (None, "vi"):
                         continue
                     highlight = str(raw.get("highlight") or "")
                     season_match = _SEASON_RE.search(highlight) or _SEASON_RE.search(
