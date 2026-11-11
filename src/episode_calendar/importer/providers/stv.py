@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import quote
 
@@ -19,7 +21,11 @@ from episode_calendar.importer.providers.base import (
     duration_minutes_from_text,
     first_seen_release,
 )
-from episode_calendar.importer.providers.epg import filter_obsolete_seasons
+from episode_calendar.importer.providers.epg import (
+    filter_obsolete_seasons,
+    latest_release_moment,
+    next_season_number,
+)
 from episode_calendar.importer.providers.http import request_with_retries
 from episode_calendar.shared.domain import ReleaseType
 
@@ -28,6 +34,19 @@ _EPISODE_LINK_RE = re.compile(
     re.IGNORECASE,
 )
 _SERIES_NUMBER_RE = re.compile(r"(?:series|season)\s+(\d+)", re.IGNORECASE)
+_NEXT_DATA_RE = re.compile(
+    r"<script[^>]+id=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL
+)
+_BRAND_NEW_SERIES_RE = re.compile(r"new series", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class _AnnouncedPremiere:
+    """The programme's next linear airing as announced on its summary page."""
+
+    title: str
+    start: datetime
+    end: datetime | None = None
 
 
 class STVProviderError(RuntimeError):
@@ -60,6 +79,7 @@ class STVProvider:
         api_url: str | None = None,
         max_retries: int | None = None,
         backoff: float | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         settings = get_importer_settings()
         self._client = client
@@ -68,6 +88,7 @@ class STVProvider:
         self._api_url = (api_url or settings.stv_api_url).rstrip("/")
         self._max_retries = max_retries if max_retries is not None else settings.import_max_retries
         self._backoff = backoff if backoff is not None else settings.import_backoff_seconds
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     @property
     def slug(self) -> str:
@@ -101,9 +122,13 @@ class STVProvider:
                 for episode_id in episode_ids
             )
         )
-        return filter_obsolete_seasons(
+        series = filter_obsolete_seasons(
             self._normalize(external_id, programme_slug, episode_ids, responses)
         )
+        announced = self._announced_premiere(page)
+        if announced is not None:
+            series = self._with_announced_premiere(series, programme_slug, announced)
+        return series
 
     async def _request_text(self, client: httpx.AsyncClient, url: str) -> str:
         try:
@@ -232,6 +257,101 @@ class STVProvider:
                 )
             ),
         )
+
+    @classmethod
+    def _announced_premiere(cls, page: str) -> _AnnouncedPremiere | None:
+        """Read the programme's announced next series premiere from the summary page.
+
+        STV announces an upcoming season on the programme page (a "new series" promo
+        plus ``scheduleNext``/``nextEpisode``) before any of its episodes are in the
+        on-demand catalogue. That announcement is the provider's own signal that the
+        next airing starts a new season, so the adapter turns it into a dated premiere.
+        """
+
+        data = cls._next_data(page)
+        programme = cls._mapping(data.get("programmeData"))
+        header = cls._mapping(data.get("programmeHeader"))
+        subtitle = cls._string(programme.get("promotionalSubtitle")) or cls._string(
+            header.get("promotionalSubtitle")
+        )
+        if subtitle is None or _BRAND_NEW_SERIES_RE.search(subtitle) is None:
+            return None
+        schedule_next = cls._mapping(programme.get("scheduleNext"))
+        next_episode = cls._mapping(data.get("nextEpisode"))
+        start = cls._datetime(
+            cls._string(schedule_next.get("startTime"))
+            or cls._string(next_episode.get("startTime"))
+        )
+        if start is None:
+            return None
+        return _AnnouncedPremiere(
+            title=cls._string(schedule_next.get("title"))
+            or cls._string(next_episode.get("title"))
+            or "",
+            start=start,
+            end=cls._datetime(cls._string(schedule_next.get("endTime"))),
+        )
+
+    def _with_announced_premiere(
+        self,
+        series: NormalizedSeries,
+        programme_slug: str,
+        announced: _AnnouncedPremiere,
+    ) -> NormalizedSeries:
+        """Add the announced next-season premiere when the catalogue cannot know it yet.
+
+        The premiere is only synthesized when the catalogue's newest season is fully
+        dated, the announcement lies beyond every catalogued release, and it is still in
+        the future; otherwise the catalogue already carries the airing. The episode is
+        emitted with the same identifiers the real catalogue entry will use, so a later
+        import promotes it in place instead of duplicating it.
+        """
+
+        number = next_season_number(series)
+        latest = latest_release_moment(series)
+        if number is None or latest is None:
+            return series
+        if announced.start <= latest or announced.start <= self._clock():
+            return series
+        season_id = f"{series.external_id}:season:{number}"
+        premiere = NormalizedEpisode(
+            external_id=f"{season_id}:episode:1",
+            number=1,
+            title="Episode 1",
+            releases=(
+                NormalizedEpisodeRelease(
+                    external_id=f"stv:{series.external_id}:{announced.start.isoformat()}",
+                    release_type=ReleaseType.TV_BROADCAST,
+                    release_at=announced.start,
+                    available_until=announced.end,
+                    url=f"{self._player_url}/summary/{quote(programme_slug)}",
+                ),
+            ),
+        )
+        season = NormalizedSeason(
+            external_id=season_id,
+            number=number,
+            title=f"Series {number}",
+            episodes=(premiere,),
+        )
+        return series.model_copy(update={"seasons": (*series.seasons, season)})
+
+    @classmethod
+    def _next_data(cls, page: str) -> Mapping[str, object]:
+        """Return the ``pageProps.data`` object embedded in the summary page, if any."""
+
+        match = _NEXT_DATA_RE.search(page)
+        if match is None:
+            return {}
+        try:
+            payload = json.loads(match.group(1))
+        except ValueError:
+            return {}
+        if not isinstance(payload, Mapping):
+            return {}
+        props = cls._mapping(payload.get("props"))
+        page_props = cls._mapping(props.get("pageProps"))
+        return cls._mapping(page_props.get("data"))
 
     @staticmethod
     def _programme_slug(external_id: str) -> str:
