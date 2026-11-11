@@ -24,7 +24,10 @@ its specialties and deviations from it.
   the entry should be dropped from `config/series.json`.
 - **Catalogue is authoritative.** The provider catalogue is the base of every series tree. Linear
   EPG data is supplementary: it fills missing dates and announces episodes of a running season, but
-  never overrides a real catalogue date (`providers/epg.py`).
+  never overrides a real catalogue date (`providers/epg.py`). A provider whose catalogue cannot yet
+  list an upcoming season may declare it on the airing itself (`EpgBroadcast.announces_season`): the
+  announcing airing and the following ones build that season in airing order, without needing a
+  catalogue cadence.
 - **Cross-cutting policy (owned by the importer, not the adapters).** `importer/service.py` and
   `providers/epg.py` implement rerun detection, preview detection for a catalogue drop that
   precedes the episode's own broadcast (`detect_previews`: one day to two weeks of lead, only on

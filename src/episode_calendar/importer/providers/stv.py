@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -22,8 +24,11 @@ from episode_calendar.importer.providers.base import (
     first_seen_release,
 )
 from episode_calendar.importer.providers.epg import (
+    DEFAULT_NEW_SEASON_MIN_GAP,
+    EpgBroadcast,
     filter_obsolete_seasons,
     latest_release_moment,
+    merge_epg,
     next_season_number,
 )
 from episode_calendar.importer.providers.http import request_with_retries
@@ -39,10 +44,19 @@ _NEXT_DATA_RE = re.compile(
 )
 _BRAND_NEW_SERIES_RE = re.compile(r"new series", re.IGNORECASE)
 
+# STV's linear schedule is the only source that knows an announced season before its
+# episodes reach the on-demand catalogue. Only the main channel carries those premieres.
+_STV_EPG_CHANNEL = "stv"
+_STV_EPG_LIMIT = 100
+STV_EPG_TIMEZONE = ZoneInfo("Europe/London")
+STV_EPG_TOLERANCE = timedelta(hours=2)
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
-class _AnnouncedPremiere:
-    """The programme's next linear airing as announced on its summary page."""
+class _ScheduledAiring:
+    """One linear airing from the STV schedule."""
 
     title: str
     start: datetime
@@ -125,9 +139,8 @@ class STVProvider:
         series = filter_obsolete_seasons(
             self._normalize(external_id, programme_slug, episode_ids, responses)
         )
-        announced = self._announced_premiere(page)
-        if announced is not None:
-            series = self._with_announced_premiere(series, programme_slug, announced)
+        if self._announces_new_series(page):
+            series = await self._merge_announced_schedule(client, series, programme_slug)
         return series
 
     async def _request_text(self, client: httpx.AsyncClient, url: str) -> str:
@@ -259,13 +272,12 @@ class STVProvider:
         )
 
     @classmethod
-    def _announced_premiere(cls, page: str) -> _AnnouncedPremiere | None:
-        """Read the programme's announced next series premiere from the summary page.
+    def _announces_new_series(cls, page: str) -> bool:
+        """Whether the programme page promotes a season the catalogue cannot list yet.
 
-        STV announces an upcoming season on the programme page (a "new series" promo
-        plus ``scheduleNext``/``nextEpisode``) before any of its episodes are in the
-        on-demand catalogue. That announcement is the provider's own signal that the
-        next airing starts a new season, so the adapter turns it into a dated premiere.
+        STV announces an upcoming season on the programme page (a "new series" promo)
+        before any of its episodes reach the on-demand catalogue. The catalogue alone
+        cannot date that season, so the promo switches the adapter to the linear schedule.
         """
 
         data = cls._next_data(page)
@@ -274,67 +286,94 @@ class STVProvider:
         subtitle = cls._string(programme.get("promotionalSubtitle")) or cls._string(
             header.get("promotionalSubtitle")
         )
-        if subtitle is None or _BRAND_NEW_SERIES_RE.search(subtitle) is None:
-            return None
-        schedule_next = cls._mapping(programme.get("scheduleNext"))
-        next_episode = cls._mapping(data.get("nextEpisode"))
-        start = cls._datetime(
-            cls._string(schedule_next.get("startTime"))
-            or cls._string(next_episode.get("startTime"))
-        )
-        if start is None:
-            return None
-        return _AnnouncedPremiere(
-            title=cls._string(schedule_next.get("title"))
-            or cls._string(next_episode.get("title"))
-            or "",
-            start=start,
-            end=cls._datetime(cls._string(schedule_next.get("endTime"))),
-        )
+        return subtitle is not None and _BRAND_NEW_SERIES_RE.search(subtitle) is not None
 
-    def _with_announced_premiere(
-        self,
-        series: NormalizedSeries,
-        programme_slug: str,
-        announced: _AnnouncedPremiere,
+    async def _merge_announced_schedule(
+        self, client: httpx.AsyncClient, series: NormalizedSeries, programme_slug: str
     ) -> NormalizedSeries:
-        """Add the announced next-season premiere when the catalogue cannot know it yet.
+        """Merge the linear airings of an announced season the catalogue does not list yet.
 
-        The premiere is only synthesized when the catalogue's newest season is fully
-        dated, the announcement lies beyond every catalogued release, and it is still in
-        the future; otherwise the catalogue already carries the airing. The episode is
-        emitted with the same identifiers the real catalogue entry will use, so a later
-        import promotes it in place instead of duplicating it.
+        STV's on-demand catalogue carries a season only once it is published; the upcoming
+        season first appears in the linear schedule (``/v1/schedule``) with an empty
+        ``episode``. Those unattributable airings are mapped to ``EpgBroadcast`` and merged
+        with the shared policy: the earliest one declares the season the catalogue still
+        lacks (``announces_season``), so the merger numbers the whole run in airing order.
+        Only airings newer than the newest catalogued release are considered, and the
+        announced season must be far enough from that release to be a new one rather than
+        the running season's own cadence. The EPG is supplementary: a failing schedule
+        leaves the catalogue import intact.
         """
 
         number = next_season_number(series)
         latest = latest_release_moment(series)
         if number is None or latest is None:
             return series
-        if announced.start <= latest or announced.start <= self._clock():
+        try:
+            payload = await self._request_json(
+                client,
+                f"{self._api_url}/schedule"
+                f"?channel={_STV_EPG_CHANNEL}"
+                f"&programme.guid={quote(programme_slug)}"
+                f"&limit={_STV_EPG_LIMIT}",
+            )
+            airings = self._schedule_airings(payload, latest=latest)
+        except STVProviderError as exc:  # the EPG is supplementary; keep the catalogue.
+            logger.warning("STV schedule unavailable for %s: %s", series.title, exc)
             return series
-        season_id = f"{series.external_id}:season:{number}"
-        premiere = NormalizedEpisode(
-            external_id=f"{season_id}:episode:1",
-            number=1,
-            title="Episode 1",
-            releases=(
-                NormalizedEpisodeRelease(
-                    external_id=f"stv:{series.external_id}:{announced.start.isoformat()}",
-                    release_type=ReleaseType.TV_BROADCAST,
-                    release_at=announced.start,
-                    available_until=announced.end,
-                    url=f"{self._player_url}/summary/{quote(programme_slug)}",
-                ),
-            ),
+        if not airings or airings[0].start - latest < DEFAULT_NEW_SEASON_MIN_GAP:
+            return series
+        broadcasts = tuple(
+            EpgBroadcast(
+                external_id=f"stv:{series.external_id}:{airing.start.isoformat()}",
+                title=airing.title,
+                start=airing.start,
+                end=airing.end,
+                url=f"{self._player_url}/summary/{quote(programme_slug)}",
+                announces_season=number if index == 0 else None,
+            )
+            for index, airing in enumerate(airings)
         )
-        season = NormalizedSeason(
-            external_id=season_id,
-            number=number,
-            title=f"Series {number}",
-            episodes=(premiere,),
+        return merge_epg(
+            series,
+            broadcasts,
+            now=self._clock(),
+            timezone=STV_EPG_TIMEZONE,
+            tolerance=STV_EPG_TOLERANCE,
+            next_episode_external_id=lambda season_id, number: f"epg:next:{season_id}:{number}",
         )
-        return series.model_copy(update={"seasons": (*series.seasons, season)})
+
+    @classmethod
+    def _schedule_airings(
+        cls, payload: Mapping[str, object], *, latest: datetime
+    ) -> tuple[_ScheduledAiring, ...]:
+        """The unattributable airings of the programme, in airing order.
+
+        A schedule entry the catalogue already knows carries its ``episode`` object; only
+        entries without one are the announced season. Airings at or before the newest
+        catalogued release belong to an older, already-imported season and are skipped.
+        """
+
+        results = payload.get("results")
+        if not isinstance(results, list):
+            raise STVMalformedResponseError("STV schedule response lacks results")
+        airings: list[_ScheduledAiring] = []
+        for raw in results:
+            entry = cls._mapping(raw)
+            if entry.get("episode") is not None:
+                continue
+            if cls._string(entry.get("channel")) != _STV_EPG_CHANNEL:
+                continue
+            start = cls._datetime(cls._string(entry.get("startTime")))
+            if start is None or start <= latest:
+                continue
+            airings.append(
+                _ScheduledAiring(
+                    title=cls._string(entry.get("title")) or "",
+                    start=start,
+                    end=cls._datetime(cls._string(entry.get("endTime"))),
+                )
+            )
+        return tuple(sorted(airings, key=lambda airing: airing.start))
 
     @classmethod
     def _next_data(cls, page: str) -> Mapping[str, object]:

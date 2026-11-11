@@ -717,3 +717,44 @@ def test_merge_epg_does_not_invent_a_season_without_a_cadence() -> None:
     assert any(
         release.rerun for episode in result.seasons[0].episodes for release in episode.releases
     )
+
+
+def test_merge_epg_starts_a_provider_announced_season_without_a_cadence() -> None:
+    """A provider can name the season an airing starts even without a catalogue cadence."""
+
+    series = NormalizedSeries(
+        external_id="s",
+        title="S",
+        seasons=(annual_season(1, datetime(2025, 11, 16, 21, 0, tzinfo=VIENNA)),),
+    )
+
+    result = merge_epg(
+        series,
+        (
+            EpgBroadcast(
+                external_id="b1",
+                title="S",
+                start=datetime(2026, 11, 16, 21, 0, tzinfo=VIENNA),
+                announces_season=2,
+            ),
+            EpgBroadcast(
+                external_id="b2", title="S", start=datetime(2026, 11, 17, 21, 0, tzinfo=VIENNA)
+            ),
+        ),
+        now=datetime(2026, 11, 11, tzinfo=UTC),
+        timezone=VIENNA,
+        tolerance=timedelta(hours=2),
+        next_episode_external_id=lambda season_id, number: f"epg:next:{season_id}:{number}",
+    )
+
+    assert [season.number for season in result.seasons] == [1, 2]
+    premiere = result.seasons[-1]
+    assert premiere.external_id == "epg:season:s:2"
+    assert [episode.number for episode in premiere.episodes] == [1, 2]
+    airings = [release for episode in premiere.episodes for release in episode.releases]
+    assert [release.release_at for release in airings] == [
+        datetime(2026, 11, 16, 21, 0, tzinfo=VIENNA),
+        datetime(2026, 11, 17, 21, 0, tzinfo=VIENNA),
+    ]
+    assert all(release.release_type is ReleaseType.TV_BROADCAST for release in airings)
+    assert all(release.rerun is False for release in airings)
