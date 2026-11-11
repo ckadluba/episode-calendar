@@ -294,6 +294,7 @@ class EpgBroadcast:
     season_number: int | None = None
     episode_number: int | None = None
     linked_episode_external_id: str | None = None
+    announces_season: int | None = None
     url: HttpUrl | None = None
 
 
@@ -399,6 +400,12 @@ def merge_epg(
       airing that lands on the month/day earlier seasons premiered starts the next
       season as a new ``NormalizedSeason``. Its further airings extend that season in
       airing order, because the catalogue cannot attribute them yet.
+
+    * A provider can announce the season an airing starts explicitly
+      (``announces_season``). That starts the season the same way, but without needing a
+      catalogue cadence: the announcing airing and the following ones build the season in
+      airing order. This is how a provider whose catalogue still lists only the previous
+      season contributes an upcoming one.
 
     * Otherwise the slot logic applies: an airing matching a recurring slot of the
       running season extends that season with the next episode number (filling an
@@ -511,10 +518,12 @@ def merge_epg(
     for broadcast in broadcasts:
         target: tuple[NormalizedSeason, NormalizedEpisode] | None = None
         create_season: NormalizedSeason | None = None
+        announced_season = broadcast.announces_season
         premiere_number = (
             new_season_premiere(series, broadcast.start, timezone=timezone)
             if (
-                broadcast.linked_episode_external_id is None
+                announced_season is None
+                and broadcast.linked_episode_external_id is None
                 and broadcast.season_number is None
                 and pending_premiere is None
             )
@@ -525,6 +534,13 @@ def merge_epg(
             and broadcast.linked_episode_external_id in episodes_by_external_id
         ):
             target = episodes_by_external_id[broadcast.linked_episode_external_id]
+        elif announced_season is not None and pending_premiere is None:
+            pending_premiere = NormalizedSeason(
+                external_id=f"epg:season:{series.external_id}:{announced_season}",
+                number=announced_season,
+            )
+            add_premiere_airing(broadcast)
+            continue
         elif premiere_number is not None:
             pending_premiere = NormalizedSeason(
                 external_id=f"epg:season:{series.external_id}:{premiere_number}",
