@@ -53,6 +53,12 @@ DEFAULT_NEW_SEASON_MIN_GAP = timedelta(days=90)
 # no cadence).
 DEFAULT_MIN_SEASON_PREMIERES = 2
 
+# Synthetic identifier prefix for a season the EPG announced before the catalogue listed it.
+# Shared by every provider that merges its guide through ``merge_epg()``; the importer uses
+# it to recognise such a forecast season and drop its releases once the airings disappear
+# from the guide again.
+EPG_SEASON_EXTERNAL_ID_PREFIX = "epg:season:"
+
 
 def derive_slots_from_moments(
     moments: Iterable[datetime],
@@ -536,14 +542,14 @@ def merge_epg(
             target = episodes_by_external_id[broadcast.linked_episode_external_id]
         elif announced_season is not None and pending_premiere is None:
             pending_premiere = NormalizedSeason(
-                external_id=f"epg:season:{series.external_id}:{announced_season}",
+                external_id=f"{EPG_SEASON_EXTERNAL_ID_PREFIX}{series.external_id}:{announced_season}",
                 number=announced_season,
             )
             add_premiere_airing(broadcast)
             continue
         elif premiere_number is not None:
             pending_premiere = NormalizedSeason(
-                external_id=f"epg:season:{series.external_id}:{premiere_number}",
+                external_id=f"{EPG_SEASON_EXTERNAL_ID_PREFIX}{series.external_id}:{premiere_number}",
                 number=premiere_number,
             )
             add_premiere_airing(broadcast)

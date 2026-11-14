@@ -40,7 +40,11 @@ its specialties and deviations from it.
   broadcast into a rerun), first-seen placeholder handling (an in-memory marker for a
   catalogue episode without a provider date), the rule that a derived date never re-dates a
   release whose date is already stored,
-  preview gating via the platform `hasPrereleases` flag, obsolete-season cleanup, promotion of an
+  preview gating via the platform `hasPrereleases` flag, obsolete-season cleanup, cleanup of an
+  EPG-inferred season that disappears from the guide again (a season the EPG announced before the
+  catalogue listed it lives under the synthetic `epg:season:` identifier and loses its releases
+  once the airings are postponed or cancelled, even while it is the highest stored season),
+  promotion of an
   EPG broadcast to the matching catalogue release at the same instant, and backfilling a catalogue
   URL onto a broadcast release. An EPG airing that cannot be attributed to an episode is never a
   rerun of an episode the catalogue still lists as subscriber-only: such airings premiere the
@@ -58,7 +62,9 @@ its specialties and deviations from it.
   `Retry-After`) and `is_resource_gone()`, which reads an HTTP `410 Gone` out of a (possibly
   wrapped) provider error.
 - `epg.py` — `apply_catalog_policy()` (`filter_obsolete_seasons()` + `ensure_catalog_dates()`),
-  `derive_broadcast_slots()`, and `merge_epg()`.
+  `derive_broadcast_slots()`, and `merge_epg()`. `merge_epg()` names a season it inferred from the
+  EPG alone with the `EPG_SEASON_EXTERNAL_ID_PREFIX` (`epg:season:`) identifier so the importer can
+  recognise and clean it up again.
 
 ## Configuration
 
