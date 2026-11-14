@@ -1984,6 +1984,154 @@ async def test_import_removes_releases_of_obsolete_season_that_disappears(
     assert (await db_session.scalar(select(func.count()).select_from(EpisodeRelease))) == 1
 
 
+async def test_import_removes_releases_of_epg_season_that_disappears(
+    db_session: AsyncSession,
+) -> None:
+    # The EPG can announce a season the catalogue does not list yet; the shared policy
+    # stores it under a synthetic identifier. When the broadcaster postpones the airings
+    # they vanish from the EPG, so the synthetic season is no longer in the payload and
+    # its releases must not linger in the calendar.
+    class EpgSeasonProvider:
+        slug = "joyn"
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            seasons = [
+                NormalizedSeason(
+                    external_id="joyn-season-3",
+                    number=3,
+                    episodes=(
+                        NormalizedEpisode(
+                            external_id="joyn-episode-3-1",
+                            number=1,
+                            title="Folge 1",
+                            releases=(
+                                NormalizedEpisodeRelease(
+                                    release_type=ReleaseType.STREAMING,
+                                    release_at=datetime(2026, 10, 5, 10, 0, tzinfo=UTC),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            ]
+            if self.calls == 1:
+                seasons.append(
+                    NormalizedSeason(
+                        external_id="epg:season:joyn-series:4",
+                        number=4,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="epg:next:epg:season:joyn-series:4:1",
+                                number=1,
+                                title="Demo",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        external_id="epg:sixx:1",
+                                        release_type=ReleaseType.TV_BROADCAST,
+                                        release_at=datetime(2026, 11, 13, 19, 15, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    )
+                )
+            return NormalizedSeries(external_id="joyn-series", title="Demo", seasons=tuple(seasons))
+
+    provider = EpgSeasonProvider()
+    await import_series(db_session, provider, "ignored")
+    assert (await db_session.scalar(select(func.count()).select_from(EpisodeRelease))) == 2
+
+    await import_series(db_session, provider, "ignored")
+
+    releases = list(await db_session.scalars(select(EpisodeRelease)))
+    assert len(releases) == 1
+    assert releases[0].release_at == datetime(2026, 10, 5, 10, 0, tzinfo=UTC)
+
+
+async def test_import_reconciles_epg_season_into_catalog_season(
+    db_session: AsyncSession,
+) -> None:
+    # An EPG-only season is stored under a synthetic identifier. Once the catalogue lists
+    # the same season, its row is promoted to the real identifier and its episodes are
+    # matched by number instead of duplicated; the vanished-EPG cleanup must not destroy
+    # that reconciliation.
+    class EpgSeasonProvider:
+        slug = "joyn"
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            if self.calls == 1:
+                return NormalizedSeries(
+                    external_id="joyn-series",
+                    title="Demo",
+                    seasons=(
+                        NormalizedSeason(
+                            external_id="epg:season:joyn-series:2",
+                            number=2,
+                            episodes=(
+                                NormalizedEpisode(
+                                    external_id="epg:next:epg:season:joyn-series:2:1",
+                                    number=1,
+                                    title="Forecast",
+                                    releases=(
+                                        NormalizedEpisodeRelease(
+                                            release_type=ReleaseType.TV_BROADCAST,
+                                            release_at=datetime(2026, 11, 13, 19, 15, tzinfo=UTC),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            return NormalizedSeries(
+                external_id="joyn-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="joyn-season-2",
+                        number=2,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="joyn-episode-2-1",
+                                number=1,
+                                title="Real",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 11, 13, 19, 15, tzinfo=UTC),
+                                        url="https://www.joyn.at/episode",
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    provider = EpgSeasonProvider()
+    await import_series(db_session, provider, "ignored")
+    season = await db_session.scalar(select(Season).where(Season.number == 2))
+    assert season is not None
+    original_season_id = season.id
+
+    await import_series(db_session, provider, "ignored")
+
+    seasons = list(await db_session.scalars(select(Season)))
+    assert len(seasons) == 1
+    assert seasons[0].id == original_season_id
+    assert seasons[0].external_id == "joyn-season-2"
+    episodes = list(await db_session.scalars(select(Episode)))
+    assert len(episodes) == 1
+    assert episodes[0].external_id == "joyn-episode-2-1"
+    releases = list(await db_session.scalars(select(EpisodeRelease)))
+    assert len(releases) == 1
+    assert releases[0].release_type is ReleaseType.STREAMING
+
+
 async def test_import_skips_undated_episodes_in_obsolete_season(
     db_session: AsyncSession,
 ) -> None:

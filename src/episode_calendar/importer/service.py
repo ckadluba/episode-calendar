@@ -20,6 +20,7 @@ from episode_calendar.importer.providers.base import (
     NormalizedSeries,
     ProviderAdapter,
 )
+from episode_calendar.importer.providers.epg import EPG_SEASON_EXTERNAL_ID_PREFIX
 from episode_calendar.importer.providers.http import is_resource_gone
 from episode_calendar.shared.db.models import Episode, EpisodeRelease, Provider, Season, Series
 from episode_calendar.shared.db.session import get_session_factory
@@ -351,9 +352,16 @@ async def import_series(
             Season.series_id == series.id,
         )
     )
-    for episode_id, release_type, release_at, external_id, preview, rerun in release_rows:
+    for (
+        episode_id,
+        release_type,
+        release_at,
+        release_external_id,
+        preview,
+        rerun,
+    ) in release_rows:
         existing_releases[episode_id].append(
-            (release_type, release_at, external_id, preview, rerun)
+            (release_type, release_at, release_external_id, preview, rerun)
         )
     # Capture the dates already stored so a reimport keeps them instead of re-dating
     # episodes. A date derived from the provider's payload (for example RTL+'s
@@ -445,6 +453,37 @@ async def import_series(
             logger.info(
                 "Removed provider releases for %s obsolete season(s) of %s/%s",
                 len(stale_season_ids),
+                provider_name or adapter.slug,
+                external_id,
+            )
+
+    # A season the EPG inferred before the catalogue listed it lives under a synthetic
+    # identifier. It is only a forecast: once the provider payload no longer announces it
+    # (the airings were postponed or cancelled), its releases must leave the calendar. A
+    # real catalogue season is protected above by number, but a vanished synthetic season
+    # is dropped even when it is the highest stored one, because no catalogue payload will
+    # ever list it again under that identifier.
+    vanished_epg_season_ids = [
+        season.id
+        for season in existing_seasons
+        if season.external_id.startswith(EPG_SEASON_EXTERNAL_ID_PREFIX)
+        and season.external_id not in returned_season_external_ids
+    ]
+    if vanished_epg_season_ids:
+        vanished_episode_ids = select(Episode.id).where(
+            Episode.season_id.in_(vanished_epg_season_ids)
+        )
+        result = await session.execute(
+            delete(EpisodeRelease).where(
+                EpisodeRelease.provider_id == provider.id,
+                EpisodeRelease.episode_id.in_(vanished_episode_ids),
+            )
+        )
+        if result.rowcount:
+            logger.info(
+                "Removed %s provider release(s) for %s vanished EPG season(s) of %s/%s",
+                result.rowcount,
+                len(vanished_epg_season_ids),
                 provider_name or adapter.slug,
                 external_id,
             )
