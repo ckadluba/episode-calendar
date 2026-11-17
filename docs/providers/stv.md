@@ -33,17 +33,21 @@ the baseline.
   (`stv.py:217`, `stv.py:236`).
 - Catalogue episodes emit only `streaming` releases; the announced-season schedule (below) is the
   sole source of `tv_broadcast` releases (`stv.py:234`).
-- **Announced season from the linear schedule.** STV's on-demand catalogue carries a season only
-  once it is published, so an upcoming season first appears in the linear schedule
-  (`GET {stv_api_url}/schedule?channel=stv&programme.guid={slug}&limit=100`) with an empty `episode`.
-  The programme page's "new series" `promotionalSubtitle` is the signal to read that schedule
-  (`stv.py:142`, `stv.py:275`, `stv.py:312`). Only entries on channel `stv` with `episode: null` and
-  a start after the newest catalogued release count (`stv.py:346`); they are mapped to the shared
-  `EpgBroadcast` and merged with `merge_epg()`, where the earliest airing declares
-  `announces_season=next_season_number(series)` so the shared policy numbers the whole run in airing
-  order (`stv.py:325`, `epg.py:297`). A `DEFAULT_NEW_SEASON_MIN_GAP` (90 days) guard suppresses a
-  stale promo once the catalogue catches up, and the EPG stays supplementary: a failing schedule
-  logs a warning and keeps the catalogue (`stv.py:320`, `stv.py:323`).
+- **Season run from the linear schedule.** STV's on-demand catalogue carries an episode only
+  once it is published, so a season's run first appears in the linear schedule
+  (`GET {stv_api_url}/schedule?channel=stv&programme.guid={slug}&limit=100`) with an empty
+  `episode` (`stv.py:268`, `stv.py:326`). The adapter always reads that schedule; it does not
+  depend on the programme page's "new series" promo, which disappears as soon as the season
+  starts. Only entries on channel `stv` with `episode: null` and a start after the newest
+  catalogued release count (`stv.py:326`); they are mapped to the shared `EpgBroadcast` and
+  merged with `merge_epg()`. The first airing declares the season the run belongs to
+  (`announces_season`, `stv.py:303`): when it lies at least `DEFAULT_NEW_SEASON_MIN_GAP`
+  (90 days) after the newest catalogued release it starts `next_season_number(series)`;
+  otherwise it continues the latest catalogued season (`latest_released_season_number`).
+  The merger numbers the whole run in airing order, filling the already announced undated
+  next episode if one exists, and extends a season the catalogue has already listed instead
+  of duplicating it (`epg.py:562`). A failing schedule logs a warning and keeps the
+  catalogue (`stv.py:299`).
 - **Retired programmes answer `410 Gone`.** STV permanently removes the summary page of a dropped
   programme (e.g. the retired `big-brother/10a4928`): the shared importer policy warns and skips the
   series instead of failing the provider import (see [shared provider behavior](README.md)).

@@ -16,7 +16,7 @@ SUMMARY_HTML = """
 """
 
 
-def summary_html(*, subtitle: str | None) -> str:
+def summary_html(*, subtitle: str | None, links: str = SUMMARY_HTML) -> str:
     """Build a summary page whose embedded ``__NEXT_DATA__`` carries the promo."""
 
     data = {
@@ -29,12 +29,14 @@ def summary_html(*, subtitle: str | None) -> str:
             }
         }
     }
-    return SUMMARY_HTML + (
+    return links + (
         f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(data)}</script>'
     )
 
 
-def api_response(*, episode_id: str, number: int, start: str) -> dict:
+def api_response(
+    *, episode_id: str, number: int, start: str, series_name: str = "Series 25"
+) -> dict:
     return {
         "success": True,
         "results": {
@@ -43,7 +45,7 @@ def api_response(*, episode_id: str, number: int, start: str) -> dict:
             "summary": f"Summary {number}",
             "number": number,
             "programme": {"name": "I'm A Celebrity... Get Me Out Of Here!"},
-            "playerSeries": {"name": "Series 25", "episodeIndex": number},
+            "playerSeries": {"name": series_name, "episodeIndex": number},
             "schedule": {"startTime": start},
             "availability": {"until": "2026-12-07T23:59:00+0000"},
             "video": {"_duration": "1 hr 16 mins"},
@@ -72,11 +74,13 @@ class _Routes:
         catalogue_starts: dict[str, str],
         schedule: list[dict] | None = None,
         schedule_status: int = 200,
+        series_name: str = "Series 25",
     ) -> None:
         self.html = html
         self.catalogue_starts = catalogue_starts
         self.schedule = schedule
         self.schedule_status = schedule_status
+        self.series_name = series_name
         self.schedule_requested = False
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -104,6 +108,7 @@ class _Routes:
                         episode_id=short_id,
                         number=list(self.catalogue_starts).index(short_id) + 1,
                         start=start,
+                        series_name=self.series_name,
                     ),
                 )
         return httpx.Response(404)
@@ -149,7 +154,7 @@ async def test_fetch_series_uses_stv_api_metadata() -> None:
     assert str(episode.releases[0].url) == (
         "https://player.stv.tv/episode/4u0h/im-a-celebrity-get-me-out-of-here"
     )
-    assert routes.schedule_requested is False
+    assert routes.schedule_requested is True
 
 
 @pytest.mark.asyncio
@@ -212,7 +217,9 @@ async def test_fetch_series_merges_the_announced_season_from_the_schedule() -> N
 
 
 @pytest.mark.asyncio
-async def test_fetch_series_ignores_the_schedule_without_a_new_series_promo() -> None:
+async def test_fetch_series_merges_the_schedule_without_a_new_series_promo() -> None:
+    """The promo disappears once the season starts; the schedule stays the source."""
+
     routes = _Routes(
         html=summary_html(subtitle=None),
         catalogue_starts={"4u0h": "2025-11-16T21:00:00+0000", "4uap": "2025-11-17T21:00:00+0000"},
@@ -226,8 +233,79 @@ async def test_fetch_series_ignores_the_schedule_without_a_new_series_promo() ->
             "im-a-celebrity-get-me-out-of-here/L2649"
         )
 
-    assert routes.schedule_requested is False
+    assert routes.schedule_requested is True
+    assert [season.number for season in result.seasons] == [25, 26]
+    assert result.seasons[-1].external_id == (
+        "epg:season:im-a-celebrity-get-me-out-of-here/L2649:26"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_series_continues_the_running_season_from_the_schedule() -> None:
+    """Once the catalogue lists the premiere, later airings extend that season."""
+
+    routes = _Routes(
+        html=summary_html(
+            subtitle=None,
+            links=('<a href="/episode/4u0h/im-a-celebrity-get-me-out-of-here">Episode 1</a>'),
+        ),
+        catalogue_starts={"4u0h": "2026-11-16T21:00:00+0000"},
+        series_name="Series 26",
+        schedule=[
+            # The catalogue owns the premiere now; later airings are still unlinked.
+            schedule_entry(
+                start="2026-11-16T21:00:00+0000",
+                episode={"guid": "im-a-celebrity-get-me-out-of-here-20261116-2100"},
+            ),
+            schedule_entry(start="2026-11-17T21:00:00+0000", end="2026-11-17T22:30:00+0000"),
+            schedule_entry(start="2026-11-18T21:00:00+0000", end="2026-11-18T22:15:00+0000"),
+            schedule_entry(start="2026-11-19T21:00:00+0000", end="2026-11-19T22:15:00+0000"),
+        ],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(routes), base_url="https://example.test"
+    ) as client:
+        result = await provider(client, now=datetime(2026, 11, 17, 9, tzinfo=UTC)).fetch_series(
+            "im-a-celebrity-get-me-out-of-here/L2649"
+        )
+
+    assert routes.schedule_requested is True
+    assert [season.number for season in result.seasons] == [26]
+    season = result.seasons[0]
+    assert [episode.number for episode in season.episodes] == [1, 2, 3, 4]
+    assert season.episodes[0].releases[0].release_type is ReleaseType.STREAMING
+    airings = [release for episode in season.episodes[1:] for release in episode.releases]
+    assert [release.release_at for release in airings] == [
+        datetime(2026, 11, 17, 21, tzinfo=UTC),
+        datetime(2026, 11, 18, 21, tzinfo=UTC),
+        datetime(2026, 11, 19, 21, tzinfo=UTC),
+    ]
+    assert all(release.release_type is ReleaseType.TV_BROADCAST for release in airings)
+    assert all(release.rerun is False for release in airings)
+
+
+@pytest.mark.asyncio
+async def test_fetch_series_keeps_a_close_schedule_airing_in_the_running_season() -> None:
+    """A fresh catalogued release means the airing belongs to the running season."""
+
+    routes = _Routes(
+        html=summary_html(subtitle="Brand New Series Coming Monday 16th November"),
+        catalogue_starts={"4u0h": "2026-10-01T21:00:00+0000", "4uap": "2026-10-02T21:00:00+0000"},
+        schedule=[schedule_entry(start="2026-11-01T21:00:00+0000")],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(routes), base_url="https://example.test"
+    ) as client:
+        result = await provider(client, now=datetime(2026, 11, 11, tzinfo=UTC)).fetch_series(
+            "im-a-celebrity-get-me-out-of-here/L2649"
+        )
+
+    assert routes.schedule_requested is True
     assert [season.number for season in result.seasons] == [25]
+    assert [episode.number for episode in result.seasons[0].episodes] == [1, 2, 3]
+    assert result.seasons[0].episodes[-1].releases[0].release_type is ReleaseType.TV_BROADCAST
 
 
 @pytest.mark.asyncio

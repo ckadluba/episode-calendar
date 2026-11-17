@@ -631,6 +631,65 @@ def test_merge_epg_keeps_airing_outside_the_annual_window_as_rerun() -> None:
     assert reruns[0].release_at == datetime(2026, 6, 5, 20, 15, tzinfo=VIENNA)
 
 
+def test_merge_epg_continues_an_announced_season_the_catalogue_now_lists() -> None:
+    """Airings continue a catalogued season, numbering on after its dated episodes."""
+
+    series = NormalizedSeries(
+        external_id="s",
+        title="S",
+        seasons=(
+            NormalizedSeason(
+                external_id="s2",
+                number=2,
+                episodes=(
+                    NormalizedEpisode(
+                        external_id="e1",
+                        number=1,
+                        title="e1",
+                        releases=(
+                            NormalizedEpisodeRelease(
+                                release_type=ReleaseType.STREAMING,
+                                release_at=datetime(2026, 11, 16, 21, 0, tzinfo=VIENNA),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = merge_epg(
+        series,
+        (
+            EpgBroadcast(
+                external_id="b2",
+                title="S",
+                start=datetime(2026, 11, 17, 21, 0, tzinfo=VIENNA),
+                announces_season=2,
+            ),
+            EpgBroadcast(
+                external_id="b3", title="S", start=datetime(2026, 11, 18, 21, 0, tzinfo=VIENNA)
+            ),
+        ),
+        now=datetime(2026, 11, 17, 9, tzinfo=UTC),
+        timezone=VIENNA,
+        tolerance=timedelta(hours=2),
+        next_episode_external_id=lambda season_id, number: f"next:{season_id}:{number}",
+    )
+
+    assert [season.number for season in result.seasons] == [2]
+    season = result.seasons[0]
+    assert season.external_id == "s2"
+    assert [episode.number for episode in season.episodes] == [1, 2, 3]
+    assert [episode.external_id for episode in season.episodes[1:]] == ["next:s2:2", "next:s2:3"]
+    airings = [release for episode in season.episodes[1:] for release in episode.releases]
+    assert [release.release_at for release in airings] == [
+        datetime(2026, 11, 17, 21, 0, tzinfo=VIENNA),
+        datetime(2026, 11, 18, 21, 0, tzinfo=VIENNA),
+    ]
+    assert all(release.rerun is False for release in airings)
+
+
 def test_merge_epg_tolerates_a_few_weeks_of_drift_in_the_annual_window() -> None:
     inside = merge_annual(
         annual_series(),

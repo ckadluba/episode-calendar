@@ -27,7 +27,8 @@ its specialties and deviations from it.
   never overrides a real catalogue date (`providers/epg.py`). A provider whose catalogue cannot yet
   list an upcoming season may declare it on the airing itself (`EpgBroadcast.announces_season`): the
   announcing airing and the following ones build that season in airing order, without needing a
-  catalogue cadence.
+  catalogue cadence. Once the catalogue lists that season (it caught up after the earlier forecast),
+  the airings continue it in airing order after its dated episodes instead of duplicating it.
 - **Cross-cutting policy (owned by the importer, not the adapters).** `importer/service.py` and
   `providers/epg.py` implement rerun detection, preview detection for a catalogue drop that
   precedes the episode's own broadcast (`detect_previews`: one day to two weeks of lead, only on
