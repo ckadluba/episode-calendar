@@ -87,3 +87,18 @@ variable "rtlplus_client_secret_secret" {
   type    = string
   default = "episode-calendar-rtlplus-client-secret"
 }
+
+variable "brevo_api_key_secret" {
+  type    = string
+  default = "episode-calendar-brevo-api-key"
+}
+
+variable "auth_email_from" {
+  type    = string
+  default = "Episode Calendar <login@example.com>"
+}
+
+variable "auth_link_base_url" {
+  type    = string
+  default = "http://localhost:5173"
+}

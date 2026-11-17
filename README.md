@@ -246,6 +246,22 @@ instant – a full-season drop, a double episode, or an RTL+ prerelease of the w
 them appears as its own tile on that day: the release date belongs to the episode, and every tile
 keeps its own `gesehen` marker, link, and `Vorab` badge.
 
+#### Optional login and cross-device settings
+
+The **Anmelden** button in the filter bar enables an optional, passwordless account. The backend
+sends one email containing a six-digit code and a magic link; either one signs the user in, on any
+device. A signed-in account stores filters, preview preferences, and seen episodes centrally, so
+they follow the account between browsers. Without an account the app keeps all of that in local
+storage and never calls the login endpoints.
+
+Login mail is delivered through [Brevo](https://www.brevo.com) and needs no domain of your own: the
+sender address is verified once by clicking a link Brevo mails to it. Set `BREVO_API_KEY`,
+`AUTH_EMAIL_FROM`, and `AUTH_LINK_BASE_URL` in `.env` (see `.env.example`). Without an API key the
+code and link are written to the API log instead of being sent, so local development needs no mail
+account. Brevo's free tier covers ordinary login traffic; exceeding it only disables new login
+emails, not anonymous use. See [docs/auth.md](docs/auth.md) for the endpoints, data model, security
+decisions, and deployment setup.
+
 ### Tests and checks
 
 Tests use an isolated SQLite database and never contact streaming providers:
@@ -266,7 +282,107 @@ Cloud deployment uses Cloud Run, Cloud SQL, Secret Manager, Artifact Registry, C
 Firebase Hosting, and Terraform. Review billing and quotas before continuing. Use short-lived
 GitHub OIDC credentials for CI rather than service-account key files.
 
-### Setup Cloud Environment
+### Deployment overview
+
+A first deployment on an empty Google Cloud project runs through the steps below. Each step is
+self-contained, and each assumes the previous ones succeeded. Steps 1 and 2 need no Google Cloud
+resource at all, so login mail can be validated before anything is billed.
+
+| # | Step | Outcome |
+| --- | --- | --- |
+| 1 | [Set up the Brevo login sender](#step-1--set-up-the-login-mail-sender-at-brevo) | A verified sender address and API key, no domain needed |
+| 2 | [Check the login flow locally](#step-2--check-the-login-flow-locally) | Real login mail arrives in a mailbox |
+| 3 | [Prepare project and toolchain](#step-3--prepare-the-project-and-toolchain) | Project with billing, APIs enabled, image repository |
+| 4 | [Bootstrap](#step-4--bootstrap-terraform-state-and-the-ci-identity) | Terraform state bucket and GitHub OIDC identity |
+| 5 | [Apply the infrastructure](#step-5--apply-the-infrastructure) | Cloud SQL, service accounts, empty secret containers |
+| 6 | [Store the secrets](#step-6--store-the-secrets) | `DATABASE_URL`, provider keys, `BREVO_API_KEY` |
+| 7 | [Deploy the API](#step-7--deploy-the-api) | Cloud Run service, schema, first import |
+| 8 | [Deploy the frontend](#step-8--deploy-the-frontend) | Firebase Hosting site and CORS |
+| 9 | [Schedule the import](#step-9--schedule-the-periodic-import) | Two-hourly provider refresh |
+| 10 | [Verify](#step-10--verify-the-first-deployment) | Health, API, and login on the public origin |
+
+Automated deployments through GitHub Actions are optional and come last; see
+[GitHub Actions deployment](#github-actions-deployment). The manual sequence below does not depend
+on it.
+
+Commands use `PROJECT_ID` as a placeholder. The Firebase Hosting steps spell out the example project
+`episode-calendar-67234`; substitute your own project ID wherever it appears.
+
+### Step 1 — Set up the login mail sender at Brevo
+
+Login mail has to arrive without owning a domain. Brevo verifies a sender *address* by mailing a
+confirmation link to it, so any mailbox you control is enough. This is a one-time setup:
+
+1. Create a free [Brevo](https://www.brevo.com) account. The free plan sends 300 emails per day and
+   needs no credit card.
+2. Add the sender under **Senders, Domains & Dedicated IPs → Senders** (older dashboards call this
+   **Senders & IP**) with the display name `Episode Calendar` and an address you can read. Brevo
+   mails a confirmation link to that address; open it. Until that link is clicked, the API rejects
+   the sender with `400`.
+3. Optional: authenticate a domain in the same menu once you own one. That improves deliverability
+   but is not required for sending.
+4. Create an API key under **SMTP & API → API Keys** and copy it immediately; Brevo shows it only
+   once.
+5. Keep both values for the next steps:
+   - `BREVO_API_KEY` — the API key.
+   - `AUTH_EMAIL_FROM` — `Episode Calendar <the verified address>`, for example
+     `Episode Calendar <login@example.com>`.
+
+Because the `From` domain is not authenticated, some mailbox providers file these mails as spam. The
+login code is part of the subject line, so it stays readable in a spam folder preview. The API call
+and its failure handling are described in [docs/auth.md](docs/auth.md#email-delivery-with-brevo).
+
+### Step 2 — Check the login flow locally
+
+Validate delivery before creating any cloud resource.
+
+1. Prepare the environment (details in [Local Development](#local-development)):
+
+   ```shell
+   cp .env.example .env
+   uv sync
+   ```
+
+2. Put the values from step 1 into `.env`:
+
+   ```
+   BREVO_API_KEY=<Brevo API key>
+   AUTH_EMAIL_FROM=Episode Calendar <verified-sender@example.com>
+   AUTH_LINK_BASE_URL=http://localhost:5173
+   ```
+
+3. Start PostgreSQL and the API, then import provider data if you have the credentials from
+   [Provider configuration and import](#provider-configuration-and-import). The login flow works
+   without imported data, so this step can be skipped when only mail delivery is being tested:
+
+   ```shell
+   docker compose up -d --build app
+   uv run python -m episode_calendar.importer all
+   ```
+
+4. Start the frontend in a second terminal and open <http://localhost:5173>:
+
+   ```shell
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+5. Click **Anmelden**, request a code, and confirm the mail arrives (check the spam folder). Type the
+   code, then open the app in a second browser and sign in with the same address. Filters, preview
+   preferences, and seen markers must follow the account.
+
+Without `BREVO_API_KEY`, the code and magic link are written to the API log instead, so the flow can
+also be exercised without a mail account:
+
+```shell
+docker compose logs -f app
+```
+
+### Step 3 — Prepare the project and toolchain
+
+Install **Terraform** and the **Firebase CLI** in addition to `gcloud` (see
+[Prerequisites](#prerequisites)).
 
 1. Install and authenticate the [Google Cloud CLI](https://cloud.google.com/sdk/docs/initialize):
 
@@ -309,60 +425,45 @@ GitHub OIDC credentials for CI rather than service-account key files.
    gcloud auth application-default print-access-token >/dev/null && echo "ADC ready"
    ```
 
-### Automated deployment prerequisites
+### Step 4 — Bootstrap Terraform state and the CI identity
 
-The repository contains two GitHub Actions workflows:
-
-- `.github/workflows/ci.yml` runs on pull requests, tests the Python application, builds the
-  backend image, and builds the frontend.
-- `.github/workflows/deploy.yml` runs on pushes to `main`, pushes an immutable backend image,
-applies Terraform and migrations, and deploys Firebase Hosting. Provider data is refreshed by the
-scheduled Cloud Run import job.
-
-One-time setup is required before the first deployment. Run the bootstrap script with a local
-identity that can create service accounts, Workload Identity providers, buckets, and project IAM
-bindings:
+Terraform keeps its state in a versioned Cloud Storage bucket, and the GitHub workflows
+authenticate through Workload Identity. Both are created once by a script that runs with your own
+`gcloud` identity, which therefore needs permission to create service accounts, Workload Identity
+providers, buckets, and project IAM bindings.
 
 ```shell
 gcloud auth login
 gcloud auth application-default login
 ./scripts/bootstrap-cloud.sh \
-  --project episode-calendar-67234 \
-  --repository ckadluba/episode-calendar
+  --project PROJECT_ID \
+  --repository OWNER/episode-calendar
 ```
 
-The script creates the GitHub OIDC provider, deploy service account, and Terraform state bucket,
-then invokes Terraform to grant the deploy account its project roles. It is safe to repeat and
-prints the exact values for the first two GitHub secrets.
+The default state bucket name is `PROJECT_ID-tfstate` (override with `--state-bucket`), and the
+script prints `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_DEPLOY_SERVICE_ACCOUNT` for the GitHub
+secrets described in [GitHub Actions deployment](#github-actions-deployment). It also grants the
+deploy service account its project roles through a targeted Terraform apply. The script is safe to
+repeat.
 
-The remaining one-time setup is:
+### Step 5 — Apply the infrastructure
 
-1. Add these GitHub repository secrets under **Settings → Secrets and variables → Actions**:
-
-   - `GCP_WORKLOAD_IDENTITY_PROVIDER` — full provider resource name.
-   - `GCP_DEPLOY_SERVICE_ACCOUNT` — deploy service-account email.
-   - `DATABASE_PASSWORD` — the existing Cloud SQL application-user password.
-
-   The provider API keys remain in Secret Manager. Ensure the three required secret versions
-   (`DATABASE_URL`, `JOYN_API_KEY`, and `RTLPLUS_OIDC_CLIENT_SECRET`) exist before the first run.
-   Do not create or upload a JSON key.
-
-### Deploy Infrastructure
-
-The first Terraform apply creates Cloud SQL, IAM, and empty Secret Manager containers. Copy the
-example variables, generate a password, and put it only in the ignored local tfvars file:
+The first Terraform apply creates Cloud SQL, the runtime and deploy service accounts, service
+enablement, and empty Secret Manager containers. Copy the example variables, generate a database
+password, and put it only in the ignored local tfvars file:
 
 ```shell
 cp infra/terraform.tfvars.example infra/terraform.tfvars
 openssl rand -hex 24
 ```
 
-Copy the generated value into `database_password` in `infra/terraform.tfvars`. Keep
-`deploy_cloud_run = false` and `enable_import_schedule = false` for this first apply. The
-password is sensitive but still exists in local Terraform state.
+Copy the generated value into `database_password` in `infra/terraform.tfvars`, set `project_id`, and
+keep `image` on the tag you will build in [step 7](#step-7--deploy-the-api). Keep
+`deploy_cloud_run = false` and `enable_import_schedule = false` for this apply. The password is
+sensitive but still exists in local Terraform state.
 
 ```shell
-terraform -chdir=infra init -backend-config="bucket=episode-calendar-67234-tfstate"
+terraform -chdir=infra init -backend-config="bucket=PROJECT_ID-tfstate"
 terraform -chdir=infra plan
 terraform -chdir=infra apply
 ```
@@ -371,8 +472,11 @@ The Cloud SQL configuration explicitly uses the `ENTERPRISE` edition because `db
 not available in `ENTERPRISE_PLUS`. If an apply fails part-way through, fix the issue and run
 the same apply again.
 
-Add Secret Manager versions without files or command-line secret arguments. Use the same database
-password and provider values discovered during local setup:
+### Step 6 — Store the secrets
+
+The Terraform apply created empty secrets. Add their first versions now; use the same database
+password and the provider values discovered during local setup. The `BREVO_API_KEY` is the key from
+[step 1](#step-1--set-up-the-login-mail-sender-at-brevo).
 
 ```shell
 CONNECTION_NAME="$(terraform -chdir=infra output -raw sql_connection_name)"
@@ -382,10 +486,21 @@ read -r -s JOYN_API_KEY; echo
 printf '%s' "$JOYN_API_KEY" | gcloud secrets versions add episode-calendar-joyn-api-key --data-file=-
 read -r -s RTLPLUS_CLIENT_SECRET; echo
 printf '%s' "$RTLPLUS_CLIENT_SECRET" | gcloud secrets versions add episode-calendar-rtlplus-client-secret --data-file=-
-unset DB_PASSWORD JOYN_API_KEY RTLPLUS_CLIENT_SECRET CONNECTION_NAME
+read -r -s BREVO_API_KEY; echo
+printf '%s' "$BREVO_API_KEY" | gcloud secrets versions add episode-calendar-brevo-api-key --data-file=-
+unset DB_PASSWORD JOYN_API_KEY RTLPLUS_CLIENT_SECRET BREVO_API_KEY CONNECTION_NAME
 ```
 
-### Deploy App
+Every version must exist before the Cloud Run service is applied, because the service references the
+secret's `latest` version; without a version the revision cannot start. Without the environment
+variable (for example in local runs) login emails are logged instead of sent. Terraform names the
+mail secret through `brevo_api_key_secret` (default `episode-calendar-brevo-api-key`); changing that
+variable later creates a new, empty secret, so decide the name before the first apply.
+
+### Step 7 — Deploy the API
+
+The Cloud Run service is applied by Terraform. The schema and the first provider import are separate
+Cloud Run jobs, because the application container deliberately does not run migrations on startup.
 
 Build and push an amd64 image. Apple Silicon users must specify the platform; use an immutable
 tag or digest when possible:
@@ -401,8 +516,7 @@ terraform -chdir=infra plan
 terraform -chdir=infra apply
 ```
 
-The output contains `service_url`. The application container does not run migrations on startup.
-Deploy and execute the migration job:
+The output contains `service_url`. Deploy and execute the migration job:
 
 ```shell
 gcloud run jobs deploy episode-calendar-migrate --image=europe-west3-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG --region=europe-west3 --project=PROJECT_ID --service-account=episode-calendar-runtime@PROJECT_ID.iam.gserviceaccount.com --set-cloudsql-instances=PROJECT_ID:europe-west3:episode-calendar-postgres --set-secrets=DATABASE_URL=episode-calendar-database-url:latest --command=uv --args=run,--no-sync,alembic,upgrade,head
@@ -416,7 +530,7 @@ gcloud run jobs deploy episode-calendar-import --image=europe-west3-docker.pkg.d
 gcloud run jobs execute episode-calendar-import --region=europe-west3 --project=PROJECT_ID --wait
 ```
 
-### Deploy Frontend
+### Step 8 — Deploy the frontend
 
 Firebase Hosting serves the static Vite build from the existing Google Cloud project. Install and
 authenticate the Firebase CLI once:
@@ -469,7 +583,10 @@ If the header is missing, inspect the active Cloud Run revision and its environm
 gcloud run services describe episode-calendar --region=europe-west3 --project=episode-calendar-67234 --format='yaml(status.latestReadyRevisionName,spec.template.containers[0].image,spec.template.containers[0].env)'
 ```
 
-Set `enable_import_schedule = true` and apply Terraform once more. The default schedule is
+### Step 9 — Schedule the periodic import
+
+The public site is functional at this point; the last resource is the recurring import. Set
+`enable_import_schedule = true` and apply Terraform once more. The default schedule is
 `0 /2 * * *` in `Europe/Vienna`; it invokes the existing import job with a dedicated service
 account:
 
@@ -483,12 +600,47 @@ Cloud Scheduler currently provides three jobs per billing account per month at n
 periodic scheduler job is within that allowance. Cloud Run job execution and Cloud SQL runtime are
 separate usage considerations. See the [official Scheduler pricing](https://cloud.google.com/scheduler/pricing).
 
-Verify the deployment:
+### Step 10 — Verify the first deployment
+
+Check the API and the public site:
 
 ```shell
 curl "$(terraform -chdir=infra output -raw service_url)/health"
 curl "$(terraform -chdir=infra output -raw service_url)/api/v1/series"
 ```
+
+Then open the Firebase Hosting URL, request a login code, and confirm that a real mail arrives and
+that the code signs you in. If login mail fails, the API answers `502`:
+
+```shell
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="episode-calendar" AND severity>=ERROR' --limit=50 --project=episode-calendar-67234 --format='value(timestamp,textPayload)'
+```
+
+The log line names the reason: a missing `BREVO_API_KEY` secret version, an unverified sender
+(`400`), or an exceeded free-plan quota (`429`). Anonymous use is unaffected by all of them.
+
+### GitHub Actions deployment
+
+The repository contains two workflows. Both are optional; the manual sequence above produced a
+working deployment without them.
+
+- `.github/workflows/ci.yml` runs on pull requests, tests the Python application, builds the backend
+  image, and builds the frontend.
+- `.github/workflows/deploy.yml` runs on pushes to `main`, pushes an immutable backend image, applies
+  Terraform and migrations, and deploys Firebase Hosting. Provider data is refreshed by the scheduled
+  Cloud Run import job.
+
+Add these repository secrets under **Settings → Secrets and variables → Actions**:
+
+- `GCP_WORKLOAD_IDENTITY_PROVIDER` — printed by the bootstrap script in
+  [step 4](#step-4--bootstrap-terraform-state-and-the-ci-identity).
+- `GCP_DEPLOY_SERVICE_ACCOUNT` — printed by the same script.
+- `DATABASE_PASSWORD` — the Cloud SQL application-user password from
+  [step 5](#step-5--apply-the-infrastructure).
+
+The provider API keys and `BREVO_API_KEY` stay in Secret Manager, so the workflow needs no extra
+secrets for them. Ensure all four secret versions exist before the first workflow run, because the
+Cloud Run service references each `latest` version. Do not create or upload a JSON key.
 
 ### Deploy an update
 

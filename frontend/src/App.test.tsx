@@ -514,3 +514,151 @@ describe("calendar releases", () => {
       .toEqual(["series-b", "episode-2", "episode-10", "season-2", "later-time"]);
   });
 });
+
+describe("Passwordless email login", () => {
+  afterEach(() => {
+    cleanup();
+    window.history.replaceState({}, "", "/");
+  });
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  function jsonResponse(data: unknown) {
+    return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }));
+  }
+
+  function mockAuthApi() {
+    const session = {
+      token: "session-token",
+      expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+      user: { id: "user-1", email: "user@example.test" },
+    };
+    const emptySnapshot = {
+      data: {
+        series_selection: { selected: [], known: [] },
+        preview_preferences: {},
+        seen_episode_ids: [],
+      },
+      version: 0,
+      updated_at: null,
+    };
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        calls.push({ url, init });
+        if (url.endsWith("/api/v1/auth/email/start")) return jsonResponse({ status: "sent" });
+        if (url.endsWith("/api/v1/auth/email/verify")) return jsonResponse(session);
+        if (url.endsWith("/api/v1/auth/link/verify")) return jsonResponse(session);
+        if (url.endsWith("/api/v1/auth/logout")) return Promise.resolve(new Response(null, { status: 204 }));
+        if (url.endsWith("/api/v1/me/settings") && method === "GET") return jsonResponse(emptySnapshot);
+        if (url.endsWith("/api/v1/me/settings") && method === "PUT") {
+          const body = JSON.parse(String(init?.body ?? "{}")) as { data: unknown };
+          return jsonResponse({ data: body.data, version: 1, updated_at: new Date().toISOString() });
+        }
+        if (url.endsWith("/api/v1/platforms")) return jsonResponse(platforms);
+        if (url.endsWith("/api/v1/series")) return jsonResponse(series);
+        return jsonResponse([]);
+      }),
+    );
+    return { calls, session };
+  }
+
+  async function openLoginAndRequestCode() {
+    fireEvent.click(screen.getByRole("button", { name: "Anmelden" }));
+    fireEvent.change(screen.getByLabelText("E-Mail-Adresse"), {
+      target: { value: "user@example.test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Code senden" }));
+    return screen.findByLabelText("Anmeldecode");
+  }
+
+  it("signs in with an emailed code and stores the session", async () => {
+    const { calls } = mockAuthApi();
+    render(<App />);
+
+    const codeInput = await openLoginAndRequestCode();
+    fireEvent.change(codeInput, { target: { value: "123456" } });
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Anmelden" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "user@example.test" })).toBeInTheDocument(),
+    );
+    expect(
+      JSON.parse(localStorage.getItem("episode-calendar-auth-session") ?? "null"),
+    ).toMatchObject({ user: { email: "user@example.test" } });
+    expect(calls.some((call) => call.url.endsWith("/api/v1/auth/email/start"))).toBe(true);
+    expect(
+      calls.some(
+        (call) =>
+          call.url.endsWith("/api/v1/auth/email/verify") &&
+          String(call.init?.body).includes("123456"),
+      ),
+    ).toBe(true);
+  });
+
+  it("uploads local preferences when the account has no settings yet", async () => {
+    const { calls } = mockAuthApi();
+    localStorage.setItem("episode-calendar-series-selection", JSON.stringify(["series-2"]));
+    render(<App />);
+
+    const codeInput = await openLoginAndRequestCode();
+    fireEvent.change(codeInput, { target: { value: "123456" } });
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Anmelden" }),
+    );
+
+    await waitFor(
+      () =>
+        expect(
+          calls.some(
+            (call) =>
+              call.init?.method === "PUT" &&
+              call.url.endsWith("/api/v1/me/settings") &&
+              String(call.init.body).includes("series-2"),
+          ),
+        ).toBe(true),
+      { timeout: 3000 },
+    );
+  });
+
+  it("accepts a code requested on another device without sending a new one", async () => {
+    const { calls } = mockAuthApi();
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Anmelden" }));
+    fireEvent.change(screen.getByLabelText("E-Mail-Adresse"), {
+      target: { value: "user@example.test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ich habe bereits einen Code" }));
+
+    const codeInput = await screen.findByLabelText("Anmeldecode");
+    fireEvent.change(codeInput, { target: { value: "123456" } });
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Anmelden" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "user@example.test" })).toBeInTheDocument(),
+    );
+    expect(calls.some((call) => call.url.endsWith("/api/v1/auth/email/start"))).toBe(false);
+    expect(calls.some((call) => call.url.endsWith("/api/v1/auth/email/verify"))).toBe(true);
+  });
+
+  it("completes a magic link and clears the token from the URL", async () => {
+    mockAuthApi();
+    window.history.replaceState({}, "", "/?email_token=link-token&week=next");
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "user@example.test" })).toBeInTheDocument(),
+    );
+    expect(window.location.search).toBe("?week=next");
+  });
+});

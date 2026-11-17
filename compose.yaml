@@ -26,6 +26,9 @@ services:
       IMPORT_BACKOFF_SECONDS: ${IMPORT_BACKOFF_SECONDS:-1.0}
       SERIES_CONFIG_PATH: ${SERIES_CONFIG_PATH:-config/series.json}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173}
+      BREVO_API_KEY: ${BREVO_API_KEY:-}
+      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-Episode Calendar <login@example.com>}
+      AUTH_LINK_BASE_URL: ${AUTH_LINK_BASE_URL:-http://localhost:5173}
     ports:
       - "8000:8000"
     depends_on:

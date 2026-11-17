@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Any
 
-from sqlalchemy import Enum, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import JSON, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from episode_calendar.shared.db.base import Base
@@ -86,6 +87,75 @@ class Episode(Base):
     releases: Mapped[list[EpisodeRelease]] = relationship(
         back_populates="episode", cascade="all, delete-orphan"
     )
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    email_verified_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+    settings: Mapped[UserSettings | None] = relationship(
+        back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+    sessions: Mapped[list[UserSession]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class LoginToken(Base):
+    """One pending passwordless login, usable as a code or as a link.
+
+    A single row backs both variants so a request sends exactly one email and
+    consuming either variant invalidates the other.
+    """
+
+    __tablename__ = "login_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    code_salt: Mapped[str] = mapped_column(String(32))
+    link_token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    attempts_left: Mapped[int] = mapped_column(Integer, default=5)
+    request_ip: Mapped[str | None] = mapped_column(String(64))
+    used_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    user_agent: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+    user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class UserSettings(Base):
+    __tablename__ = "user_settings"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow, onupdate=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="settings")
 
 
 class EpisodeRelease(Base):

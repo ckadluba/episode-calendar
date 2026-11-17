@@ -95,11 +95,19 @@ resource "google_secret_manager_secret" "rtlplus_client_secret" {
   }
 }
 
+resource "google_secret_manager_secret" "brevo_api_key" {
+  secret_id = var.brevo_api_key_secret
+  replication {
+    auto {}
+  }
+}
+
 resource "google_secret_manager_secret_iam_member" "runtime" {
   for_each = {
     database = google_secret_manager_secret.database_url.id
     joyn     = google_secret_manager_secret.joyn_api_key.id
     rtlplus  = google_secret_manager_secret.rtlplus_client_secret.id
+    brevo    = google_secret_manager_secret.brevo_api_key.id
   }
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
@@ -142,6 +150,23 @@ resource "google_cloud_run_v2_service" "app" {
             version = "latest"
           }
         }
+      }
+      env {
+        name = "BREVO_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.brevo_api_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name  = "AUTH_EMAIL_FROM"
+        value = var.auth_email_from
+      }
+      env {
+        name  = "AUTH_LINK_BASE_URL"
+        value = var.auth_link_base_url
       }
       env {
         name  = "CORS_ORIGINS"
