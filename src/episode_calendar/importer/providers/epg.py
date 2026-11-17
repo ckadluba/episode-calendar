@@ -209,6 +209,20 @@ def latest_release_moment(series: NormalizedSeries) -> datetime | None:
     )
 
 
+def latest_released_season_number(series: NormalizedSeries) -> int | None:
+    """Return the highest-numbered season that already carries a real release."""
+
+    numbers = [
+        season.number
+        for season in series.seasons
+        if season.number is not None
+        and any(
+            not release.placeholder for episode in season.episodes for release in episode.releases
+        )
+    ]
+    return max(numbers, default=None)
+
+
 def annual_window_distance(
     premieres: Iterable[datetime],
     start: datetime,
@@ -407,11 +421,14 @@ def merge_epg(
       season as a new ``NormalizedSeason``. Its further airings extend that season in
       airing order, because the catalogue cannot attribute them yet.
 
-    * A provider can announce the season an airing starts explicitly
-      (``announces_season``). That starts the season the same way, but without needing a
-      catalogue cadence: the announcing airing and the following ones build the season in
-      airing order. This is how a provider whose catalogue still lists only the previous
-      season contributes an upcoming one.
+    * A provider can announce the season an airing belongs to explicitly
+      (``announces_season``). When the catalogue does not list that season yet, it starts
+      the season the same way, but without needing a catalogue cadence: the announcing
+      airing and the following ones build the season in airing order. When the catalogue
+      already lists the season (it caught up after an earlier forecast), the airings
+      continue it in airing order after its dated episodes. This is how a provider whose
+      catalogue still lists only the previous season contributes an upcoming one, and how
+      the remaining forecast survives once the first episode reaches the catalogue.
 
     * Otherwise the slot logic applies: an airing matching a recurring slot of the
       running season extends that season with the next episode number (filling an
@@ -506,7 +523,7 @@ def merge_epg(
         assert pending_premiere is not None
         used = [
             episode.number
-            for episode in created[pending_premiere.external_id]
+            for episode in (*pending_premiere.episodes, *created[pending_premiere.external_id])
             if episode.number is not None
         ]
         number = broadcast.episode_number
@@ -541,10 +558,16 @@ def merge_epg(
         ):
             target = episodes_by_external_id[broadcast.linked_episode_external_id]
         elif announced_season is not None and pending_premiere is None:
-            pending_premiere = NormalizedSeason(
-                external_id=f"{EPG_SEASON_EXTERNAL_ID_PREFIX}{series.external_id}:{announced_season}",
-                number=announced_season,
-            )
+            # The catalogue may already list this season (it caught up after an earlier
+            # forecast); then the airings continue it instead of duplicating it.
+            pending_premiere = seasons_by_number.get(announced_season)
+            if pending_premiere is None:
+                pending_premiere = NormalizedSeason(
+                    external_id=(
+                        f"{EPG_SEASON_EXTERNAL_ID_PREFIX}{series.external_id}:{announced_season}"
+                    ),
+                    number=announced_season,
+                )
             add_premiere_airing(broadcast)
             continue
         elif premiere_number is not None:
@@ -662,7 +685,9 @@ def merge_epg(
             episodes.append(episode)
         episodes.extend(created[season.external_id])
         seasons.append(season.model_copy(update={"episodes": tuple(episodes)}))
-    if pending_premiere is not None:
+    if pending_premiere is not None and pending_premiere.external_id not in {
+        season.external_id for season in series.seasons
+    }:
         seasons.append(
             pending_premiere.model_copy(
                 update={"episodes": tuple(created[pending_premiere.external_id])}

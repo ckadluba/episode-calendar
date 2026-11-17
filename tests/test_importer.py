@@ -2132,6 +2132,110 @@ async def test_import_reconciles_epg_season_into_catalog_season(
     assert releases[0].release_type is ReleaseType.STREAMING
 
 
+async def test_import_keeps_schedule_episodes_after_catalog_lists_the_premiere(
+    db_session: AsyncSession,
+) -> None:
+    # A season forecast from the EPG lives under a synthetic identifier until the catalogue
+    # lists it. Once the premiere is catalogued, the remaining scheduled airings must keep
+    # extending that season instead of disappearing with the synthetic identifier.
+    class ContinuingScheduleProvider:
+        slug = "stv"
+        calls = 0
+
+        async def fetch_series(self, external_id: str) -> NormalizedSeries:
+            self.calls += 1
+            if self.calls == 1:
+                return NormalizedSeries(
+                    external_id="stv-series",
+                    title="Demo",
+                    seasons=(
+                        NormalizedSeason(
+                            external_id="epg:season:stv-series:26",
+                            number=26,
+                            episodes=tuple(
+                                NormalizedEpisode(
+                                    external_id=f"epg:next:epg:season:stv-series:26:{number}",
+                                    number=number,
+                                    title=f"Episode {number}",
+                                    releases=(
+                                        NormalizedEpisodeRelease(
+                                            external_id=f"stv-broadcast-{number}",
+                                            release_type=ReleaseType.TV_BROADCAST,
+                                            release_at=datetime(
+                                                2026, 11, 15 + number, 21, tzinfo=UTC
+                                            ),
+                                        ),
+                                    ),
+                                )
+                                for number in (1, 2, 3)
+                            ),
+                        ),
+                    ),
+                )
+            return NormalizedSeries(
+                external_id="stv-series",
+                title="Demo",
+                seasons=(
+                    NormalizedSeason(
+                        external_id="stv-series:season:26",
+                        number=26,
+                        episodes=(
+                            NormalizedEpisode(
+                                external_id="stv-episode-26-1",
+                                number=1,
+                                title="Episode 1",
+                                releases=(
+                                    NormalizedEpisodeRelease(
+                                        release_type=ReleaseType.STREAMING,
+                                        release_at=datetime(2026, 11, 16, 21, tzinfo=UTC),
+                                    ),
+                                ),
+                            ),
+                            *(
+                                NormalizedEpisode(
+                                    external_id=f"epg:next:stv-series:season:26:{number}",
+                                    number=number,
+                                    title=f"Episode {number}",
+                                    releases=(
+                                        NormalizedEpisodeRelease(
+                                            external_id=f"stv-broadcast-{number}",
+                                            release_type=ReleaseType.TV_BROADCAST,
+                                            release_at=datetime(
+                                                2026, 11, 15 + number, 21, tzinfo=UTC
+                                            ),
+                                        ),
+                                    ),
+                                )
+                                for number in (2, 3)
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    provider = ContinuingScheduleProvider()
+    await import_series(db_session, provider, "ignored")
+    assert (await db_session.scalar(select(func.count()).select_from(EpisodeRelease))) == 3
+
+    await import_series(db_session, provider, "ignored")
+
+    seasons = list(await db_session.scalars(select(Season)))
+    assert len(seasons) == 1
+    assert seasons[0].external_id == "stv-series:season:26"
+    episodes = list(await db_session.scalars(select(Episode).order_by(Episode.number)))
+    assert [episode.number for episode in episodes] == [1, 2, 3]
+    releases = list(
+        await db_session.scalars(select(EpisodeRelease).order_by(EpisodeRelease.release_at))
+    )
+    assert [release.release_at for release in releases] == [
+        datetime(2026, 11, 16, 21, tzinfo=UTC),
+        datetime(2026, 11, 17, 21, tzinfo=UTC),
+        datetime(2026, 11, 18, 21, tzinfo=UTC),
+    ]
+    assert releases[0].release_type is ReleaseType.STREAMING
+    assert all(release.release_type is ReleaseType.TV_BROADCAST for release in releases[1:])
+
+
 async def test_import_skips_undated_episodes_in_obsolete_season(
     db_session: AsyncSession,
 ) -> None:

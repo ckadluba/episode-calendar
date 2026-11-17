@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from collections.abc import Callable, Mapping
@@ -28,6 +27,7 @@ from episode_calendar.importer.providers.epg import (
     EpgBroadcast,
     filter_obsolete_seasons,
     latest_release_moment,
+    latest_released_season_number,
     merge_epg,
     next_season_number,
 )
@@ -39,13 +39,9 @@ _EPISODE_LINK_RE = re.compile(
     re.IGNORECASE,
 )
 _SERIES_NUMBER_RE = re.compile(r"(?:series|season)\s+(\d+)", re.IGNORECASE)
-_NEXT_DATA_RE = re.compile(
-    r"<script[^>]+id=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL
-)
-_BRAND_NEW_SERIES_RE = re.compile(r"new series", re.IGNORECASE)
 
-# STV's linear schedule is the only source that knows an announced season before its
-# episodes reach the on-demand catalogue. Only the main channel carries those premieres.
+# STV's linear schedule is the only source that knows a season's episodes before they
+# reach the on-demand catalogue. Only the main channel carries those premieres.
 _STV_EPG_CHANNEL = "stv"
 _STV_EPG_LIMIT = 100
 STV_EPG_TIMEZONE = ZoneInfo("Europe/London")
@@ -139,9 +135,7 @@ class STVProvider:
         series = filter_obsolete_seasons(
             self._normalize(external_id, programme_slug, episode_ids, responses)
         )
-        if self._announces_new_series(page):
-            series = await self._merge_announced_schedule(client, series, programme_slug)
-        return series
+        return await self._merge_schedule(client, series, programme_slug)
 
     async def _request_text(self, client: httpx.AsyncClient, url: str) -> str:
         try:
@@ -271,42 +265,26 @@ class STVProvider:
             ),
         )
 
-    @classmethod
-    def _announces_new_series(cls, page: str) -> bool:
-        """Whether the programme page promotes a season the catalogue cannot list yet.
-
-        STV announces an upcoming season on the programme page (a "new series" promo)
-        before any of its episodes reach the on-demand catalogue. The catalogue alone
-        cannot date that season, so the promo switches the adapter to the linear schedule.
-        """
-
-        data = cls._next_data(page)
-        programme = cls._mapping(data.get("programmeData"))
-        header = cls._mapping(data.get("programmeHeader"))
-        subtitle = cls._string(programme.get("promotionalSubtitle")) or cls._string(
-            header.get("promotionalSubtitle")
-        )
-        return subtitle is not None and _BRAND_NEW_SERIES_RE.search(subtitle) is not None
-
-    async def _merge_announced_schedule(
+    async def _merge_schedule(
         self, client: httpx.AsyncClient, series: NormalizedSeries, programme_slug: str
     ) -> NormalizedSeries:
-        """Merge the linear airings of an announced season the catalogue does not list yet.
+        """Merge the linear airings the catalogue cannot attribute yet.
 
-        STV's on-demand catalogue carries a season only once it is published; the upcoming
-        season first appears in the linear schedule (``/v1/schedule``) with an empty
-        ``episode``. Those unattributable airings are mapped to ``EpgBroadcast`` and merged
-        with the shared policy: the earliest one declares the season the catalogue still
-        lacks (``announces_season``), so the merger numbers the whole run in airing order.
-        Only airings newer than the newest catalogued release are considered, and the
-        announced season must be far enough from that release to be a new one rather than
-        the running season's own cadence. The EPG is supplementary: a failing schedule
-        leaves the catalogue import intact.
+        STV's on-demand catalogue carries an episode only once it is published; the linear
+        schedule (``/v1/schedule``) lists the run ahead with an empty ``episode``. Those
+        unattributable airings are mapped to ``EpgBroadcast`` and merged with the shared
+        policy. The first airing declares the season the run belongs to
+        (``announces_season``): a run far enough from the newest catalogued release starts
+        the next season, while a close run continues the running season (the first episode
+        reaches the catalogue after it aired, but the following days do not). Only airings
+        newer than the newest catalogued release are considered. The EPG is supplementary:
+        a failing schedule leaves the catalogue import intact.
         """
 
         number = next_season_number(series)
         latest = latest_release_moment(series)
-        if number is None or latest is None:
+        latest_season = latest_released_season_number(series)
+        if number is None or latest is None or latest_season is None:
             return series
         try:
             payload = await self._request_json(
@@ -320,8 +298,10 @@ class STVProvider:
         except STVProviderError as exc:  # the EPG is supplementary; keep the catalogue.
             logger.warning("STV schedule unavailable for %s: %s", series.title, exc)
             return series
-        if not airings or airings[0].start - latest < DEFAULT_NEW_SEASON_MIN_GAP:
+        if not airings:
             return series
+        starts_new_season = airings[0].start - latest >= DEFAULT_NEW_SEASON_MIN_GAP
+        target_season = number if starts_new_season else latest_season
         broadcasts = tuple(
             EpgBroadcast(
                 external_id=f"stv:{series.external_id}:{airing.start.isoformat()}",
@@ -329,7 +309,7 @@ class STVProvider:
                 start=airing.start,
                 end=airing.end,
                 url=f"{self._player_url}/summary/{quote(programme_slug)}",
-                announces_season=number if index == 0 else None,
+                announces_season=target_season if index == 0 else None,
             )
             for index, airing in enumerate(airings)
         )
@@ -349,8 +329,9 @@ class STVProvider:
         """The unattributable airings of the programme, in airing order.
 
         A schedule entry the catalogue already knows carries its ``episode`` object; only
-        entries without one are the announced season. Airings at or before the newest
-        catalogued release belong to an older, already-imported season and are skipped.
+        entries without one are the run the catalogue has not published yet. Airings at or
+        before the newest catalogued release belong to an older, already-imported season
+        and are skipped.
         """
 
         results = payload.get("results")
@@ -374,23 +355,6 @@ class STVProvider:
                 )
             )
         return tuple(sorted(airings, key=lambda airing: airing.start))
-
-    @classmethod
-    def _next_data(cls, page: str) -> Mapping[str, object]:
-        """Return the ``pageProps.data`` object embedded in the summary page, if any."""
-
-        match = _NEXT_DATA_RE.search(page)
-        if match is None:
-            return {}
-        try:
-            payload = json.loads(match.group(1))
-        except ValueError:
-            return {}
-        if not isinstance(payload, Mapping):
-            return {}
-        props = cls._mapping(payload.get("props"))
-        page_props = cls._mapping(props.get("pageProps"))
-        return cls._mapping(page_props.get("data"))
 
     @staticmethod
     def _programme_slug(external_id: str) -> str:
