@@ -22,6 +22,6 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "jsdom": "^26.1.0",
-    "vitest": "^5.0.0"
+    "vitest": "^5.1.0"
   }
 }
