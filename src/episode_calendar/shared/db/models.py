@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Any
 
-from sqlalchemy import Enum, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import (
+    JSON,
+    Enum,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from episode_calendar.shared.db.base import Base
@@ -86,6 +97,105 @@ class Episode(Base):
     releases: Mapped[list[EpisodeRelease]] = relationship(
         back_populates="episode", cascade="all, delete-orphan"
     )
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+class User(Base):
+    """An account identified only by an opaque UUID and its credentials."""
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+    settings: Mapped[UserSettings | None] = relationship(
+        back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+    sessions: Mapped[list[UserSession]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    passkeys: Mapped[list[PasskeyCredential]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    recovery_codes: Mapped[list[RecoveryCode]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class PasskeyCredential(Base):
+    """A WebAuthn credential: technical identifiers and a public key only."""
+
+    __tablename__ = "passkey_credentials"
+
+    credential_id: Mapped[bytes] = mapped_column(LargeBinary, primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    public_key: Mapped[bytes] = mapped_column(LargeBinary)
+    sign_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+    user: Mapped[User] = relationship(back_populates="passkeys")
+
+
+class AuthChallenge(Base):
+    """A short-lived, single-use WebAuthn challenge."""
+
+    __tablename__ = "auth_challenges"
+
+    challenge: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    # No FK: a registration challenge can carry a not-yet-created user id.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
+
+
+class RecoveryCode(Base):
+    """A single-use fallback code, stored only as a salted scrypt digest."""
+
+    __tablename__ = "recovery_codes"
+
+    lookup: Mapped[str] = mapped_column(String(16), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64))
+    salt: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="recovery_codes")
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+    user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class UserSettings(Base):
+    __tablename__ = "user_settings"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow, onupdate=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="settings")
 
 
 class EpisodeRelease(Base):

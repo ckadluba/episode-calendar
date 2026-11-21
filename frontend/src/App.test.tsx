@@ -514,3 +514,218 @@ describe("calendar releases", () => {
       .toEqual(["series-b", "episode-2", "episode-10", "season-2", "later-time"]);
   });
 });
+
+describe("Passkey login", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+    vi.stubGlobal("PublicKeyCredential", class {});
+    Object.defineProperty(navigator, "credentials", {
+      configurable: true,
+      value: {
+        create: vi.fn(() => Promise.resolve(registrationCredential())),
+        get: vi.fn(() => Promise.resolve(authenticationCredential())),
+      },
+    });
+  });
+
+  function jsonResponse(data: unknown) {
+    return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }));
+  }
+
+  function buffer(value: string) {
+    return new TextEncoder().encode(value).buffer;
+  }
+
+  function registrationCredential() {
+    return {
+      id: "credential-1",
+      rawId: buffer("credential-1"),
+      type: "public-key",
+      response: {
+        clientDataJSON: buffer("client-data"),
+        attestationObject: buffer("attestation"),
+      },
+    };
+  }
+
+  function authenticationCredential() {
+    return {
+      id: "credential-1",
+      rawId: buffer("credential-1"),
+      type: "public-key",
+      response: {
+        clientDataJSON: buffer("client-data"),
+        authenticatorData: buffer("authenticator-data"),
+        signature: buffer("signature"),
+        userHandle: buffer("user-1"),
+      },
+    };
+  }
+
+  const creationOptions = {
+    rp: { name: "Episode Calendar", id: "localhost" },
+    user: { id: "dXNlci0x", name: "user-1", displayName: "Episode Calendar" },
+    challenge: "Y2hhbGxlbmdl",
+    pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+  };
+  const requestOptions = {
+    challenge: "Y2hhbGxlbmdl",
+    rpId: "localhost",
+    userVerification: "required",
+  };
+
+  function mockAuthApi() {
+    const session = {
+      token: "session-token",
+      expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+      user: { id: "user-1" },
+      recovery_code: "recovery-code-1234567890",
+    };
+    const emptySnapshot = {
+      data: {
+        series_selection: { selected: [], known: [] },
+        preview_preferences: {},
+        seen_episode_ids: [],
+      },
+      version: 0,
+      updated_at: null,
+    };
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        calls.push({ url, init });
+        if (url.endsWith("/api/v1/auth/registration/options")) return jsonResponse(creationOptions);
+        if (url.endsWith("/api/v1/auth/registration/verify")) return jsonResponse(session);
+        if (url.endsWith("/api/v1/auth/authentication/options")) return jsonResponse(requestOptions);
+        if (url.endsWith("/api/v1/auth/authentication/verify")) return jsonResponse(session);
+        if (url.endsWith("/api/v1/auth/recovery/verify")) return jsonResponse(session);
+        if (url.endsWith("/api/v1/auth/passkeys/options")) return jsonResponse(creationOptions);
+        if (url.endsWith("/api/v1/auth/passkeys") && method === "GET") {
+          return jsonResponse([
+            {
+              credential_id: "Y3JlZGVudGlhbC0x",
+              created_at: new Date().toISOString(),
+              last_used_at: null,
+            },
+          ]);
+        }
+        if (url.endsWith("/api/v1/auth/passkeys") && method === "POST") {
+          return jsonResponse({
+            credential_id: "Y3JlZGVudGlhbC0y",
+            created_at: new Date().toISOString(),
+            last_used_at: null,
+          });
+        }
+        if (url.includes("/api/v1/auth/passkeys/") && method === "DELETE") {
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        if (url.endsWith("/api/v1/auth/logout")) return Promise.resolve(new Response(null, { status: 204 }));
+        if (url.endsWith("/api/v1/me/settings") && method === "GET") return jsonResponse(emptySnapshot);
+        if (url.endsWith("/api/v1/me/settings") && method === "PUT") {
+          const body = JSON.parse(String(init?.body ?? "{}")) as { data: unknown };
+          return jsonResponse({ data: body.data, version: 1, updated_at: new Date().toISOString() });
+        }
+        if (url.endsWith("/api/v1/platforms")) return jsonResponse(platforms);
+        if (url.endsWith("/api/v1/series")) return jsonResponse(series);
+        return jsonResponse([]);
+      }),
+    );
+    return { calls, session };
+  }
+
+  async function openLogin() {
+    fireEvent.click(screen.getByRole("button", { name: "Anmelden" }));
+    return screen.findByRole("button", { name: "Mit Passkey anmelden" });
+  }
+
+  it("creates a passkey, stores the session, and shows the recovery code once", async () => {
+    const { calls } = mockAuthApi();
+    render(<App />);
+
+    await openLogin();
+    fireEvent.click(screen.getByRole("button", { name: "Neuen Passkey erstellen" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Konto" })).toBeInTheDocument());
+    expect(screen.getByText(/ nur jetzt sichtbar/)).toBeInTheDocument();
+    expect(
+      JSON.parse(localStorage.getItem("episode-calendar-auth-session") ?? "null"),
+    ).toMatchObject({ user: { id: "user-1" } });
+    expect(
+      calls.some(
+        (call) =>
+          call.url.endsWith("/api/v1/auth/registration/verify") &&
+          String(call.init?.body).includes("attestationObject"),
+      ),
+    ).toBe(true);
+  });
+
+  it("signs in with an existing passkey", async () => {
+    const { calls } = mockAuthApi();
+    render(<App />);
+
+    const signIn = await openLogin();
+    fireEvent.click(signIn);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Konto" })).toBeInTheDocument());
+    expect(
+      calls.some(
+        (call) =>
+          call.url.endsWith("/api/v1/auth/authentication/verify") &&
+          String(call.init?.body).includes("signature"),
+      ),
+    ).toBe(true);
+  });
+
+  it("uploads local preferences when the account has no settings yet", async () => {
+    const { calls } = mockAuthApi();
+    localStorage.setItem("episode-calendar-series-selection", JSON.stringify(["series-2"]));
+    render(<App />);
+
+    const signIn = await openLogin();
+    fireEvent.click(signIn);
+
+    await waitFor(
+      () =>
+        expect(
+          calls.some(
+            (call) =>
+              call.init?.method === "PUT" &&
+              call.url.endsWith("/api/v1/me/settings") &&
+              String(call.init.body).includes("series-2"),
+          ),
+        ).toBe(true),
+      { timeout: 3000 },
+    );
+  });
+
+  it("signs in with a recovery code on another device", async () => {
+    const { calls } = mockAuthApi();
+    render(<App />);
+
+    await openLogin();
+    fireEvent.click(screen.getByRole("button", { name: "Recovery-Code eingeben" }));
+    fireEvent.change(screen.getByLabelText("Recovery-Code"), {
+      target: { value: "recovery-code-1234567890" },
+    });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Anmelden" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Konto" })).toBeInTheDocument());
+    expect(
+      calls.some(
+        (call) =>
+          call.url.endsWith("/api/v1/auth/recovery/verify") &&
+          String(call.init?.body).includes("recovery-code-1234567890"),
+      ),
+    ).toBe(true);
+    expect(calls.some((call) => call.url.endsWith("/api/v1/auth/authentication/options"))).toBe(false);
+  });
+});

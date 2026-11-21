@@ -87,3 +87,20 @@ variable "rtlplus_client_secret_secret" {
   type    = string
   default = "episode-calendar-rtlplus-client-secret"
 }
+
+variable "auth_rp_id" {
+  type        = string
+  description = "Frontend host used as the WebAuthn relying party id."
+  default     = "localhost"
+}
+
+variable "auth_rp_name" {
+  type    = string
+  default = "Episode Calendar"
+}
+
+variable "auth_expected_origins" {
+  type        = string
+  description = "Comma-separated frontend origins allowed for WebAuthn ceremonies."
+  default     = "http://localhost:5173,http://127.0.0.1:5173"
+}

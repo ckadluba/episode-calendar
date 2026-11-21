@@ -59,6 +59,9 @@ jobs:
           TF_VAR_enable_import_schedule: "true"
           TF_VAR_manage_deploy_iam: "true"
           TF_VAR_cors_origins: "http://localhost:5173,http://127.0.0.1:5173,https://episode-calendar-67234.web.app"
+          TF_VAR_auth_rp_id: "episode-calendar-67234.web.app"
+          TF_VAR_auth_rp_name: "Episode Calendar"
+          TF_VAR_auth_expected_origins: "https://episode-calendar-67234.web.app"
         run: >-
           terraform -chdir=infra apply -input=false -auto-approve
           -target=google_project_service.required
@@ -117,6 +120,9 @@ jobs:
           TF_VAR_enable_import_schedule: "true"
           TF_VAR_manage_deploy_iam: "true"
           TF_VAR_cors_origins: "http://localhost:5173,http://127.0.0.1:5173,https://episode-calendar-67234.web.app"
+          TF_VAR_auth_rp_id: "episode-calendar-67234.web.app"
+          TF_VAR_auth_rp_name: "Episode Calendar"
+          TF_VAR_auth_expected_origins: "https://episode-calendar-67234.web.app"
         run: |
           if ! terraform -chdir=infra state list | grep -Fq 'google_cloud_scheduler_job.import[0]'; then
             if gcloud scheduler jobs describe "${SCHEDULER_NAME}" \
@@ -137,6 +143,9 @@ jobs:
           TF_VAR_enable_import_schedule: "true"
           TF_VAR_manage_deploy_iam: "true"
           TF_VAR_cors_origins: "http://localhost:5173,http://127.0.0.1:5173,https://episode-calendar-67234.web.app"
+          TF_VAR_auth_rp_id: "episode-calendar-67234.web.app"
+          TF_VAR_auth_rp_name: "Episode Calendar"
+          TF_VAR_auth_expected_origins: "https://episode-calendar-67234.web.app"
         run: terraform -chdir=infra apply -input=false -auto-approve
 
       - name: Read Cloud Run service URL

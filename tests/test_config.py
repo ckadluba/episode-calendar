@@ -14,6 +14,7 @@ def test_database_url_is_loaded_from_environment(monkeypatch) -> None:
 
 
 def test_shared_settings_ignore_component_specific_fields(monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:secret@database:5432/calendar")
     monkeypatch.setenv("JOYN_API_KEY", "public-web-key")
     monkeypatch.setenv("CORS_ORIGINS", "https://example.test")
 
