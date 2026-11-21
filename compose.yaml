@@ -26,6 +26,9 @@ services:
       IMPORT_BACKOFF_SECONDS: ${IMPORT_BACKOFF_SECONDS:-1.0}
       SERIES_CONFIG_PATH: ${SERIES_CONFIG_PATH:-config/series.json}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173}
+      AUTH_RP_ID: ${AUTH_RP_ID:-localhost}
+      AUTH_RP_NAME: ${AUTH_RP_NAME:-Episode Calendar}
+      AUTH_EXPECTED_ORIGINS: ${AUTH_EXPECTED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173}
     ports:
       - "8000:8000"
     depends_on:

@@ -144,6 +144,18 @@ resource "google_cloud_run_v2_service" "app" {
         }
       }
       env {
+        name  = "AUTH_RP_ID"
+        value = var.auth_rp_id
+      }
+      env {
+        name  = "AUTH_RP_NAME"
+        value = var.auth_rp_name
+      }
+      env {
+        name  = "AUTH_EXPECTED_ORIGINS"
+        value = var.auth_expected_origins
+      }
+      env {
         name  = "CORS_ORIGINS"
         value = var.cors_origins
       }

@@ -246,6 +246,20 @@ instant – a full-season drop, a double episode, or an RTL+ prerelease of the w
 them appears as its own tile on that day: the release date belongs to the episode, and every tile
 keeps its own `gesehen` marker, link, and `Vorab` badge.
 
+#### Optional login and cross-device settings
+
+The **Anmelden** button in the filter bar enables an optional account secured by a passkey. There is
+no password, email address, or mail provider: the browser or password manager proves possession of a
+private key, and the server stores only the corresponding public key. A signed-in account stores
+filters, preview preferences, and seen episodes centrally, so they follow the user between devices.
+Without an account the app keeps all of that in local storage and never calls the login endpoints.
+
+Set `AUTH_RP_ID` to the frontend hostname and `AUTH_EXPECTED_ORIGINS` to the allowed frontend
+origins in `.env` (see `.env.example`); local development works with the defaults. Several passkeys
+per account are supported, plus a one-time recovery code for lost devices. Passkeys are bound to the
+hostname, so choose the final domain before rolling them out. See [docs/auth.md](docs/auth.md) for
+the endpoints, data model, security decisions, and deployment setup.
+
 ### Tests and checks
 
 Tests use an isolated SQLite database and never contact streaming providers:
@@ -266,7 +280,85 @@ Cloud deployment uses Cloud Run, Cloud SQL, Secret Manager, Artifact Registry, C
 Firebase Hosting, and Terraform. Review billing and quotas before continuing. Use short-lived
 GitHub OIDC credentials for CI rather than service-account key files.
 
-### Setup Cloud Environment
+### Deployment overview
+
+A first deployment on an empty Google Cloud project runs through the steps below. Each step is
+self-contained, and each assumes the previous ones succeeded. Steps 1 and 2 need no Google Cloud
+resource at all, so the passkey flow can be validated before anything is billed.
+
+| # | Step | Outcome |
+| --- | --- | --- |
+| 1 | [Decide the passkey hostname](#step-1--decide-the-passkey-hostname) | Final frontend host and allowed origins |
+| 2 | [Check the login flow locally](#step-2--check-the-login-flow-locally) | Passkey login works on localhost |
+| 3 | [Prepare project and toolchain](#step-3--prepare-the-project-and-toolchain) | Project with billing, APIs enabled, image repository |
+| 4 | [Bootstrap](#step-4--bootstrap-terraform-state-and-the-ci-identity) | Terraform state bucket and GitHub OIDC identity |
+| 5 | [Apply the infrastructure](#step-5--apply-the-infrastructure) | Cloud SQL, service accounts, empty secret containers |
+| 6 | [Store the secrets](#step-6--store-the-secrets) | `DATABASE_URL` and provider keys |
+| 7 | [Deploy the API](#step-7--deploy-the-api) | Cloud Run service, schema, first import |
+| 8 | [Deploy the frontend](#step-8--deploy-the-frontend) | Firebase Hosting site and CORS |
+| 9 | [Schedule the import](#step-9--schedule-the-periodic-import) | Two-hourly provider refresh |
+| 10 | [Verify](#step-10--verify-the-first-deployment) | Health, API, and login on the public origin |
+
+Automated deployments through GitHub Actions are optional and come last; see
+[GitHub Actions deployment](#github-actions-deployment). The manual sequence below does not depend
+on it.
+
+Commands use `PROJECT_ID` as a placeholder. The Firebase Hosting steps spell out the example project
+`episode-calendar-67234`; substitute your own project ID wherever it appears.
+
+### Step 1 — Decide the passkey hostname
+
+Passkeys are bound to a relying party ID, so the hostname must be final before users register one.
+For the example Firebase Hosting site, use `episode-calendar-67234.web.app` as `auth_rp_id` and
+`https://episode-calendar-67234.web.app` as the only entry of `auth_expected_origins`. Keep those
+values for [step 8](#step-8--deploy-the-frontend) and `infra/terraform.tfvars`. No mail account,
+domain ownership proof, DNS record, or API key is needed for login.
+
+The backend must be reachable over HTTPS in production; browsers only expose WebAuthn in secure
+contexts. `localhost` is the one exception and is allowed by default for development.
+
+### Step 2 — Check the login flow locally
+
+Validate WebAuthn before creating any cloud resource.
+
+1. Prepare the environment (details in [Local Development](#local-development)):
+
+   ```shell
+   cp .env.example .env
+   uv sync
+   ```
+
+2. The `AUTH_RP_ID=localhost` and `AUTH_EXPECTED_ORIGINS` defaults in `.env.example` already match
+   the local frontend. Change them only if you serve the frontend on another host or port.
+
+3. Start PostgreSQL and the API, then import provider data if you have the credentials from
+   [Provider configuration and import](#provider-configuration-and-import). The login flow works
+   without imported data, so this step can be skipped when only login is being tested:
+
+   ```shell
+   docker compose up -d --build app
+   uv run python -m episode_calendar.importer all
+   ```
+
+4. Start the frontend in a second terminal and open <http://localhost:5173>:
+
+   ```shell
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+5. Click **Anmelden** → **Neuen Passkey erstellen**, confirm with your device, and copy the
+   recovery code shown once. Open the app in a second browser (or a different device profile),
+   choose **Mit Passkey anmelden**, and verify that filters, preview preferences, and seen markers
+   follow the account. Add a second passkey from the account dialog and try signing in with either
+   one. Finally, sign in with the recovery code on a fresh profile and confirm that a new code is
+   issued.
+
+### Step 3 — Prepare the project and toolchain
+
+Install **Terraform** and the **Firebase CLI** in addition to `gcloud` (see
+[Prerequisites](#prerequisites)).
 
 1. Install and authenticate the [Google Cloud CLI](https://cloud.google.com/sdk/docs/initialize):
 
@@ -309,60 +401,45 @@ GitHub OIDC credentials for CI rather than service-account key files.
    gcloud auth application-default print-access-token >/dev/null && echo "ADC ready"
    ```
 
-### Automated deployment prerequisites
+### Step 4 — Bootstrap Terraform state and the CI identity
 
-The repository contains two GitHub Actions workflows:
-
-- `.github/workflows/ci.yml` runs on pull requests, tests the Python application, builds the
-  backend image, and builds the frontend.
-- `.github/workflows/deploy.yml` runs on pushes to `main`, pushes an immutable backend image,
-applies Terraform and migrations, and deploys Firebase Hosting. Provider data is refreshed by the
-scheduled Cloud Run import job.
-
-One-time setup is required before the first deployment. Run the bootstrap script with a local
-identity that can create service accounts, Workload Identity providers, buckets, and project IAM
-bindings:
+Terraform keeps its state in a versioned Cloud Storage bucket, and the GitHub workflows
+authenticate through Workload Identity. Both are created once by a script that runs with your own
+`gcloud` identity, which therefore needs permission to create service accounts, Workload Identity
+providers, buckets, and project IAM bindings.
 
 ```shell
 gcloud auth login
 gcloud auth application-default login
 ./scripts/bootstrap-cloud.sh \
-  --project episode-calendar-67234 \
-  --repository ckadluba/episode-calendar
+  --project PROJECT_ID \
+  --repository OWNER/episode-calendar
 ```
 
-The script creates the GitHub OIDC provider, deploy service account, and Terraform state bucket,
-then invokes Terraform to grant the deploy account its project roles. It is safe to repeat and
-prints the exact values for the first two GitHub secrets.
+The default state bucket name is `PROJECT_ID-tfstate` (override with `--state-bucket`), and the
+script prints `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_DEPLOY_SERVICE_ACCOUNT` for the GitHub
+secrets described in [GitHub Actions deployment](#github-actions-deployment). It also grants the
+deploy service account its project roles through a targeted Terraform apply. The script is safe to
+repeat.
 
-The remaining one-time setup is:
+### Step 5 — Apply the infrastructure
 
-1. Add these GitHub repository secrets under **Settings → Secrets and variables → Actions**:
-
-   - `GCP_WORKLOAD_IDENTITY_PROVIDER` — full provider resource name.
-   - `GCP_DEPLOY_SERVICE_ACCOUNT` — deploy service-account email.
-   - `DATABASE_PASSWORD` — the existing Cloud SQL application-user password.
-
-   The provider API keys remain in Secret Manager. Ensure the three required secret versions
-   (`DATABASE_URL`, `JOYN_API_KEY`, and `RTLPLUS_OIDC_CLIENT_SECRET`) exist before the first run.
-   Do not create or upload a JSON key.
-
-### Deploy Infrastructure
-
-The first Terraform apply creates Cloud SQL, IAM, and empty Secret Manager containers. Copy the
-example variables, generate a password, and put it only in the ignored local tfvars file:
+The first Terraform apply creates Cloud SQL, the runtime and deploy service accounts, service
+enablement, and empty Secret Manager containers. Copy the example variables, generate a database
+password, and put it only in the ignored local tfvars file:
 
 ```shell
 cp infra/terraform.tfvars.example infra/terraform.tfvars
 openssl rand -hex 24
 ```
 
-Copy the generated value into `database_password` in `infra/terraform.tfvars`. Keep
-`deploy_cloud_run = false` and `enable_import_schedule = false` for this first apply. The
-password is sensitive but still exists in local Terraform state.
+Copy the generated value into `database_password` in `infra/terraform.tfvars`, set `project_id`, and
+keep `image` on the tag you will build in [step 7](#step-7--deploy-the-api). Keep
+`deploy_cloud_run = false` and `enable_import_schedule = false` for this apply. The password is
+sensitive but still exists in local Terraform state.
 
 ```shell
-terraform -chdir=infra init -backend-config="bucket=episode-calendar-67234-tfstate"
+terraform -chdir=infra init -backend-config="bucket=PROJECT_ID-tfstate"
 terraform -chdir=infra plan
 terraform -chdir=infra apply
 ```
@@ -371,8 +448,10 @@ The Cloud SQL configuration explicitly uses the `ENTERPRISE` edition because `db
 not available in `ENTERPRISE_PLUS`. If an apply fails part-way through, fix the issue and run
 the same apply again.
 
-Add Secret Manager versions without files or command-line secret arguments. Use the same database
-password and provider values discovered during local setup:
+### Step 6 — Store the secrets
+
+The Terraform apply created empty secrets. Add their first versions now; use the same database
+password and the provider values discovered during local setup. Passkey login needs no secret.
 
 ```shell
 CONNECTION_NAME="$(terraform -chdir=infra output -raw sql_connection_name)"
@@ -385,7 +464,15 @@ printf '%s' "$RTLPLUS_CLIENT_SECRET" | gcloud secrets versions add episode-calen
 unset DB_PASSWORD JOYN_API_KEY RTLPLUS_CLIENT_SECRET CONNECTION_NAME
 ```
 
-### Deploy App
+Every version must exist before the Cloud Run service is applied, because the service references the
+secret's `latest` version; without a version the revision cannot start. Set the three `auth_*`
+variables from [step 1](#step-1--decide-the-passkey-hostname) in `infra/terraform.tfvars` before
+applying the service in step 7; they are plain configuration, not secrets.
+
+### Step 7 — Deploy the API
+
+The Cloud Run service is applied by Terraform. The schema and the first provider import are separate
+Cloud Run jobs, because the application container deliberately does not run migrations on startup.
 
 Build and push an amd64 image. Apple Silicon users must specify the platform; use an immutable
 tag or digest when possible:
@@ -401,8 +488,7 @@ terraform -chdir=infra plan
 terraform -chdir=infra apply
 ```
 
-The output contains `service_url`. The application container does not run migrations on startup.
-Deploy and execute the migration job:
+The output contains `service_url`. Deploy and execute the migration job:
 
 ```shell
 gcloud run jobs deploy episode-calendar-migrate --image=europe-west3-docker.pkg.dev/PROJECT_ID/episode-calendar/app:TAG --region=europe-west3 --project=PROJECT_ID --service-account=episode-calendar-runtime@PROJECT_ID.iam.gserviceaccount.com --set-cloudsql-instances=PROJECT_ID:europe-west3:episode-calendar-postgres --set-secrets=DATABASE_URL=episode-calendar-database-url:latest --command=uv --args=run,--no-sync,alembic,upgrade,head
@@ -416,7 +502,7 @@ gcloud run jobs deploy episode-calendar-import --image=europe-west3-docker.pkg.d
 gcloud run jobs execute episode-calendar-import --region=europe-west3 --project=PROJECT_ID --wait
 ```
 
-### Deploy Frontend
+### Step 8 — Deploy the frontend
 
 Firebase Hosting serves the static Vite build from the existing Google Cloud project. Install and
 authenticate the Firebase CLI once:
@@ -469,7 +555,10 @@ If the header is missing, inspect the active Cloud Run revision and its environm
 gcloud run services describe episode-calendar --region=europe-west3 --project=episode-calendar-67234 --format='yaml(status.latestReadyRevisionName,spec.template.containers[0].image,spec.template.containers[0].env)'
 ```
 
-Set `enable_import_schedule = true` and apply Terraform once more. The default schedule is
+### Step 9 — Schedule the periodic import
+
+The public site is functional at this point; the last resource is the recurring import. Set
+`enable_import_schedule = true` and apply Terraform once more. The default schedule is
 `0 /2 * * *` in `Europe/Vienna`; it invokes the existing import job with a dedicated service
 account:
 
@@ -483,12 +572,49 @@ Cloud Scheduler currently provides three jobs per billing account per month at n
 periodic scheduler job is within that allowance. Cloud Run job execution and Cloud SQL runtime are
 separate usage considerations. See the [official Scheduler pricing](https://cloud.google.com/scheduler/pricing).
 
-Verify the deployment:
+### Step 10 — Verify the first deployment
+
+Check the API and the public site:
 
 ```shell
 curl "$(terraform -chdir=infra output -raw service_url)/health"
 curl "$(terraform -chdir=infra output -raw service_url)/api/v1/series"
 ```
+
+Then open the Firebase Hosting URL, create a passkey, and sign in again from a second device or
+browser profile. If WebAuthn fails, check that `auth_rp_id` and `auth_expected_origins` match the
+hosting origin exactly and that the API log does not show a rejected challenge:
+
+```shell
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="episode-calendar" AND severity>=ERROR' --limit=50 --project=episode-calendar-67234 --format='value(timestamp,textPayload)'
+```
+
+Anonymous use is unaffected by login configuration.
+
+### GitHub Actions deployment
+
+The repository contains two workflows. Both are optional; the manual sequence above produced a
+working deployment without them.
+
+- `.github/workflows/ci.yml` runs on pull requests, tests the Python application, builds the backend
+  image, and builds the frontend.
+- `.github/workflows/deploy.yml` runs on pushes to `main`, pushes an immutable backend image, applies
+  Terraform and migrations, and deploys Firebase Hosting. Provider data is refreshed by the scheduled
+  Cloud Run import job.
+
+Add these repository secrets under **Settings → Secrets and variables → Actions**:
+
+- `GCP_WORKLOAD_IDENTITY_PROVIDER` — printed by the bootstrap script in
+  [step 4](#step-4--bootstrap-terraform-state-and-the-ci-identity).
+- `GCP_DEPLOY_SERVICE_ACCOUNT` — printed by the same script.
+- `DATABASE_PASSWORD` — the Cloud SQL application-user password from
+  [step 5](#step-5--apply-the-infrastructure).
+
+The provider API keys stay in Secret Manager, so the workflow needs no extra secrets for them.
+Ensure all three secret versions exist before the first workflow run, because the Cloud Run service
+references each `latest` version. Do not create or upload a JSON key. The workflow supplies the
+passkey settings as `TF_VAR_auth_rp_id`, `TF_VAR_auth_rp_name`, and
+`TF_VAR_auth_expected_origins`; update those values there when the frontend hostname changes.
 
 ### Deploy an update
 

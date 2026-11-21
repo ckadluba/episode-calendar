@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.10,<3",
     "sqlalchemy[asyncio]>=2.0.43,<3",
     "uvicorn[standard]>=0.35,<1",
+    "webauthn>=2,<3",
 ]
 
 [dependency-groups]

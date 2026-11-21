@@ -1,4 +1,17 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+
+import { API_URL } from "./api";
+import { AuthDialog } from "./AuthDialog";
+import {
+  ApiError,
+  clearSession,
+  fetchSettings,
+  readSession,
+  saveSettings,
+  writeSession,
+  type AuthSession,
+  type UserSettings,
+} from "./auth";
 
 type Series = { id: string; title: string; platform: string; platform_id: string; description: string | null };
 type Platform = { id: string; name: string; has_prereleases: boolean };
@@ -10,7 +23,6 @@ type Episode = {
 };
 type CalendarItem = { episode: Episode; release: Release };
 
-const API_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:8000";
 const TIMEZONE = "Europe/Vienna";
 const CACHE_PREFIX = "episode-calendar-cache-v2";
 const PREVIEW_PREFERENCES_KEY = "episode-calendar-preview-preferences";
@@ -286,6 +298,13 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hideCandidate, setHideCandidate] = useState<{ seriesId: string; title: string } | null>(null);
+  const [session, setSession] = useState<AuthSession | null>(() => readSession());
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [settingsReady, setSettingsReady] = useState(false);
+  const remoteSettingsRef = useRef<UserSettings | null>(null);
+  const lastSyncedRef = useRef("");
+  const settingsVersionRef = useRef(0);
 
   const hasPrereleasesByPlatform = useMemo(
     () => new Map(platforms.map((platform) => [platform.id, platform.has_prereleases])),
@@ -296,6 +315,116 @@ export function App() {
     [platforms],
   );
   const seenEpisodes = useMemo(() => new Set(seenEpisodeIds), [seenEpisodeIds]);
+
+  const applyRemoteSettings = useCallback((data: UserSettings, authoritative: boolean) => {
+    if (!authoritative) return;
+    setSelectedSeriesIds(data.series_selection.selected);
+    setKnownSeriesIds(data.series_selection.known);
+    setSeriesSelectionInitialized(true);
+    setPreviewPreferences(data.preview_preferences);
+    setSeenEpisodeIds(data.seen_episode_ids);
+  }, []);
+
+  // Load the settings that belong to the signed-in account. Without a session
+  // every preference stays in localStorage and nothing is fetched.
+  useEffect(() => {
+    if (!session) {
+      remoteSettingsRef.current = null;
+      lastSyncedRef.current = "";
+      settingsVersionRef.current = 0;
+      setSettingsReady(true);
+      return;
+    }
+    let cancelled = false;
+    setSettingsReady(false);
+    void (async () => {
+      try {
+        const snapshot = await fetchSettings(session);
+        if (cancelled) return;
+        remoteSettingsRef.current = snapshot.data;
+        lastSyncedRef.current = JSON.stringify(snapshot.data);
+        settingsVersionRef.current = snapshot.version;
+        applyRemoteSettings(snapshot.data, snapshot.version > 0);
+      } catch (cause) {
+        if (cancelled) return;
+        if (cause instanceof ApiError && cause.status === 401) {
+          clearSession();
+          setSession(null);
+          setAuthNotice("Deine Sitzung ist abgelaufen. Bitte melde dich erneut an.");
+        } else {
+          setAuthNotice("Deine gespeicherten Einstellungen konnten nicht geladen werden.");
+        }
+      } finally {
+        if (!cancelled) setSettingsReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session, applyRemoteSettings]);
+
+  const currentSettings = useMemo<UserSettings>(
+    () => ({
+      series_selection: { selected: selectedSeriesIds, known: knownSeriesIds },
+      preview_preferences: previewPreferences,
+      seen_episode_ids: seenEpisodeIds,
+    }),
+    [knownSeriesIds, previewPreferences, seenEpisodeIds, selectedSeriesIds],
+  );
+
+  // Persist changes for signed-in users after a short idle period. On a version
+  // conflict the server version is adopted once so the local change still wins.
+  useEffect(() => {
+    if (!session || !settingsReady || !seriesSelectionInitialized) return;
+    const serialized = JSON.stringify(currentSettings);
+    if (serialized === lastSyncedRef.current) return;
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const saved = await saveSettings(session, currentSettings, settingsVersionRef.current);
+          settingsVersionRef.current = saved.version;
+          lastSyncedRef.current = JSON.stringify(saved.data);
+          remoteSettingsRef.current = saved.data;
+        } catch (cause) {
+          if (cause instanceof ApiError && cause.status === 409) {
+            const payload = cause.payload as {
+              detail?: { current?: { version?: number } };
+            } | null;
+            const version = payload?.detail?.current?.version;
+            if (typeof version === "number") {
+              try {
+                const saved = await saveSettings(session, currentSettings, version);
+                settingsVersionRef.current = saved.version;
+                lastSyncedRef.current = JSON.stringify(saved.data);
+                remoteSettingsRef.current = saved.data;
+                return;
+              } catch {
+                // The next change retries with the refreshed version.
+              }
+            }
+          }
+          if (cause instanceof ApiError && cause.status === 401) {
+            clearSession();
+            setSession(null);
+            setAuthNotice("Deine Sitzung ist abgelaufen. Bitte melde dich erneut an.");
+          }
+        }
+      })();
+    }, 1000);
+    return () => window.clearTimeout(timeout);
+  }, [currentSettings, session, seriesSelectionInitialized, settingsReady]);
+
+  const handleSignedIn = useCallback((next: AuthSession, keepOpen = false) => {
+    writeSession(next);
+    setSession(next);
+    setAuthNotice(null);
+    setAuthOpen(keepOpen);
+  }, []);
+
+  const handleSignedOut = useCallback(() => {
+    setSession(null);
+    setAuthOpen(false);
+  }, []);
 
   useEffect(() => {
     if (!hideCandidate) return;
@@ -308,7 +437,7 @@ export function App() {
 
   useEffect(() => { localStorage.setItem("episode-calendar-week", week); }, [week]);
   useEffect(() => {
-    if (!series.length || seriesSelectionInitialized) return;
+    if (!series.length || !settingsReady || seriesSelectionInitialized) return;
     const saved = readLocal<unknown>("episode-calendar-series-selection", null);
     const currentIds = series.map((item) => item.id);
     if (Array.isArray(saved)) {
@@ -323,7 +452,7 @@ export function App() {
     }
     setKnownSeriesIds(currentIds);
     setSeriesSelectionInitialized(true);
-  }, [series, seriesSelectionInitialized]);
+  }, [series, seriesSelectionInitialized, settingsReady]);
   useEffect(() => {
     if (!seriesSelectionInitialized) return;
     const currentIds = series.map((item) => item.id);
@@ -337,15 +466,18 @@ export function App() {
     }
   }, [knownSeriesIds, selectedSeriesIds, seriesSelectionInitialized]);
   useEffect(() => {
-    if (!series.length) return;
-    const saved = readLocal<unknown>(PREVIEW_PREFERENCES_KEY, {});
+    if (!series.length || !settingsReady) return;
+    const remote = remoteSettingsRef.current;
+    const saved = remote && settingsVersionRef.current > 0
+      ? remote.preview_preferences
+      : readLocal<unknown>(PREVIEW_PREFERENCES_KEY, {});
     const stored = saved && typeof saved === "object" ? saved as Record<string, unknown> : {};
     const platformIds = [...new Set(series.map((item) => item.platform_id))];
     setPreviewPreferences(Object.fromEntries(platformIds.map((platformId) => [
       platformId,
       stored[platformId] !== false,
     ])));
-  }, [series]);
+  }, [series, settingsReady]);
   useEffect(() => {
     if (Object.keys(previewPreferences).length) {
       localStorage.setItem(PREVIEW_PREFERENCES_KEY, JSON.stringify(previewPreferences));
@@ -434,7 +566,8 @@ export function App() {
   return <main className="app-shell">
     <header className="hero"><p className="eyebrow">EPISODE CALENDAR</p><h1>{week === "last" ? "Was lief letzte Woche?" : week === "next" ? "Was läuft nächste Woche?" : week === "after-next" ? "Was läuft übernächste Woche?" : "Was läuft diese Woche?"}</h1><p className="subtitle">Neue Episoden deiner Serien auf einen Blick. Zukünftige Daten können unvollständig sein.</p></header>
     <nav className="week-switch" aria-label="Woche"><button className={week === "last" ? "active" : ""} onClick={() => setWeek("last")}>Letzte Woche</button><button className={week === "current" ? "active" : ""} onClick={() => setWeek("current")}>Diese Woche</button><button className={week === "next" ? "active" : ""} onClick={() => setWeek("next")}>Nächste Woche</button><button className={week === "after-next" ? "active" : ""} onClick={() => setWeek("after-next")}>Übernächste Woche</button></nav>
-    <section className="filters" aria-label="Filter"><button className="filter-button" type="button" disabled={!seriesSelectionInitialized} onClick={() => setFilterOpen(true)}>Filter</button><span>{selectedSeriesIds.length} von {series.length} Serien ausgewählt</span></section>
+    <section className="filters" aria-label="Filter"><button className="filter-button" type="button" disabled={!seriesSelectionInitialized} onClick={() => setFilterOpen(true)}>Filter</button><span>{selectedSeriesIds.length} von {series.length} Serien ausgewählt</span><button className="account-button" type="button" onClick={() => setAuthOpen(true)} title={session ? "Konto verwalten" : "Anmelden, um Einstellungen geräteübergreifend zu speichern"}>{session ? "Konto" : "Anmelden"}</button></section>
+    {authNotice && <p className="auth-notice">{authNotice}</p>}
     {loading && <p className="status">Kalender wird geladen …</p>}
     {error && <p className="status error">{error}<br /><small>Prüfe, ob die API unter {API_URL} läuft.</small></p>}
     {!loading && !error && <section className="calendar">{days.map((day) => {
@@ -468,5 +601,13 @@ export function App() {
         </div>
       </div>
     </div>}
+    <AuthDialog
+      open={authOpen}
+      session={session}
+      notice={authNotice}
+      onClose={() => setAuthOpen(false)}
+      onSignedIn={handleSignedIn}
+      onSignedOut={handleSignedOut}
+    />
   </main>;
 }
