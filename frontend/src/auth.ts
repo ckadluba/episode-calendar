@@ -1,4 +1,4 @@
-import { API_URL } from "./api";
+import { API_URL, apiFetch } from "./api";
 import type {
   CreationOptionsJSON,
   RequestOptionsJSON,
@@ -80,7 +80,7 @@ export function clearSession() {
 }
 
 async function request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await apiFetch(`${API_URL}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
