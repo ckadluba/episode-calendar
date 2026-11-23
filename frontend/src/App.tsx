@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
-import { API_URL } from "./api";
+import { ApiActivitySpinner } from "./ApiActivitySpinner";
+import { API_URL, apiFetch } from "./api";
 import { AuthDialog } from "./AuthDialog";
 import {
   ApiError,
@@ -501,14 +502,14 @@ export function App() {
       setLoading(!cachedSeries || !cachedEpisodes); setError(null);
       try {
         const [seriesResponse, platformsResponse, episodeResponse] = await Promise.all([
-          fetch(`${API_URL}/api/v1/series`).then(async (response) => {
+          apiFetch(`${API_URL}/api/v1/series`).then(async (response) => {
             if (!response.ok) throw new Error(`Serien konnten nicht geladen werden (${response.status}).`);
             return response.json();
           }),
-          fetch(`${API_URL}/api/v1/platforms`)
+          apiFetch(`${API_URL}/api/v1/platforms`)
             .then(async (response) => (response.ok ? response.json() : []))
             .catch(() => []),
-          fetch(`${API_URL}/api/v1/episodes/${week}-week?timezone=${encodeURIComponent(TIMEZONE)}&includePreviews=all&includeReleaseHistory=true`).then(async (response) => {
+          apiFetch(`${API_URL}/api/v1/episodes/${week}-week?timezone=${encodeURIComponent(TIMEZONE)}&includePreviews=all&includeReleaseHistory=true`).then(async (response) => {
             if (!response.ok) throw new Error(`Episoden konnten nicht geladen werden (${response.status}).`);
             return response.json();
           }),
@@ -554,16 +555,20 @@ export function App() {
   const toggleSeen = (episodeId: string) => setSeenEpisodeIds((current) => current.includes(episodeId)
     ? current.filter((id) => id !== episodeId)
     : [...current, episodeId]);
-  if (filterOpen) return <SeriesFilterPage
-    series={series}
-    selectedIds={selectedSeriesIds}
-    previewPreferences={previewPreferences}
-    previewEnabledPlatforms={previewEnabledPlatforms}
-    onSave={(ids, preferences) => { setSelectedSeriesIds(ids); setPreviewPreferences(preferences); setFilterOpen(false); }}
-    onDiscard={() => setFilterOpen(false)}
-  />;
+  if (filterOpen) return <>
+    <ApiActivitySpinner />
+    <SeriesFilterPage
+      series={series}
+      selectedIds={selectedSeriesIds}
+      previewPreferences={previewPreferences}
+      previewEnabledPlatforms={previewEnabledPlatforms}
+      onSave={(ids, preferences) => { setSelectedSeriesIds(ids); setPreviewPreferences(preferences); setFilterOpen(false); }}
+      onDiscard={() => setFilterOpen(false)}
+    />
+  </>;
 
   return <main className="app-shell">
+    <ApiActivitySpinner />
     <header className="hero"><p className="eyebrow">EPISODE CALENDAR</p><h1>{week === "last" ? "Was lief letzte Woche?" : week === "next" ? "Was läuft nächste Woche?" : week === "after-next" ? "Was läuft übernächste Woche?" : "Was läuft diese Woche?"}</h1><p className="subtitle">Neue Episoden deiner Serien auf einen Blick. Zukünftige Daten können unvollständig sein.</p></header>
     <nav className="week-switch" aria-label="Woche"><button className={week === "last" ? "active" : ""} onClick={() => setWeek("last")}>Letzte Woche</button><button className={week === "current" ? "active" : ""} onClick={() => setWeek("current")}>Diese Woche</button><button className={week === "next" ? "active" : ""} onClick={() => setWeek("next")}>Nächste Woche</button><button className={week === "after-next" ? "active" : ""} onClick={() => setWeek("after-next")}>Übernächste Woche</button></nav>
     <section className="filters" aria-label="Filter"><button className="filter-button" type="button" disabled={!seriesSelectionInitialized} onClick={() => setFilterOpen(true)}>Filter</button><span>{selectedSeriesIds.length} von {series.length} Serien ausgewählt</span><button className="account-button" type="button" onClick={() => setAuthOpen(true)} title={session ? "Konto verwalten" : "Anmelden, um Einstellungen geräteübergreifend zu speichern"}>{session ? "Konto" : "Anmelden"}</button></section>

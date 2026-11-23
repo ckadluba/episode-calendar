@@ -298,11 +298,41 @@ describe("App preferences", () => {
       "episode-calendar-cache-v2:http://localhost:8000:episodes:current:Europe/Vienna",
       JSON.stringify({ timestamp: Date.now(), data: [] }),
     );
-    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => undefined)));
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response("[]", { status: 200 }))));
 
     render(<App />);
 
     expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument();
+    expect(screen.queryByText("Kalender wird geladen …")).not.toBeInTheDocument();
+  });
+});
+
+describe("API activity spinner", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("shows one spinner while the calendar requests are waiting for a response", async () => {
+    const respond: Array<(response: Response) => void> = [];
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => respond.push(resolve))));
+
+    render(<App />);
+
+    const spinner = screen.getByRole("status", { name: "Daten werden geladen …" });
+    expect(document.querySelectorAll(".api-activity")).toHaveLength(1);
+    expect(screen.getByText("Kalender wird geladen …")).toBeInTheDocument();
+
+    [series, platforms, []].forEach((data, index) => {
+      respond[index](new Response(JSON.stringify(data), { status: 200 }));
+    });
+
+    await waitFor(() => expect(spinner).not.toBeInTheDocument());
     expect(screen.queryByText("Kalender wird geladen …")).not.toBeInTheDocument();
   });
 });
