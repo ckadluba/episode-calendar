@@ -2,8 +2,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+import pytest
 
-from episode_calendar.importer.providers.ardmediathek import ARDMediathekProvider
+from episode_calendar.importer.providers.ardmediathek import (
+    ARDMediathekMalformedResponseError,
+    ARDMediathekProvider,
+)
 from episode_calendar.importer.providers.base import NormalizedEpisodeRelease
 from episode_calendar.shared.domain import ReleaseType
 
@@ -15,13 +19,17 @@ def teaser(
     *,
     available_to: str | None = "2027-09-25T03:00:00Z",
     duration: int | None = None,
+    available_seasons: list[str] | None = None,
 ) -> dict[str, Any]:
+    show: dict[str, Any] = {"title": "Demo Show"}
+    if available_seasons is not None:
+        show["availableSeasons"] = available_seasons
     payload: dict[str, Any] = {
         "id": episode_id,
         "longTitle": title,
         "broadcastedOn": broadcasted_on,
         "availableTo": available_to,
-        "show": {"title": "Demo Show"},
+        "show": show,
     }
     if duration is not None:
         payload["duration"] = duration
@@ -337,3 +345,52 @@ def test_streaming_release_prefers_publication_date() -> None:
     assert release.release_type is ReleaseType.STREAMING
     # The detail payload's on-demand date wins over the future linear broadcast teaser.
     assert release.release_at == datetime(2026, 9, 24, 17, 50, tzinfo=UTC)
+
+
+def test_normalizes_folge_titles_without_episode_suffix() -> None:
+    series = ARDMediathekProvider._normalize(
+        "demo",
+        [
+            teaser(
+                "episode-2",
+                "Folge 2: WUT",
+                "2026-11-05T04:30:00Z",
+                available_seasons=["1"],
+            ),
+            teaser(
+                "trailer",
+                "Trailer: Vibes · Find Your Fire",
+                "2026-10-31T12:00:00Z",
+                available_seasons=["1"],
+            ),
+            teaser(
+                "episode-1",
+                "Folge 1: Tschüss Alltag, die Vibes Villa ruft!",
+                "2026-11-05T04:30:00Z",
+                available_seasons=["1"],
+            ),
+        ],
+    )
+
+    [season] = series.seasons
+    assert season.number == 1
+    assert [episode.number for episode in season.episodes] == [1, 2]
+    assert [episode.title for episode in season.episodes] == [
+        "Tschüss Alltag, die Vibes Villa ruft!",
+        "WUT",
+    ]
+
+
+def test_skips_folge_titles_when_season_is_ambiguous() -> None:
+    with pytest.raises(ARDMediathekMalformedResponseError, match="no numbered episodes"):
+        ARDMediathekProvider._normalize(
+            "demo",
+            [
+                teaser(
+                    "episode-1",
+                    "Folge 1: Das Duell",
+                    "2026-10-29T23:35:00Z",
+                    available_seasons=["1", "2"],
+                )
+            ],
+        )
