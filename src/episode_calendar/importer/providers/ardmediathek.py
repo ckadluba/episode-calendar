@@ -31,6 +31,7 @@ from episode_calendar.shared.domain import TV_BROADCAST_MATCH_TOLERANCE, Release
 logger = logging.getLogger(__name__)
 
 _EPISODE_RE = re.compile(r"\(S(?P<season>\d+)/E(?P<episode>\d+)\)\s*$")
+_FOLGE_RE = re.compile(r"^Folge\s+(?P<episode>\d+)\s*:\s*(?P<title>.+?)\s*$")
 _TITLE_RE = re.compile(r"^(?:Folge\s+\d+\s*:\s*)?(?P<title>.*?)\s*\(S\d+/E\d+\)\s*$")
 
 EPG_TIMEZONE = ZoneInfo("Europe/Berlin")
@@ -530,6 +531,17 @@ class ARDMediathekProvider:
                 programmes.extend(item for item in time_slot_group if isinstance(item, Mapping))
         return programmes
 
+    @staticmethod
+    def _only_season(show: Any) -> int | None:
+        """Return the show's season when the payload names exactly one."""
+        if not isinstance(show, Mapping):
+            return None
+        available = show.get("availableSeasons")
+        if not isinstance(available, list):
+            return None
+        seasons = {int(value) for value in available if isinstance(value, str) and value.isdigit()}
+        return next(iter(seasons)) if len(seasons) == 1 else None
+
     @classmethod
     def _normalize(cls, asset_id: str, teasers: list[Mapping[str, Any]]) -> NormalizedSeries:
         episodes_by_season: dict[int, list[NormalizedEpisode]] = defaultdict(list)
@@ -542,7 +554,25 @@ class ARDMediathekProvider:
                     series_title = show_title
             title = teaser.get("longTitle") or teaser.get("mediumTitle")
             match = _EPISODE_RE.search(title) if isinstance(title, str) else None
-            if not match:
+            # Some WDR shows publish "Folge N: Title" without a season/episode
+            # suffix. They are unambiguous only when the show lists one season.
+            folge_match = _FOLGE_RE.match(title) if isinstance(title, str) else None
+            if match:
+                season_number = int(match.group("season"))
+                episode_number = int(match.group("episode"))
+                episode_title_match = _TITLE_RE.match(title)
+                episode_title = (
+                    episode_title_match.group("title").strip().strip('"')
+                    if episode_title_match
+                    else title
+                )
+            elif folge_match:
+                season_number = cls._only_season(show)
+                if season_number is None:
+                    continue
+                episode_number = int(folge_match.group("episode"))
+                episode_title = folge_match.group("title").strip().strip('"')
+            else:
                 continue
             episode_id = teaser.get("id")
             if not isinstance(episode_id, str) or not episode_id:
@@ -551,14 +581,7 @@ class ARDMediathekProvider:
             available_until = cls._datetime(
                 teaser.get("availableTo"), "teaser.availableTo", optional=True
             )
-            episode_number = int(match.group("episode"))
-            episode_title_match = _TITLE_RE.match(title)
-            episode_title = (
-                episode_title_match.group("title").strip().strip('"')
-                if episode_title_match
-                else title
-            )
-            episodes_by_season[int(match.group("season"))].append(
+            episodes_by_season[season_number].append(
                 NormalizedEpisode(
                     external_id=episode_id,
                     number=episode_number,
